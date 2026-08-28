@@ -8,8 +8,8 @@ use anyhow::{Context, Result};
 use sqlx::{Executor, Sqlite};
 use time::OffsetDateTime;
 
-/// The authentication-era event vocabulary. Later milestones extend this
-/// with record-lifecycle kinds.
+/// The authentication- and configuration-era event vocabulary. Later
+/// milestones extend this with record-lifecycle kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventKind {
     SetupCompleted,
@@ -21,6 +21,11 @@ pub enum EventKind {
     RecoveryCodeIssued,
     BackupCompleted,
     RestoreCompleted,
+    ProgramCreated,
+    ProgramVersionCreated,
+    ProgramVersionPublished,
+    ProgramVersionImported,
+    ProgramVersionDiscarded,
 }
 
 impl EventKind {
@@ -36,6 +41,37 @@ impl EventKind {
             Self::RecoveryCodeIssued => "recovery_code_issued",
             Self::BackupCompleted => "backup_completed",
             Self::RestoreCompleted => "restore_completed",
+            Self::ProgramCreated => "program_created",
+            Self::ProgramVersionCreated => "program_version_created",
+            Self::ProgramVersionPublished => "program_version_published",
+            Self::ProgramVersionImported => "program_version_imported",
+            Self::ProgramVersionDiscarded => "program_version_discarded",
+        }
+    }
+}
+
+/// A domain row an event acted on. Stored as (`subject_kind`, `subject_id`)
+/// with deliberately no foreign key (migration 0004): the audit trail is
+/// append-only and must never block lawful disposition of its subjects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Subject {
+    Program(i64),
+    ProgramVersion(i64),
+}
+
+impl Subject {
+    #[must_use]
+    pub fn kind_str(self) -> &'static str {
+        match self {
+            Self::Program(_) => "program",
+            Self::ProgramVersion(_) => "program_version",
+        }
+    }
+
+    #[must_use]
+    pub fn id(self) -> i64 {
+        match self {
+            Self::Program(id) | Self::ProgramVersion(id) => id,
         }
     }
 }
@@ -56,6 +92,30 @@ pub async fn record<'e>(
     .bind(kind.as_str())
     .bind(actor_user_id)
     .bind(subject_user_id)
+    .execute(executor)
+    .await
+    .context("recording audit event")?;
+    Ok(())
+}
+
+/// Records one event about a domain subject. Callers inside a transaction
+/// pass the transaction so the event commits or rolls back with the action
+/// it describes.
+pub async fn record_for_subject<'e>(
+    executor: impl Executor<'e, Database = Sqlite>,
+    kind: EventKind,
+    actor_user_id: Option<i64>,
+    subject: Subject,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO audit_event (occurred_at, kind, actor_user_id, subject_kind, subject_id)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )
+    .bind(OffsetDateTime::now_utc().unix_timestamp())
+    .bind(kind.as_str())
+    .bind(actor_user_id)
+    .bind(subject.kind_str())
+    .bind(subject.id())
     .execute(executor)
     .await
     .context("recording audit event")?;
