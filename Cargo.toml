@@ -12,3 +12,7 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
+# Revisit before the API stabilizes; error/panic doc sections are noise while
+# every public function is pre-alpha and changing shape.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
