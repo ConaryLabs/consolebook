@@ -4,7 +4,12 @@
 //! domain capabilities, not web routes. Handlers translate between HTTP and
 //! the domain services; policy lives in the services.
 //!
-//! Error responses are `{"error": <stable machine code>, "message": ...}`.
+//! This module is the hub: it owns the router, `ApiError`, and the
+//! `CurrentUser` extractor. Handler groups for larger domains live in
+//! their own modules (`programs_http`) and register through `router`.
+//!
+//! Error responses are `{"error": <stable machine code>, "message": ...}`,
+//! plus a `problems` array when a refusal carries itemized reasons.
 //! Authentication failures stay deliberately generic so responses do not
 //! reveal whether an account exists.
 
@@ -46,6 +51,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/reset", post(reset_password))
         .route("/api/notices", get(list_notices))
         .route("/api/notices/{id}/read", post(mark_notice_read))
+        .merge(crate::programs_http::routes())
         .fallback(crate::web_assets::serve)
         .with_state(state)
 }
@@ -53,18 +59,35 @@ pub fn router(state: AppState) -> Router {
 // ---------------------------------------------------------------- errors
 
 /// An API error with a stable machine-readable code.
-struct ApiError {
+pub(crate) struct ApiError {
     status: StatusCode,
     code: &'static str,
     message: String,
+    problems: Vec<String>,
 }
 
 impl ApiError {
-    fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status,
             code,
             message: message.into(),
+            problems: Vec::new(),
+        }
+    }
+
+    /// An error carrying itemized refusal reasons the interface can list.
+    pub(crate) fn with_problems(
+        status: StatusCode,
+        code: &'static str,
+        message: impl Into<String>,
+        problems: Vec<String>,
+    ) -> Self {
+        Self {
+            status,
+            code,
+            message: message.into(),
+            problems,
         }
     }
 
@@ -89,7 +112,10 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = serde_json::json!({ "error": self.code, "message": self.message });
+        let mut body = serde_json::json!({ "error": self.code, "message": self.message });
+        if !self.problems.is_empty() {
+            body["problems"] = serde_json::json!(self.problems);
+        }
         (self.status, Json(body)).into_response()
     }
 }

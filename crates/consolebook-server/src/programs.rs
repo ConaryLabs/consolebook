@@ -237,14 +237,14 @@ pub struct CitationDef {
 
 // ---- summaries
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProgramSummary {
     pub id: i64,
     pub name: String,
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VersionSummary {
     pub id: i64,
     pub program_id: i64,
@@ -608,6 +608,41 @@ pub async fn list_programs(pool: &SqlitePool) -> Result<Vec<ProgramSummary>> {
             created_at: row.get("created_at"),
         })
         .collect())
+}
+
+/// Looks up one program's summary.
+pub async fn get_program(pool: &SqlitePool, program_id: i64) -> Result<Option<ProgramSummary>> {
+    let row = sqlx::query("SELECT id, name, created_at FROM program WHERE id = ?1")
+        .bind(program_id)
+        .fetch_optional(pool)
+        .await
+        .context("looking up program")?;
+    Ok(row.as_ref().map(|row| ProgramSummary {
+        id: row.get("id"),
+        name: row.get("name"),
+        created_at: row.get("created_at"),
+    }))
+}
+
+/// Looks up one version's summary.
+pub async fn version_summary(pool: &SqlitePool, version_id: i64) -> Result<Option<VersionSummary>> {
+    let row = sqlx::query(
+        "SELECT id, program_id, version_number, label, name, created_at, published_at
+         FROM program_version WHERE id = ?1",
+    )
+    .bind(version_id)
+    .fetch_optional(pool)
+    .await
+    .context("looking up program version")?;
+    Ok(row.as_ref().map(|row| VersionSummary {
+        id: row.get("id"),
+        program_id: row.get("program_id"),
+        version_number: row.get("version_number"),
+        label: row.get("label"),
+        name: row.get("name"),
+        created_at: row.get("created_at"),
+        published_at: row.get("published_at"),
+    }))
 }
 
 pub async fn list_versions(pool: &SqlitePool, program_id: i64) -> Result<Vec<VersionSummary>> {

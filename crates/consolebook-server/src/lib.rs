@@ -12,6 +12,7 @@ pub mod http;
 pub mod notices;
 pub mod program_export;
 pub mod programs;
+pub mod programs_http;
 pub mod restore;
 pub mod scheduler;
 pub mod secrets;
