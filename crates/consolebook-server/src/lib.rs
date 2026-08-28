@@ -10,6 +10,8 @@ pub mod data_dir;
 pub mod doctor;
 pub mod http;
 pub mod notices;
+pub mod program_export;
+pub mod programs;
 pub mod restore;
 pub mod scheduler;
 pub mod secrets;
