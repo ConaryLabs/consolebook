@@ -9,7 +9,8 @@ Consolebook is an early-stage training-record system for emergency communication
 - Programs and agency terminology are versioned configuration.
 - Training sessions and evaluation records remain separate concepts.
 - Daily reports, weekly summaries, and phase evaluations have explicit provenance.
-- Finalized records are immutable; corrections create successor versions.
+- Finalized records are immutable while retained; corrections create successor versions.
+- Retention policies, holds, and lawful disposition are explicit workflows.
 - Acknowledgment records receipt rather than agreement.
 - Assignment-scoped access is the default.
 - Backups, recovery, and complete exports are product features.
@@ -60,4 +61,6 @@ Examples and test fixtures must be invented. Do not commit real agency names, em
 
 ## License
 
-A project license has not been selected yet. The repository is public for early design work, but redistribution terms will be established before the first release.
+Consolebook is licensed under the [GNU Affero General Public License v3.0 only](LICENSE). If you modify Consolebook and let users interact with it over a network, AGPLv3 requires you to offer those users the Corresponding Source for the running modified version.
+
+See [ADR 0002](docs/decisions/0002-license.md) for the decision and trade-offs.

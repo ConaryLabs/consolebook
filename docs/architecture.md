@@ -19,7 +19,9 @@ HTTP API and application services
   +-- sessions and evaluation workflow
   +-- immutable record versions
   +-- acknowledgments and amendments
+  +-- holds, retention, and lawful disposition
   +-- authorization and audit
+  +-- in-app notifications
   +-- exports and recovery
   |
   v
@@ -53,6 +55,8 @@ Startup and the future `consolebook doctor` command will verify these invariants
 ### User interface
 
 The planned interface is a statically built SvelteKit application embedded in the Rust executable. Server-side rendering and a production Node.js runtime are outside the design.
+
+The web interface is part of every vertical slice, not a post-API decoration. Setup, program configuration, training workflow, trainee review, retention administration, and recovery each require a usable interface before their milestone is complete.
 
 ### Documents
 
@@ -91,6 +95,14 @@ Milestone one targets local authentication:
 - server-side session records;
 - expiration and immediate revocation.
 
+Password recovery in v1 is local and administrator-operated:
+
+- an authorized administrator can issue a short-lived, single-use reset code;
+- using the code forces a new password, revokes existing sessions, and creates an audit event; and
+- a sole-administrator recovery command requires operating-system access to the installation data directory and records an explicit recovery event.
+
+Password reset does not depend on email or another external service.
+
 OIDC may be added behind an authentication-provider boundary later.
 
 ## Authorization
@@ -105,8 +117,22 @@ An uninitialized installation will emit a short-lived setup code. Creating the f
 
 After initialization, the setup operation is unavailable.
 
+## Notifications
+
+Workflow notices are persisted and shown in the application. Finalization, review requests, successor versions, acknowledgment requests, responses, refusals, and escalations cannot depend on email delivery.
+
+SMTP may be added later as an optional delivery adapter. It mirrors an in-app notice; it does not become the record or the only way to act.
+
+## Retention and disposition
+
+Retention policy, record holds, and lawful disposition belong to application services with explicit capabilities and audit events. Normal repository methods cannot delete finalized content. A separate disposition path checks applicable policy and holds, previews scope, records authority, and removes only the approved material.
+
+Disposition records have retention rules of their own. The architecture must not keep personal metadata forever merely to make an integrity chain convenient.
+
 ## Deployment boundary
 
 The canonical artifact is one executable. Containers and service-manager examples may be provided, but neither defines the architecture.
 
 Reverse proxies and external TLS termination are supported deployment choices. They are not required for local development.
+
+The version/about interface will identify the running build, the AGPL-3.0-only license, and a source location. Deployments that modify Consolebook and make it available over a network must be able to point that interface at the Corresponding Source for the running version.

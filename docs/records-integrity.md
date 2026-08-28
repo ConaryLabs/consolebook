@@ -6,9 +6,9 @@ Training records may be used in personnel decisions, grievances, audits, and lit
 
 Draft content is mutable. Draft edits and ownership transfers remain attributable.
 
-Finalization creates an immutable EvaluationVersion. Application code must never update finalized content in place.
+Finalization creates an immutable EvaluationVersion. Application code must never update finalized content in place while it is retained.
 
-A correction produces a successor version linked to the original with an explicit reason and authority. Both versions remain available.
+A correction produces a successor version linked to the original with an explicit reason and authority. Both versions remain available until an authorized retention workflow disposes of them.
 
 ## Canonical bytes
 
@@ -78,11 +78,29 @@ Acknowledgments bind to one immutable EvaluationVersion. They are separate recor
 
 An amendment never inherits acknowledgment silently.
 
+## Retention, holds, and lawful disposition
+
+Immutability governs records while they are retained. It does not overrule an approved records-retention schedule or authorize keeping personal data forever.
+
+Consolebook will model retention as an explicit workflow:
+
+1. a versioned policy identifies the record class, disposition authority, trigger, retention period, and action;
+2. the service checks for litigation, anticipated-litigation, audit, investigation, public-records-request, and other configured holds;
+3. an authorized operator reviews the exact scope and authority before confirming disposition;
+4. content, attachments, historical presentation snapshots, indexes, and derived exports in scope are destroyed; and
+5. the operation records success or failure without copying the destroyed content into an audit message.
+
+Where the applicable policy permits or requires it, a minimal DispositionEvent acts as a tombstone. It may retain the former version hash, opaque identifiers, record class and date range, disposition authority, actor or approver, timestamp, method, result, and a non-sensitive reason code. Its own retention is independently configured.
+
+A retained hash can preserve chain continuity and show that a known version was disposed of under stated authority. It cannot prove deleted bytes still match that hash. Verification must report the version as lawfully disposed and unavailable for content verification, never quietly claim a complete recheck.
+
+Some schedules may require destruction of metadata that another schedule would preserve. In that case the chain closes at a signed or exported checkpoint, and later verification reports the intentional policy boundary. Cryptography does not get a special exemption from retention law.
+
 ## Audit trail
 
 The audit trail records actions around the record: viewing where policy requires it, submission, finalization, acknowledgment, refusal, export, authorization changes, backup, and restore.
 
-Audit events need their own retention and integrity rules. They do not replace immutable record versions.
+Audit events and disposition events need their own retention and integrity rules. They do not replace immutable record versions, and they must not smuggle destroyed record content into a longer-lived table.
 
 ## Verification
 
@@ -91,6 +109,8 @@ Before the first production-capable release, Consolebook must have:
 - canonicalization golden vectors;
 - hash and predecessor-chain vectors;
 - database tests proving finalized rows reject mutation;
+- hold and lawful-disposition tests, including partial failure and retry behavior;
+- verification tests for retained tombstones and policy-required chain closure;
 - export round-trip tests;
 - deterministic PDF fixtures within defined tolerances;
 - backup validation and restore drills; and

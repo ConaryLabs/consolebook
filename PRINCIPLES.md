@@ -14,11 +14,13 @@ The core application is single-agency software. It does not carry a multi-tenant
 
 Hosted deployments may run many isolated Consolebook instances.
 
-## 3. Finalized records are immutable
+## 3. Finalized records are immutable while retained
 
 Drafts may change. Finalized records may not.
 
-Corrections create successor versions or amendments that retain the original content, author, timestamps, reason, and acknowledgment history.
+Corrections create successor versions or amendments that retain the original content, author, timestamps, reason, and acknowledgment history for as long as the applicable retention policy keeps them.
+
+Lawful disposition is a separate, authorized workflow, never an edit disguised as cleanup. Holds block disposition. The system preserves only the destruction metadata that the applicable policy permits or requires.
 
 ## 4. Acknowledgment means receipt
 

@@ -41,6 +41,7 @@ Authorization is expressed as capabilities such as:
 - `assign_training`;
 - `author_evaluation`;
 - `review_evaluation`;
+- `view_own_records`;
 - `acknowledge_own_record`;
 - `view_assigned_records`; and
 - `export_records`.
@@ -76,6 +77,8 @@ A TrainingSession describes an actual period of training:
 - session disposition.
 
 More than one session may share the same trainee and business date. A session may exist before any evaluation is finalized.
+
+Active training intervals for the same trainee may not overlap. Holdovers, callbacks, and trainer handoffs remain valid as separate or contiguous sessions.
 
 ### TaskSignoff
 
@@ -133,13 +136,37 @@ Acknowledgment means receipt, not agreement. A successor version requires a new 
 
 ### Amendment
 
-An Amendment links an original finalized version to its successor and records the reason, authority, author, and timestamps. The original remains readable and exportable.
+An Amendment links an original finalized version to its successor and records the reason, authority, author, and timestamps. The original remains readable and exportable while retained.
+
+## Retention and disposition
+
+### RetentionPolicy
+
+A versioned RetentionPolicy maps record classes to an approved disposition authority, trigger, minimum retention period, action, and rules for any destruction log. Installations configure policy; Consolebook does not pretend one jurisdiction's schedule is universal.
+
+### RecordHold
+
+A RecordHold suspends disposition for an explicit scope. Holds may represent litigation, anticipated litigation, audit, investigation, public-records request, or another configured authority. Creating, changing, and releasing a hold requires attribution and a reason.
+
+### DispositionEvent
+
+A DispositionEvent records an authorized disposition attempt and its result. Where policy permits or requires a retained tombstone, it may contain only the minimum approved fields, such as:
+
+- opaque record and version identifiers;
+- the former version hash;
+- record class and covered date range;
+- disposition-authority identifier;
+- actor, approver, and timestamp;
+- method and result; and
+- non-sensitive reason code.
+
+The event does not preserve destroyed narratives, attachments, presentation snapshots, or personal profile data. Disposition events have their own retention policy and may themselves become eligible for disposition.
 
 ## Audit
 
 ### AuditEvent
 
-Security- and record-sensitive actions produce append-only audit events, including authentication, authorization changes, finalization, acknowledgment, refusal, amendment, export, backup, and restore.
+Security- and record-sensitive actions produce append-only audit events, including authentication, authorization changes, finalization, acknowledgment, refusal, amendment, hold changes, disposition, export, backup, and restore.
 
 An audit event supplements the immutable domain record. It is not a substitute for version history.
 
@@ -153,7 +180,15 @@ The initial schema is expected to enforce at least:
 4. published program versions cannot be edited;
 5. all referenced configuration versions belong to the pinned program version;
 6. UTC end time cannot precede UTC start time;
-7. capability and assignment checks occur before sensitive reads and writes; and
+7. active training intervals for one trainee cannot overlap; and
 8. no uniqueness constraint assumes one session or evaluation per trainee and calendar date.
 
 The exact enforcement mechanism—constraints, triggers, or transactional application services—will be decided with migration `0001`.
+
+## Application-service invariants to enforce
+
+1. capability and assignment scope are checked before sensitive reads and writes;
+2. `view_own_records` grants a trainee access only to their own retained timeline;
+3. any applicable hold blocks disposition;
+4. disposition requires explicit capability, policy authority, scope confirmation, attribution, and a recorded result; and
+5. all trainers assigned to the same trainee can share the records allowed by policy without receiving broad access to unrelated trainees.

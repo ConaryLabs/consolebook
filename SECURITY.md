@@ -8,7 +8,7 @@ Consolebook is pre-alpha and has no production-ready release. Do not use the cur
 
 Do not post credentials, personal information, private records, or exploit details in a public issue.
 
-Use GitHub private vulnerability reporting for this repository if it is available. If it is unavailable, open a public issue containing only a request for a private contact channel.
+Use the repository's [private vulnerability reporting form](https://github.com/ConaryLabs/consolebook/security/advisories/new). It is enabled and sends the report privately to repository maintainers.
 
 ## Scope
 

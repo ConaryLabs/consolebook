@@ -7,9 +7,9 @@
 *.db
 *.db-shm
 *.db-wal
-data/
-backups/
-exports/
+/data/
+/backups/
+/exports/
 .DS_Store
 .idea/
 .vscode/

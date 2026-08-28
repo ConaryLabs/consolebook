@@ -7,7 +7,7 @@ The roadmap is ordered by risk. Dates come later; fake schedules are how softwar
 - establish principles and architecture decisions;
 - define public domain vocabulary;
 - create a buildable Rust workspace;
-- select a license;
+- publish the AGPL-3.0-only license and contribution terms;
 - define contribution and security-reporting paths; and
 - specify canonical record bytes.
 
@@ -18,6 +18,8 @@ The roadmap is ordered by risk. Dates come later; fake schedules are how softwar
 - command-line configuration;
 - first-run setup code;
 - local administrator creation;
+- administrator-issued password reset and sole-administrator local recovery;
+- embedded SvelteKit shell for setup, sign-in, recovery, status, and in-app notices;
 - SQLite migrations and explicit connection invariants;
 - health and `doctor` commands;
 - structured logging without sensitive record content; and
@@ -31,7 +33,8 @@ The roadmap is ordered by risk. Dates come later; fake schedules are how softwar
 - phases and non-linear transitions;
 - competencies, tasks, forms, and rating scales;
 - publishing and enrollment pinning; and
-- configuration export/import.
+- configuration export/import; and
+- web interface for authoring, comparing, publishing, and enrolling program versions.
 
 **Exit:** a complete invented training program can be published, enrolled, exported, and reproduced.
 
@@ -43,7 +46,9 @@ The roadmap is ordered by risk. Dates come later; fake schedules are how softwar
 - daily evaluation drafts;
 - contributor and ownership-transfer history;
 - manual and automatic draft persistence; and
-- review/change-request workflow.
+- review/change-request workflow;
+- persisted in-app workflow notices; and
+- trainer and coordinator web interface for sessions, drafts, assignments, and review.
 
 **Exit:** trainers can document an invented session collaboratively without losing attribution.
 
@@ -55,6 +60,7 @@ The roadmap is ordered by risk. Dates come later; fake schedules are how softwar
 - weekly summaries linked to daily versions;
 - acknowledgments, responses, and refusals;
 - amendments and successor versions;
+- trainee timeline and acknowledgment, response, refusal, and escalation interface;
 - append-only audit events; and
 - database-enforced immutability.
 
@@ -66,15 +72,18 @@ The roadmap is ordered by risk. Dates come later; fake schedules are how softwar
 - complete structured exports;
 - trainee packet generation;
 - attachment integrity;
+- retention-policy administration, record holds, lawful disposition, and destruction logs;
 - scheduled backup retention;
 - restore verification; and
-- operator documentation.
+- operator documentation; and
+- operator interface for export, hold, disposition, backup, and restore workflows.
 
 **Exit:** a center can leave with all of its data and can prove recovery from a clean installation.
 
 ## Milestone 6 — Pilot hardening
 
 - accessibility and usability review;
+- keyboard, screen-reader, error-recovery, and responsive-layout proof across every shipped workflow;
 - threat modeling;
 - privacy review;
 - performance and concurrency tests;
@@ -87,6 +96,7 @@ The roadmap is ordered by risk. Dates come later; fake schedules are how softwar
 ## Held until justified
 
 - OIDC;
+- optional SMTP notification delivery;
 - installation-level signing keys;
 - hosted instance management;
 - advanced analytics;

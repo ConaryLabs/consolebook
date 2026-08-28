@@ -38,6 +38,6 @@ cargo test --workspace
 
 State what is implemented, what is proposed, and what has been verified. A design document is not runtime proof, and a passing unit test is not recovery proof.
 
-## License status
+## Licensing contributions
 
-A project license has not been selected. External code contributions should wait until contribution and licensing terms are published.
+Consolebook is licensed under AGPL-3.0-only. By submitting a contribution, you agree to license it under the same terms. The project does not require a separate contributor license agreement or a broad relicensing grant.
