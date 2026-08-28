@@ -78,7 +78,7 @@ test('full shell lifecycle', async ({ page }) => {
 	await expect(page.getByText('No notices.')).toBeVisible();
 
 	// The administrator issues themselves a reset code from the UI.
-	await page.getByLabel('Username').fill('avery.admin');
+	await page.getByLabel('Username', { exact: true }).fill('avery.admin');
 	await page.getByRole('button', { name: 'Issue reset code' }).click();
 	const codeOut = page.locator('code');
 	await expect(codeOut).toBeVisible();

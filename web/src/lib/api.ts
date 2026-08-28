@@ -339,6 +339,55 @@ export function importNextVersion(
 	});
 }
 
+// Users and enrollment (Milestone 2 slice 3: minimal user creation so
+// training can be assigned; full user administration is a later milestone).
+
+export interface UserSummary {
+	id: number;
+	username: string;
+	display_name: string;
+	created_at: number;
+}
+
+export function listUsers(): Promise<{ users: UserSummary[] }> {
+	return request('/api/users');
+}
+
+export interface CreatedUser {
+	id: number;
+	username: string;
+	display_name: string;
+	reset_code: string;
+	reset_expires_at: number;
+}
+
+export function createUser(username: string, displayName: string): Promise<CreatedUser> {
+	return request('/api/users', {
+		method: 'POST',
+		body: JSON.stringify({ username, display_name: displayName })
+	});
+}
+
+export interface Enrollee {
+	enrollment_id: number;
+	user_id: number;
+	username: string;
+	display_name: string;
+	enrolled_at: number;
+	enrolled_by: number | null;
+}
+
+export function listEnrollments(versionId: number): Promise<{ enrollees: Enrollee[] }> {
+	return request(`/api/program-versions/${versionId}/enrollments`);
+}
+
+export function enrollUser(versionId: number, userId: number): Promise<{ id: number }> {
+	return request(`/api/program-versions/${versionId}/enrollments`, {
+		method: 'POST',
+		body: JSON.stringify({ user_id: userId })
+	});
+}
+
 /** A structurally valid empty draft for starting a program from scratch. */
 export function blankContent(name: string): VersionContent {
 	return {

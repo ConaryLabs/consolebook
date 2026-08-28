@@ -4,10 +4,15 @@
 	import {
 		ApiError,
 		discardVersion,
+		enrollUser,
 		getVersion,
+		listEnrollments,
+		listUsers,
 		publishVersion,
 		replaceVersionContent,
 		versionExportPath,
+		type Enrollee,
+		type UserSummary,
 		type VersionContent,
 		type VersionSummary
 	} from '$lib/api';
@@ -127,6 +132,49 @@
 			busy = false;
 		}
 	}
+
+	// Enrollment: published versions only, assign_training only.
+	let canAssign = $derived(
+		data.session?.capabilities.includes('assign_training') ?? false
+	);
+	let enrollees: Enrollee[] = $state([]);
+	let roster: UserSummary[] = $state([]);
+	let selectedUserId = $state(0);
+	let enrollError = $state('');
+
+	async function loadEnrollment() {
+		const [enrolled, people] = await Promise.all([listEnrollments(versionId), listUsers()]);
+		enrollees = enrolled.enrollees;
+		roster = people.users;
+	}
+
+	$effect(() => {
+		if (published && canAssign) {
+			loadEnrollment().catch(() => {
+				enrollees = [];
+				roster = [];
+			});
+		}
+	});
+
+	let enrollable = $derived(
+		roster.filter((person) => !enrollees.some((e) => e.user_id === person.id))
+	);
+
+	async function enroll(event: SubmitEvent) {
+		event.preventDefault();
+		enrollError = '';
+		busy = true;
+		try {
+			await enrollUser(versionId, selectedUserId);
+			selectedUserId = 0;
+			await loadEnrollment();
+		} catch (err) {
+			enrollError = err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
 </script>
 
 {#if summary !== null && content !== null}
@@ -155,6 +203,46 @@
 	{/if}
 	{#if saved}
 		<p class="saved" role="status">{saved}</p>
+	{/if}
+
+	{#if published && canAssign}
+		<section class="panel">
+			<h2>Enrollments</h2>
+			{#if enrollees.length === 0}
+				<p class="quiet">Nobody is enrolled in this version yet.</p>
+			{:else}
+				<table class="grid">
+					<thead>
+						<tr>
+							<th>Trainee</th>
+							<th>Username</th>
+							<th>Enrolled</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each enrollees as enrollee (enrollee.enrollment_id)}
+							<tr>
+								<td>{enrollee.display_name}</td>
+								<td>{enrollee.username}</td>
+								<td>{instant(enrollee.enrolled_at)}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{/if}
+			<form class="row enroll" onsubmit={enroll}>
+				<select aria-label="Trainee to enroll" bind:value={selectedUserId} required>
+					<option value={0} disabled>Choose a trainee…</option>
+					{#each enrollable as person (person.id)}
+						<option value={person.id}>{person.display_name} ({person.username})</option>
+					{/each}
+				</select>
+				<button type="submit" disabled={busy || selectedUserId === 0}>Enroll</button>
+			</form>
+			{#if enrollError}
+				<p class="error" role="alert">{enrollError}</p>
+			{/if}
+		</section>
 	{/if}
 
 	<section class="panel">
@@ -215,6 +303,14 @@
 	h2 {
 		font-size: 1.1rem;
 		margin: 0 0 0.75rem;
+	}
+	.quiet {
+		opacity: 0.7;
+		margin: 0 0 0.75rem;
+	}
+	form.enroll {
+		margin-top: 1rem;
+		max-width: 28rem;
 	}
 	.saved {
 		background: light-dark(#e2f2e3, #1e3524);
