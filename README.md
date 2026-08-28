@@ -40,6 +40,7 @@ The server crate implements the beginnings of the Milestone 1 operable shell: a 
 ## Repository map
 
 - [PRINCIPLES.md](PRINCIPLES.md) — non-negotiable product constraints
+- [AGENTS.md](AGENTS.md) — repo-wide contract for contributors and agents
 - [docs/architecture.md](docs/architecture.md) — proposed system boundaries
 - [docs/domain-model.md](docs/domain-model.md) — domain vocabulary and invariants
 - [docs/records-integrity.md](docs/records-integrity.md) — immutability, hashes, and provenance

@@ -9,6 +9,30 @@ Consolebook is pre-alpha. Design changes are welcome, but the domain and record-
 - Add or update an ADR when a decision changes durable system behavior.
 - Keep changes narrow enough to review and verify.
 
+## Issue, branch, and pull-request workflow
+
+Non-trivial implementation, bug, refactor, documentation, operations, and
+maintenance work uses one primary GitHub issue, an issue-linked branch, and a
+pull request. Never push repository changes directly to `main`.
+
+- Search open and closed issues before filing a new one.
+- `Closes #...` in a pull request means it satisfies the issue's acceptance
+  criteria; use `Refs #...` when the issue must remain open across slices.
+- The `pr-gate` workflow enforces the Rust checks below on every pull
+  request; run them locally first.
+- Use short imperative Conventional Commit subjects such as
+  `storage(backup): validate snapshot before fsync`.
+- Security reports use private advisories per [SECURITY.md](SECURITY.md),
+  never public issues.
+
+## Engineering discipline
+
+Engineer solutions, not band-aids. Heuristics, regexes, substring matching,
+and silent defaults may aid diagnostics, discovery, or presentation; they may
+not establish record integrity, authorization, retention, disposition, or
+export behavior. Fix a defect found in scope, or file an exact-evidence issue
+when it belongs elsewhere; do not silently route around it.
+
 ## Privacy and fixtures
 
 Never submit real training records or operational material.
