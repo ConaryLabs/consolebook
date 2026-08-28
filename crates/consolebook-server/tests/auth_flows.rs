@@ -377,7 +377,7 @@ async fn issuing_reset_codes_requires_manage_users() {
     // a later slice).
     let hash = consolebook_server::secrets::hash_password(PASSWORD).expect("hash");
     let mut conn = fx.pool.acquire().await.expect("conn");
-    users::create(&mut conn, "taylor.trainee", "Taylor Trainee", &hash)
+    users::create(&mut conn, "taylor.trainee", "Taylor Trainee", "", "", &hash)
         .await
         .expect("create user");
     drop(conn);
@@ -466,7 +466,7 @@ async fn recovery_refuses_non_administrators_and_unknown_users() {
     fx.initialized().await;
     let hash = consolebook_server::secrets::hash_password(PASSWORD).expect("hash");
     let mut conn = fx.pool.acquire().await.expect("conn");
-    users::create(&mut conn, "taylor.trainee", "Taylor Trainee", &hash)
+    users::create(&mut conn, "taylor.trainee", "Taylor Trainee", "", "", &hash)
         .await
         .expect("create user");
     drop(conn);

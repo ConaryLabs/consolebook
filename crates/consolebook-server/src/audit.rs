@@ -28,6 +28,13 @@ pub enum EventKind {
     ProgramVersionDiscarded,
     UserCreated,
     EnrollmentCreated,
+    EnrollmentWithdrawn,
+    EnrollmentCompleted,
+    EnrollmentReinstated,
+    EnrollmentVersionChanged,
+    PhaseEventRecorded,
+    AssignmentCreated,
+    AssignmentEnded,
 }
 
 impl EventKind {
@@ -50,6 +57,13 @@ impl EventKind {
             Self::ProgramVersionDiscarded => "program_version_discarded",
             Self::UserCreated => "user_created",
             Self::EnrollmentCreated => "enrollment_created",
+            Self::EnrollmentWithdrawn => "enrollment_withdrawn",
+            Self::EnrollmentCompleted => "enrollment_completed",
+            Self::EnrollmentReinstated => "enrollment_reinstated",
+            Self::EnrollmentVersionChanged => "enrollment_version_changed",
+            Self::PhaseEventRecorded => "phase_event_recorded",
+            Self::AssignmentCreated => "assignment_created",
+            Self::AssignmentEnded => "assignment_ended",
         }
     }
 }
@@ -62,6 +76,7 @@ pub enum Subject {
     Program(i64),
     ProgramVersion(i64),
     Enrollment(i64),
+    Assignment(i64),
 }
 
 impl Subject {
@@ -71,13 +86,17 @@ impl Subject {
             Self::Program(_) => "program",
             Self::ProgramVersion(_) => "program_version",
             Self::Enrollment(_) => "enrollment",
+            Self::Assignment(_) => "assignment",
         }
     }
 
     #[must_use]
     pub fn id(self) -> i64 {
         match self {
-            Self::Program(id) | Self::ProgramVersion(id) | Self::Enrollment(id) => id,
+            Self::Program(id)
+            | Self::ProgramVersion(id)
+            | Self::Enrollment(id)
+            | Self::Assignment(id) => id,
         }
     }
 }

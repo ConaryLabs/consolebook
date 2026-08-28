@@ -16,6 +16,9 @@ pub enum Capability {
     ManagePrograms,
     AssignTraining,
     ExportRecords,
+    AuthorEvaluation,
+    ReviewEvaluation,
+    ViewAssignedRecords,
 }
 
 impl Capability {
@@ -26,6 +29,9 @@ impl Capability {
             Self::ManagePrograms => "manage_programs",
             Self::AssignTraining => "assign_training",
             Self::ExportRecords => "export_records",
+            Self::AuthorEvaluation => "author_evaluation",
+            Self::ReviewEvaluation => "review_evaluation",
+            Self::ViewAssignedRecords => "view_assigned_records",
         }
     }
 }
@@ -40,6 +46,48 @@ pub const ADMINISTRATOR_BUNDLE: [Capability; 4] = [
     Capability::AssignTraining,
     Capability::ExportRecords,
 ];
+
+/// The Trainer bundle: authors evaluations for assigned trainees and reads
+/// their assigned trainees' training history.
+pub const TRAINER_BUNDLE: [Capability; 2] = [
+    Capability::AuthorEvaluation,
+    Capability::ViewAssignedRecords,
+];
+
+/// The Coordinator bundle: assigns training, reviews evaluations, and
+/// reads assigned training history. Broader administration stays explicit
+/// authority (PRINCIPLES.md 10).
+pub const COORDINATOR_BUNDLE: [Capability; 3] = [
+    Capability::AssignTraining,
+    Capability::ReviewEvaluation,
+    Capability::ViewAssignedRecords,
+];
+
+/// Role bundles selectable at user creation. A role is consumed when the
+/// grants are created; nothing checks a role name at decision time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleBundle {
+    Administrator,
+    Coordinator,
+    Trainer,
+    /// No capabilities today; trainees receive `view_own_records` with the
+    /// Milestone 4 trainee timeline.
+    #[default]
+    Trainee,
+}
+
+impl RoleBundle {
+    #[must_use]
+    pub fn capabilities(self) -> &'static [Capability] {
+        match self {
+            Self::Administrator => &ADMINISTRATOR_BUNDLE,
+            Self::Coordinator => &COORDINATOR_BUNDLE,
+            Self::Trainer => &TRAINER_BUNDLE,
+            Self::Trainee => &[],
+        }
+    }
+}
 
 /// Grants every capability in a bundle to `user_id`.
 pub async fn grant_bundle(

@@ -53,6 +53,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/notices", get(list_notices))
         .route("/api/notices/{id}/read", post(mark_notice_read))
         .merge(crate::programs_http::routes())
+        .merge(crate::training_http::routes())
         .fallback(crate::web_assets::serve)
         .with_state(state)
 }
@@ -464,11 +465,17 @@ struct CreateUserRequest {
     username: String,
     #[serde(default)]
     display_name: String,
+    #[serde(default)]
+    employee_id: String,
+    #[serde(default)]
+    title: String,
+    /// Role bundle consumed at creation; defaults to Trainee (no grants).
+    #[serde(default)]
+    role: capabilities::RoleBundle,
 }
 
-/// Creates a user with no capabilities and returns the one-time reset
-/// code their first sign-in redeems. Full user administration is a later
-/// milestone; this exists so training can be assigned.
+/// Creates a user with the chosen role bundle's grants and returns the
+/// one-time reset code their first sign-in redeems.
 async fn create_user(
     State(state): State<AppState>,
     current: CurrentUser,
@@ -486,6 +493,9 @@ async fn create_user(
         current.user.id,
         &req.username,
         &req.display_name,
+        &req.employee_id,
+        &req.title,
+        req.role,
     )
     .await?;
     match created {

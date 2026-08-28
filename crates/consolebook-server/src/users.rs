@@ -57,20 +57,26 @@ pub async fn find_by_id(pool: &SqlitePool, id: i64) -> Result<Option<User>> {
 }
 
 /// Creates a user inside a caller-owned transaction. The caller is
-/// responsible for policy checks and capability grants.
+/// responsible for policy checks and capability grants. Profile fields
+/// are mutable presentation data (docs/domain-model.md User); empty means
+/// unknown.
 pub async fn create(
     conn: &mut SqliteConnection,
     username: &str,
     display_name: &str,
+    employee_id: &str,
+    title: &str,
     password_hash: &str,
 ) -> Result<i64> {
     let now = OffsetDateTime::now_utc().unix_timestamp();
     let result = sqlx::query(
-        "INSERT INTO user (username, display_name, password_hash, created_at)
-         VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO user (username, display_name, employee_id, title, password_hash, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )
     .bind(username)
     .bind(display_name)
+    .bind(employee_id)
+    .bind(title)
     .bind(password_hash)
     .bind(now)
     .execute(conn)
@@ -85,6 +91,8 @@ pub struct UserSummary {
     pub id: i64,
     pub username: String,
     pub display_name: String,
+    pub employee_id: String,
+    pub title: String,
     pub created_at: i64,
 }
 
@@ -92,7 +100,7 @@ pub struct UserSummary {
 /// caller's responsibility.
 pub async fn list(pool: &SqlitePool) -> Result<Vec<UserSummary>> {
     let rows = sqlx::query(
-        "SELECT id, username, display_name, created_at FROM user
+        "SELECT id, username, display_name, employee_id, title, created_at FROM user
          ORDER BY display_name COLLATE NOCASE, username COLLATE NOCASE",
     )
     .fetch_all(pool)
@@ -104,6 +112,8 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<UserSummary>> {
             id: row.get("id"),
             username: row.get("username"),
             display_name: row.get("display_name"),
+            employee_id: row.get("employee_id"),
+            title: row.get("title"),
             created_at: row.get("created_at"),
         })
         .collect())
@@ -127,16 +137,18 @@ pub struct CreatedUser {
     pub reset_expires_at: i64,
 }
 
-/// Creates a user with no capability grants and no usable password — the
-/// stored credential is the hash of a random secret nobody sees — then
-/// issues a standard administrator-origin reset code so the person's first
-/// sign-in goes through the existing reset flow. Full user administration
-/// is a later milestone; this exists so training can be assigned.
+/// Creates a user with the role bundle's capability grants and no usable
+/// password — the stored credential is the hash of a random secret nobody
+/// sees — then issues a standard administrator-origin reset code so the
+/// person's first sign-in goes through the existing reset flow.
 pub async fn create_with_reset_code(
     pool: &SqlitePool,
     actor_user_id: i64,
     username: &str,
     display_name: &str,
+    employee_id: &str,
+    title: &str,
+    role: capabilities::RoleBundle,
 ) -> Result<std::result::Result<CreatedUser, CreateUserRefusal>> {
     let username = username.trim();
     let display_name = {
@@ -147,6 +159,8 @@ pub async fn create_with_reset_code(
             trimmed
         }
     };
+    let employee_id = employee_id.trim();
+    let title = title.trim();
     if username.is_empty() {
         return Ok(Err(CreateUserRefusal::UsernameInvalid(
             "a username is required",
@@ -166,7 +180,16 @@ pub async fn create_with_reset_code(
     let password_hash = secrets::hash_password(&unusable.raw)?;
 
     let mut tx = pool.begin().await?;
-    let user_id = create(&mut tx, username, display_name, &password_hash).await?;
+    let user_id = create(
+        &mut tx,
+        username,
+        display_name,
+        employee_id,
+        title,
+        &password_hash,
+    )
+    .await?;
+    capabilities::grant_bundle(&mut tx, user_id, role.capabilities(), Some(actor_user_id)).await?;
     audit::record(
         &mut *tx,
         EventKind::UserCreated,

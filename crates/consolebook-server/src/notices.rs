@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use serde::Serialize;
-use sqlx::{Row, SqlitePool};
+use sqlx::{Executor, Row, Sqlite, SqlitePool};
 use time::OffsetDateTime;
 
 use crate::capabilities::Capability;
@@ -16,6 +16,7 @@ use crate::capabilities::Capability;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeKind {
     BackupFailed,
+    AssignmentCreated,
 }
 
 impl NoticeKind {
@@ -23,6 +24,7 @@ impl NoticeKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::BackupFailed => "backup_failed",
+            Self::AssignmentCreated => "assignment_created",
         }
     }
 }
@@ -65,6 +67,29 @@ pub async fn notify_capability_holders(
     .await
     .context("creating notices")?;
     Ok(result.rows_affected())
+}
+
+/// Notifies one recipient. Workflow notices name the person they concern
+/// and ride the transaction of the action they announce, so a rolled-back
+/// action never leaves a notice behind.
+pub async fn notify_user<'e>(
+    executor: impl Executor<'e, Database = Sqlite>,
+    user_id: i64,
+    kind: NoticeKind,
+    message: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO notice (user_id, kind, message, created_at)
+         VALUES (?1, ?2, ?3, ?4)",
+    )
+    .bind(user_id)
+    .bind(kind.as_str())
+    .bind(message)
+    .bind(OffsetDateTime::now_utc().unix_timestamp())
+    .execute(executor)
+    .await
+    .context("creating notice")?;
+    Ok(())
 }
 
 /// The recipient's notices, unread first, newest first within each group.

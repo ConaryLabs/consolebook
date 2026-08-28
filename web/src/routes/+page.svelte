@@ -8,9 +8,12 @@
 		issueResetCode,
 		logout,
 		markNoticeRead,
+		myAssignments,
+		type AssignedTrainee,
 		type CreatedUser,
 		type Health,
-		type Notice
+		type Notice,
+		type Role
 	} from '$lib/api';
 	import { instant } from '$lib/format';
 	import type { ShellData } from './+layout';
@@ -23,9 +26,13 @@
 	let canManageUsers = $derived(
 		data.session?.capabilities.includes('manage_users') ?? false
 	);
+	let canViewAssigned = $derived(
+		data.session?.capabilities.includes('view_assigned_records') ?? false
+	);
 
 	let health: Health | null = $state(null);
 	let notices: Notice[] = $state([]);
+	let assigned: AssignedTrainee[] = $state([]);
 	$effect(() => {
 		getHealth().then(
 			(h) => (health = h),
@@ -35,6 +42,12 @@
 			(body) => (notices = body.notices),
 			() => (notices = [])
 		);
+		if (canViewAssigned) {
+			myAssignments().then(
+				(body) => (assigned = body.assignments),
+				() => (assigned = [])
+			);
+		}
 	});
 
 	async function acknowledge(notice: Notice) {
@@ -72,6 +85,9 @@
 
 	let newUsername = $state('');
 	let newDisplayName = $state('');
+	let newEmployeeId = $state('');
+	let newTitle = $state('');
+	let newRole: Role = $state('trainee');
 	let created: CreatedUser | null = $state(null);
 	let createError = $state('');
 
@@ -81,9 +97,18 @@
 		created = null;
 		busy = true;
 		try {
-			created = await createUser(newUsername, newDisplayName);
+			created = await createUser({
+				username: newUsername,
+				display_name: newDisplayName,
+				employee_id: newEmployeeId,
+				title: newTitle,
+				role: newRole
+			});
 			newUsername = '';
 			newDisplayName = '';
+			newEmployeeId = '';
+			newTitle = '';
+			newRole = 'trainee';
 		} catch (err) {
 			createError =
 				err instanceof ApiError ? err.message : 'the server could not be reached';
@@ -136,19 +161,62 @@
 	{/if}
 </section>
 
+{#if canViewAssigned}
+	<section class="card">
+		<h2>My trainees</h2>
+		{#if assigned.length === 0}
+			<p class="quiet">No active training assignments.</p>
+		{:else}
+			<table class="grid">
+				<thead>
+					<tr>
+						<th>Trainee</th>
+						<th>Program</th>
+						<th>Assigned</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each assigned as row (row.assignment_id)}
+						<tr>
+							<td>
+								<a href={`/enrollments/${row.enrollment_id}`}>
+									{row.trainee_display_name}
+								</a>
+							</td>
+							<td>{row.program_name} — v{row.version_number}</td>
+							<td>{instant(row.assigned_at)}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		{/if}
+	</section>
+{/if}
+
 {#if canManageUsers}
 	<section class="card">
 		<h2>Create a user</h2>
 		<p>
-			The account starts with no capabilities and no password. Relay the
-			one-time code below; their first sign-in sets a password through the
-			reset page.
+			The account starts with the chosen role's capabilities and no password.
+			Relay the one-time code below; their first sign-in sets a password
+			through the reset page.
 		</p>
 		<form onsubmit={addUser}>
 			<label for="new-username">New username</label>
 			<input id="new-username" required bind:value={newUsername} />
 			<label for="new-display-name">Display name</label>
 			<input id="new-display-name" bind:value={newDisplayName} />
+			<label for="new-role">Role</label>
+			<select id="new-role" bind:value={newRole}>
+				<option value="trainee">Trainee (no capabilities yet)</option>
+				<option value="trainer">Trainer</option>
+				<option value="coordinator">Coordinator</option>
+				<option value="administrator">Administrator</option>
+			</select>
+			<label for="new-employee-id">Employee identifier</label>
+			<input id="new-employee-id" bind:value={newEmployeeId} />
+			<label for="new-title">Title</label>
+			<input id="new-title" bind:value={newTitle} />
 			{#if createError}
 				<p class="error" role="alert">{createError}</p>
 			{/if}
