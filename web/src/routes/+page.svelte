@@ -10,6 +10,7 @@
 		type Health,
 		type Notice
 	} from '$lib/api';
+	import { instant } from '$lib/format';
 	import type { ShellData } from './+layout';
 
 	let { data }: { data: ShellData } = $props();
@@ -45,10 +46,6 @@
 		$state(null);
 	let issueError = $state('');
 	let busy = $state(false);
-
-	function instant(unixSeconds: number): string {
-		return new Date(unixSeconds * 1000).toLocaleString();
-	}
 
 	async function signOut() {
 		await logout();

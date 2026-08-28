@@ -11,6 +11,12 @@
 		{#if data.instance.agency}
 			<span class="agency">{data.instance.agency}</span>
 		{/if}
+		{#if data.session}
+			<nav class="primary" aria-label="Primary">
+				<a href="/">Home</a>
+				<a href="/programs">Programs</a>
+			</nav>
+		{/if}
 		{#if data.unreadNotices > 0}
 			<span class="badge" aria-label="{data.unreadNotices} unread notices">
 				{data.unreadNotices}
@@ -72,10 +78,26 @@
 		padding: 0.1rem 0.55rem;
 		align-self: center;
 	}
+	nav.primary {
+		display: flex;
+		gap: 1rem;
+		margin-left: 1rem;
+		font-size: 0.95rem;
+	}
+	nav.primary a {
+		color: #f2f5fa;
+		text-decoration: none;
+		opacity: 0.85;
+	}
+	nav.primary a:hover {
+		opacity: 1;
+		text-decoration: underline;
+	}
 	main {
 		flex: 1;
 		width: 100%;
-		max-width: 44rem;
+		/* Wide enough for authoring tables; forms cap themselves at 44rem. */
+		max-width: 64rem;
 		margin: 0 auto;
 		padding: 2rem 1.25rem 3rem;
 	}
@@ -100,6 +122,19 @@
 		border-radius: 8px;
 		padding: 1.5rem;
 		margin: 0 0 1.25rem;
+		max-width: 44rem;
+	}
+	/* A card that uses the full authoring width. */
+	:global(section.panel) {
+		background: light-dark(#ffffff, #1f232c);
+		border: 1px solid light-dark(#d8dce3, #303642);
+		border-radius: 8px;
+		padding: 1.5rem;
+		margin: 0 0 1.25rem;
+	}
+	:global(section.panel h2) {
+		font-size: 1.1rem;
+		margin: 0 0 0.75rem;
 	}
 	:global(label) {
 		display: block;
@@ -107,7 +142,9 @@
 		font-size: 0.9rem;
 		margin: 0 0 0.25rem;
 	}
-	:global(input) {
+	:global(input),
+	:global(select),
+	:global(textarea) {
 		width: 100%;
 		font: inherit;
 		padding: 0.5rem 0.65rem;
@@ -117,7 +154,17 @@
 		background: light-dark(#ffffff, #141821);
 		color: inherit;
 	}
+	:global(textarea) {
+		resize: vertical;
+		min-height: 4.5rem;
+	}
+	:global(input[type='checkbox']) {
+		width: auto;
+		margin: 0;
+	}
 	:global(input:focus-visible),
+	:global(select:focus-visible),
+	:global(textarea:focus-visible),
 	:global(button:focus-visible),
 	:global(a:focus-visible) {
 		outline: 3px solid #4c8dff;
@@ -141,6 +188,60 @@
 	:global(button:disabled) {
 		opacity: 0.6;
 		cursor: default;
+	}
+	:global(button.small) {
+		padding: 0.3rem 0.7rem;
+		font-size: 0.85rem;
+	}
+	:global(table.grid) {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.95rem;
+	}
+	:global(table.grid th),
+	:global(table.grid td) {
+		text-align: left;
+		padding: 0.5rem 0.75rem;
+		border-bottom: 1px solid light-dark(#e3e6eb, #2a303b);
+		vertical-align: middle;
+	}
+	:global(table.grid th) {
+		font-size: 0.85rem;
+		opacity: 0.8;
+	}
+	:global(.pill) {
+		display: inline-block;
+		font-size: 0.78rem;
+		font-weight: 700;
+		border-radius: 999px;
+		padding: 0.1rem 0.6rem;
+		background: light-dark(#e7ebf1, #2a303b);
+	}
+	:global(.pill.published) {
+		background: light-dark(#dcefdd, #1e3524);
+		color: light-dark(#1e5c28, #9fd3a8);
+	}
+	:global(.pill.draft) {
+		background: light-dark(#fdf1d7, #3b301e);
+		color: light-dark(#7a5410, #e4c26d);
+	}
+	:global(div.row) {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+		margin: 0 0 0.5rem;
+	}
+	:global(div.row input),
+	:global(div.row select) {
+		margin: 0;
+	}
+	:global(ul.problems) {
+		background: light-dark(#fbe9e9, #3a1d20);
+		border: 1px solid light-dark(#e4b4b4, #7c3b41);
+		border-radius: 6px;
+		padding: 0.6rem 0.8rem 0.6rem 1.8rem;
+		font-size: 0.92rem;
+		margin: 0 0 1rem;
 	}
 	:global(p.error) {
 		background: light-dark(#fbe9e9, #3a1d20);
