@@ -79,6 +79,123 @@ pub async fn create(
     Ok(result.last_insert_rowid())
 }
 
+/// A user as listed for rosters; never carries the password hash.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct UserSummary {
+    pub id: i64,
+    pub username: String,
+    pub display_name: String,
+    pub created_at: i64,
+}
+
+/// Every user, ordered by display name. Capability checks are the
+/// caller's responsibility.
+pub async fn list(pool: &SqlitePool) -> Result<Vec<UserSummary>> {
+    let rows = sqlx::query(
+        "SELECT id, username, display_name, created_at FROM user
+         ORDER BY display_name COLLATE NOCASE, username COLLATE NOCASE",
+    )
+    .fetch_all(pool)
+    .await
+    .context("listing users")?;
+    Ok(rows
+        .iter()
+        .map(|row| UserSummary {
+            id: row.get("id"),
+            username: row.get("username"),
+            display_name: row.get("display_name"),
+            created_at: row.get("created_at"),
+        })
+        .collect())
+}
+
+/// Why creating a user was refused.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CreateUserRefusal {
+    UsernameInvalid(&'static str),
+    UsernameTaken,
+}
+
+/// A newly created user and the one-time reset code that lets them set
+/// their first password through the standard reset flow.
+#[derive(Debug)]
+pub struct CreatedUser {
+    pub id: i64,
+    pub username: String,
+    pub display_name: String,
+    pub reset_code: OpaqueSecret,
+    pub reset_expires_at: i64,
+}
+
+/// Creates a user with no capability grants and no usable password — the
+/// stored credential is the hash of a random secret nobody sees — then
+/// issues a standard administrator-origin reset code so the person's first
+/// sign-in goes through the existing reset flow. Full user administration
+/// is a later milestone; this exists so training can be assigned.
+pub async fn create_with_reset_code(
+    pool: &SqlitePool,
+    actor_user_id: i64,
+    username: &str,
+    display_name: &str,
+) -> Result<std::result::Result<CreatedUser, CreateUserRefusal>> {
+    let username = username.trim();
+    let display_name = {
+        let trimmed = display_name.trim();
+        if trimmed.is_empty() {
+            username
+        } else {
+            trimmed
+        }
+    };
+    if username.is_empty() {
+        return Ok(Err(CreateUserRefusal::UsernameInvalid(
+            "a username is required",
+        )));
+    }
+    if username.len() > 64 {
+        return Ok(Err(CreateUserRefusal::UsernameInvalid(
+            "usernames are at most 64 characters",
+        )));
+    }
+    if find_by_username(pool, username).await?.is_some() {
+        return Ok(Err(CreateUserRefusal::UsernameTaken));
+    }
+    // Hash outside the transaction: Argon2 work should not hold a write
+    // transaction open. The plain value is dropped unrecorded.
+    let unusable = secrets::generate_one_time_code()?;
+    let password_hash = secrets::hash_password(&unusable.raw)?;
+
+    let mut tx = pool.begin().await?;
+    let user_id = create(&mut tx, username, display_name, &password_hash).await?;
+    audit::record(
+        &mut *tx,
+        EventKind::UserCreated,
+        Some(actor_user_id),
+        Some(user_id),
+    )
+    .await?;
+    tx.commit().await?;
+
+    let issued = issue_reset_code(
+        pool,
+        username,
+        ResetOrigin::Administrator {
+            issued_by: actor_user_id,
+        },
+    )
+    .await?
+    .map_err(|refusal| {
+        anyhow::anyhow!("issuing the initial reset code was refused: {refusal:?}")
+    })?;
+    Ok(Ok(CreatedUser {
+        id: user_id,
+        username: issued.user.username,
+        display_name: issued.user.display_name,
+        reset_code: issued.code,
+        reset_expires_at: issued.expires_at,
+    }))
+}
+
 /// How a reset code came to exist; recorded on the code and in audit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetOrigin {

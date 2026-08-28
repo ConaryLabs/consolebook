@@ -105,6 +105,24 @@ test('author, publish, and compare a program version', async ({ page }) => {
 	await expect(page.getByLabel('Version label')).toBeDisabled();
 	await expect(page.getByRole('button', { name: 'Save draft' })).toHaveCount(0);
 
+	// Create a trainee from the status page and enroll them here.
+	await page.getByRole('link', { name: 'Home' }).click();
+	await page.getByLabel('New username').fill('jordan.trainee');
+	await page.getByLabel('Display name').fill('Jordan Trainee');
+	await page.getByRole('button', { name: 'Create user' }).click();
+	await expect(page.getByText('First sign-in code:')).toBeVisible();
+
+	await page.getByRole('link', { name: 'Programs' }).click();
+	await page.getByRole('link', { name: 'Example County CTO Program' }).click();
+	await page.getByRole('link', { name: 'v1' }).click();
+	await expect(page.getByRole('heading', { name: 'Enrollments' })).toBeVisible();
+	await expect(page.getByText('Nobody is enrolled in this version yet.')).toBeVisible();
+	await page
+		.getByLabel('Trainee to enroll')
+		.selectOption({ label: 'Jordan Trainee (jordan.trainee)' });
+	await page.getByRole('button', { name: 'Enroll' }).click();
+	await expect(page.getByRole('cell', { name: 'Jordan Trainee' })).toBeVisible();
+
 	// The versions table shows it published, with an export download.
 	await page.getByRole('link', { name: 'Back to versions' }).click();
 	await expect(page.getByText(/^Published /)).toBeVisible();

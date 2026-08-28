@@ -589,6 +589,7 @@ pub(crate) async fn insert_program(
         &mut **tx,
         EventKind::ProgramCreated,
         Some(actor_user_id),
+        None,
         Subject::Program(program_id),
     )
     .await?;
@@ -741,6 +742,7 @@ pub(crate) async fn insert_version(
         &mut **tx,
         kind,
         Some(actor_user_id),
+        None,
         Subject::ProgramVersion(version_id),
     )
     .await?;
@@ -833,6 +835,7 @@ pub async fn publish_version(
         &mut *tx,
         EventKind::ProgramVersionPublished,
         Some(actor_user_id),
+        None,
         Subject::ProgramVersion(version_id),
     )
     .await?;
@@ -866,6 +869,7 @@ pub async fn discard_draft(
         &mut *tx,
         EventKind::ProgramVersionDiscarded,
         Some(actor_user_id),
+        None,
         Subject::ProgramVersion(version_id),
     )
     .await?;

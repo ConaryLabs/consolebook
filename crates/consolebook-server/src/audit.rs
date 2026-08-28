@@ -26,6 +26,8 @@ pub enum EventKind {
     ProgramVersionPublished,
     ProgramVersionImported,
     ProgramVersionDiscarded,
+    UserCreated,
+    EnrollmentCreated,
 }
 
 impl EventKind {
@@ -46,6 +48,8 @@ impl EventKind {
             Self::ProgramVersionPublished => "program_version_published",
             Self::ProgramVersionImported => "program_version_imported",
             Self::ProgramVersionDiscarded => "program_version_discarded",
+            Self::UserCreated => "user_created",
+            Self::EnrollmentCreated => "enrollment_created",
         }
     }
 }
@@ -57,6 +61,7 @@ impl EventKind {
 pub enum Subject {
     Program(i64),
     ProgramVersion(i64),
+    Enrollment(i64),
 }
 
 impl Subject {
@@ -65,13 +70,14 @@ impl Subject {
         match self {
             Self::Program(_) => "program",
             Self::ProgramVersion(_) => "program_version",
+            Self::Enrollment(_) => "enrollment",
         }
     }
 
     #[must_use]
     pub fn id(self) -> i64 {
         match self {
-            Self::Program(id) | Self::ProgramVersion(id) => id,
+            Self::Program(id) | Self::ProgramVersion(id) | Self::Enrollment(id) => id,
         }
     }
 }
@@ -98,22 +104,26 @@ pub async fn record<'e>(
     Ok(())
 }
 
-/// Records one event about a domain subject. Callers inside a transaction
+/// Records one event about a domain subject, optionally also naming the
+/// person it concerns (`subject_user_id`). Callers inside a transaction
 /// pass the transaction so the event commits or rolls back with the action
 /// it describes.
 pub async fn record_for_subject<'e>(
     executor: impl Executor<'e, Database = Sqlite>,
     kind: EventKind,
     actor_user_id: Option<i64>,
+    subject_user_id: Option<i64>,
     subject: Subject,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO audit_event (occurred_at, kind, actor_user_id, subject_kind, subject_id)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO audit_event
+             (occurred_at, kind, actor_user_id, subject_user_id, subject_kind, subject_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )
     .bind(OffsetDateTime::now_utc().unix_timestamp())
     .bind(kind.as_str())
     .bind(actor_user_id)
+    .bind(subject_user_id)
     .bind(subject.kind_str())
     .bind(subject.id())
     .execute(executor)

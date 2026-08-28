@@ -14,6 +14,7 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post, put};
 use serde::{Deserialize, Serialize};
 
+use crate::enrollments::{self, EnrollRefusal};
 use crate::http::{ApiError, AppState, CurrentUser};
 use crate::program_export::{self, ImportRefusal, ImportTarget};
 use crate::programs::{
@@ -40,6 +41,10 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/program-versions/{id}/content", put(replace_content))
         .route("/api/program-versions/{id}/publish", post(publish_version))
         .route("/api/program-versions/{id}/export", get(export_version))
+        .route(
+            "/api/program-versions/{id}/enrollments",
+            get(list_enrollments).post(create_enrollment),
+        )
 }
 
 // ------------------------------------------------------ refusal mapping
@@ -259,6 +264,70 @@ async fn discard_version(
     match programs::discard_draft(&state.pool, current.user.id, version_id).await? {
         Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
         Err(refusal) => Err(author_refusal(refusal)),
+    }
+}
+
+// ---------------------------------------------------------- enrollments
+
+fn enroll_refusal(refusal: &EnrollRefusal) -> ApiError {
+    match refusal {
+        EnrollRefusal::CapabilityRequired => ApiError::new(
+            StatusCode::FORBIDDEN,
+            "capability_required",
+            "enrollment requires the assign_training capability",
+        ),
+        EnrollRefusal::NoSuchVersion => no_such_version(),
+        EnrollRefusal::NotPublished => ApiError::new(
+            StatusCode::CONFLICT,
+            "not_published",
+            "enrollments pin published program versions",
+        ),
+        EnrollRefusal::NoSuchUser => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "no_such_user",
+            "no user with that id",
+        ),
+        EnrollRefusal::AlreadyEnrolled => ApiError::new(
+            StatusCode::CONFLICT,
+            "already_enrolled",
+            "that user is already enrolled in this version",
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct EnrollRequest {
+    user_id: i64,
+}
+
+async fn create_enrollment(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(version_id): Path<i64>,
+    Json(req): Json<EnrollRequest>,
+) -> Result<Response, ApiError> {
+    match enrollments::enroll(&state.pool, current.user.id, version_id, req.user_id).await? {
+        Ok(id) => {
+            let body = serde_json::json!({ "id": id });
+            Ok((StatusCode::CREATED, Json(body)).into_response())
+        }
+        Err(refusal) => Err(enroll_refusal(&refusal)),
+    }
+}
+
+#[derive(Serialize)]
+struct EnrolleesBody {
+    enrollees: Vec<enrollments::Enrollee>,
+}
+
+async fn list_enrollments(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(version_id): Path<i64>,
+) -> Result<Json<EnrolleesBody>, ApiError> {
+    match enrollments::list_for_version(&state.pool, current.user.id, version_id).await? {
+        Ok(enrollees) => Ok(Json(EnrolleesBody { enrollees })),
+        Err(refusal) => Err(enroll_refusal(&refusal)),
     }
 }
 

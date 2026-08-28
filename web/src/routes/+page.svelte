@@ -2,11 +2,13 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import {
 		ApiError,
+		createUser,
 		getHealth,
 		getNotices,
 		issueResetCode,
 		logout,
 		markNoticeRead,
+		type CreatedUser,
 		type Health,
 		type Notice
 	} from '$lib/api';
@@ -67,6 +69,28 @@
 			busy = false;
 		}
 	}
+
+	let newUsername = $state('');
+	let newDisplayName = $state('');
+	let created: CreatedUser | null = $state(null);
+	let createError = $state('');
+
+	async function addUser(event: SubmitEvent) {
+		event.preventDefault();
+		createError = '';
+		created = null;
+		busy = true;
+		try {
+			created = await createUser(newUsername, newDisplayName);
+			newUsername = '';
+			newDisplayName = '';
+		} catch (err) {
+			createError =
+				err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
 </script>
 
 <h1>Installation status</h1>
@@ -113,6 +137,32 @@
 </section>
 
 {#if canManageUsers}
+	<section class="card">
+		<h2>Create a user</h2>
+		<p>
+			The account starts with no capabilities and no password. Relay the
+			one-time code below; their first sign-in sets a password through the
+			reset page.
+		</p>
+		<form onsubmit={addUser}>
+			<label for="new-username">New username</label>
+			<input id="new-username" required bind:value={newUsername} />
+			<label for="new-display-name">Display name</label>
+			<input id="new-display-name" bind:value={newDisplayName} />
+			{#if createError}
+				<p class="error" role="alert">{createError}</p>
+			{/if}
+			{#if created}
+				<p class="code-out">
+					Created <strong>{created.username}</strong>. First sign-in code:
+					<code>{created.reset_code}</code>
+					(valid until {instant(created.reset_expires_at)})
+				</p>
+			{/if}
+			<button type="submit" disabled={busy}>Create user</button>
+		</form>
+	</section>
+
 	<section class="card">
 		<h2>Issue a password reset code</h2>
 		<p>

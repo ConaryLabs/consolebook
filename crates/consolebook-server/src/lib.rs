@@ -8,6 +8,7 @@ pub mod backup;
 pub mod capabilities;
 pub mod data_dir;
 pub mod doctor;
+pub mod enrollments;
 pub mod http;
 pub mod notices;
 pub mod program_export;

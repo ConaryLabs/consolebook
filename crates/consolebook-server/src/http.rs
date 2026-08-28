@@ -49,6 +49,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/session", get(current_session))
         .route("/api/auth/reset-codes", post(issue_reset_code))
         .route("/api/auth/reset", post(reset_password))
+        .route("/api/users", get(list_users).post(create_user))
         .route("/api/notices", get(list_notices))
         .route("/api/notices/{id}/read", post(mark_notice_read))
         .merge(crate::programs_http::routes())
@@ -454,6 +455,85 @@ async fn reset_password(
             reason,
         )),
     }
+}
+
+// ---------------------------------------------------------------- users
+
+#[derive(Deserialize)]
+struct CreateUserRequest {
+    username: String,
+    #[serde(default)]
+    display_name: String,
+}
+
+/// Creates a user with no capabilities and returns the one-time reset
+/// code their first sign-in redeems. Full user administration is a later
+/// milestone; this exists so training can be assigned.
+async fn create_user(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Json(req): Json<CreateUserRequest>,
+) -> Result<Response, ApiError> {
+    if !capabilities::user_has(&state.pool, current.user.id, Capability::ManageUsers).await? {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "capability_required",
+            "creating users requires the manage_users capability",
+        ));
+    }
+    let created = users::create_with_reset_code(
+        &state.pool,
+        current.user.id,
+        &req.username,
+        &req.display_name,
+    )
+    .await?;
+    match created {
+        Ok(created) => {
+            let body = serde_json::json!({
+                "id": created.id,
+                "username": created.username,
+                "display_name": created.display_name,
+                "reset_code": created.reset_code.raw,
+                "reset_expires_at": created.reset_expires_at,
+            });
+            Ok((StatusCode::CREATED, Json(body)).into_response())
+        }
+        Err(users::CreateUserRefusal::UsernameInvalid(reason)) => Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "username_invalid",
+            reason,
+        )),
+        Err(users::CreateUserRefusal::UsernameTaken) => Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "username_taken",
+            "a user with that username already exists",
+        )),
+    }
+}
+
+#[derive(Serialize)]
+struct UsersBody {
+    users: Vec<users::UserSummary>,
+}
+
+/// The roster, for user management and training assignment.
+async fn list_users(
+    State(state): State<AppState>,
+    current: CurrentUser,
+) -> Result<Json<UsersBody>, ApiError> {
+    let allowed = capabilities::user_has(&state.pool, current.user.id, Capability::ManageUsers)
+        .await?
+        || capabilities::user_has(&state.pool, current.user.id, Capability::AssignTraining).await?;
+    if !allowed {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "capability_required",
+            "listing users requires the manage_users or assign_training capability",
+        ));
+    }
+    let users = users::list(&state.pool).await?;
+    Ok(Json(UsersBody { users }))
 }
 
 // -------------------------------------------------------------- notices
