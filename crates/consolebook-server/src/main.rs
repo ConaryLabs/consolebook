@@ -97,6 +97,11 @@ async fn serve(data_dir: &std::path::Path, bind: SocketAddr) -> Result<ExitCode>
         "starting Consolebook (pre-alpha)"
     );
 
+    if !consolebook_server::web_assets::embedded() {
+        tracing::warn!(
+            "this build does not embed the web interface; build web/ (npm ci && npm run build) before cargo for a complete executable"
+        );
+    }
     if let Some((code, expires_at)) = setup::issue_setup_code(&pool).await? {
         // The one deliberate secret in the log: the operator needs it to
         // complete first-run setup, and it is useless once setup completes

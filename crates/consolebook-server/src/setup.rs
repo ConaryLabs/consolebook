@@ -16,11 +16,15 @@ use crate::users;
 
 /// Whether the installation has completed first-run setup.
 pub async fn is_initialized(pool: &SqlitePool) -> Result<bool> {
-    let row: Option<i64> = sqlx::query_scalar("SELECT 1 FROM agency WHERE id = 1")
+    Ok(agency_name(pool).await?.is_some())
+}
+
+/// The configured agency name; `None` until first-run setup completes.
+pub async fn agency_name(pool: &SqlitePool) -> Result<Option<String>> {
+    sqlx::query_scalar("SELECT name FROM agency WHERE id = 1")
         .fetch_optional(pool)
         .await
-        .context("checking initialization state")?;
-    Ok(row.is_some())
+        .context("checking initialization state")
 }
 
 /// Issues a fresh setup code for an uninitialized installation, replacing
