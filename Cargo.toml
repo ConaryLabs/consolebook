@@ -1,0 +1,13 @@
+[workspace]
+members = ["crates/consolebook-server"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+repository = "https://github.com/ConaryLabs/consolebook"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }

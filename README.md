@@ -1,0 +1,63 @@
+# Consolebook
+
+Consolebook is an early-stage training-record system for emergency communications centers. The initial focus is structured training programs, Daily Observation Reports, weekly summaries, task signoffs, acknowledgments, amendments, and defensible exports.
+
+> **Status:** pre-alpha design and scaffolding. There is no usable application yet. Do not put production or personnel data into this repository or any current build.
+
+## Product goals
+
+- Programs and agency terminology are versioned configuration.
+- Training sessions and evaluation records remain separate concepts.
+- Daily reports, weekly summaries, and phase evaluations have explicit provenance.
+- Finalized records are immutable; corrections create successor versions.
+- Acknowledgment records receipt rather than agreement.
+- Assignment-scoped access is the default.
+- Backups, recovery, and complete exports are product features.
+- A small center can operate one installation without a pile of external services.
+
+## Non-goals
+
+- A multi-tenant schema in the core application.
+- A generic drag-and-drop form builder.
+- Agency-specific code paths.
+- Cloud services, telemetry, or containers as runtime requirements.
+- Editing finalized records in place.
+
+## Architecture baseline
+
+The current design target is a modular monolith:
+
+- Rust and Axum for the application and HTTP API
+- SQLx with SQLite in WAL mode for storage
+- a statically built SvelteKit interface embedded in the executable
+- Typst for deterministic PDF output
+- opaque server-side sessions with Argon2id password hashes
+- one executable and one data directory per installation
+
+The checked-in Rust crate is only a buildable placeholder. Dependencies will be added when the first vertical slice is designed.
+
+## Repository map
+
+- [PRINCIPLES.md](PRINCIPLES.md) — non-negotiable product constraints
+- [docs/architecture.md](docs/architecture.md) — proposed system boundaries
+- [docs/domain-model.md](docs/domain-model.md) — domain vocabulary and invariants
+- [docs/records-integrity.md](docs/records-integrity.md) — immutability, hashes, and provenance
+- [docs/roadmap.md](docs/roadmap.md) — milestone sequence
+- [docs/decisions/](docs/decisions/) — architecture decision records
+- [crates/consolebook-server/](crates/consolebook-server/) — minimal Rust bootstrap
+
+## Build the placeholder
+
+```sh
+cargo run -p consolebook-server
+```
+
+It prints a pre-alpha notice and does nothing else. A rare piece of software that is completely honest about its productivity.
+
+## Privacy
+
+Examples and test fixtures must be invented. Do not commit real agency names, employee information, operational narratives, credentials, exports, screenshots, or training records.
+
+## License
+
+A project license has not been selected yet. The repository is public for early design work, but redistribution terms will be established before the first release.

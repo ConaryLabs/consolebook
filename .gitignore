@@ -1,0 +1,15 @@
+/target/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+data/
+backups/
+exports/
+.DS_Store
+.idea/
+.vscode/
