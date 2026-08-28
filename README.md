@@ -35,7 +35,7 @@ The current design target is a modular monolith:
 - opaque server-side sessions with Argon2id password hashes
 - one executable and one data directory per installation
 
-The checked-in Rust crate is only a buildable placeholder. Dependencies will be added when the first vertical slice is designed.
+The server crate implements the beginnings of the Milestone 1 operable shell: a CLI, SQLite storage with verified connection invariants and embedded migrations, a health endpoint, diagnostics, and validated backups. There is no authentication, web interface, or domain model yet.
 
 ## Repository map
 
@@ -45,15 +45,20 @@ The checked-in Rust crate is only a buildable placeholder. Dependencies will be 
 - [docs/records-integrity.md](docs/records-integrity.md) — immutability, hashes, and provenance
 - [docs/roadmap.md](docs/roadmap.md) — milestone sequence
 - [docs/decisions/](docs/decisions/) — architecture decision records
-- [crates/consolebook-server/](crates/consolebook-server/) — minimal Rust bootstrap
+- [crates/consolebook-server/](crates/consolebook-server/) — the server crate
 
-## Build the placeholder
+## Build and run
 
 ```sh
-cargo run -p consolebook-server
+cargo run -p consolebook-server -- serve          # initialize ./data and serve the API
+cargo run -p consolebook-server -- doctor         # diagnose an installation, read-only
+cargo run -p consolebook-server -- backup         # validated snapshot into ./data/backups
 ```
 
-It prints a pre-alpha notice and does nothing else. A rare piece of software that is completely honest about its productivity.
+`serve` binds `127.0.0.1:7770` by default and answers `GET /api/health`. The
+data directory defaults to `./data` and can be set with `--data-dir` or
+`CONSOLEBOOK_DATA_DIR`. See [ADR 0003](docs/decisions/0003-sqlite-connection-invariants.md)
+for the database durability decisions.
 
 ## Privacy
 
