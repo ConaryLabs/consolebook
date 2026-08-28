@@ -49,7 +49,10 @@ derived from the stream, never stored beside it.
 Changing an enrollment's pinned version is a modeled event: the pin
 UPDATE is accepted by the database only when the latest event for that
 enrollment records exactly that change, replacing migration 0005's
-blanket refusal. Re-enrollment is expressed as reinstate; the
+blanket refusal. A version change stays within the enrollment's
+continuing program — moving programs is a new enrollment — and is
+refused with a typed conflict when the trainee already has an enrollment
+pinning the target version. Re-enrollment is expressed as reinstate; the
 one-row-per-(user, version) uniqueness stays until a real center
 demonstrates the need to relax it.
 
@@ -73,8 +76,11 @@ pinned transition graph — advance follows advance or skip edges, return
 follows remediation, restart follows restart, entry may target any phase
 of the pinned version — plus the pause state machine, required reasons
 for return and restart, and `assign_training` gating, all covered by
-tests. After a version change the trainee re-enters the new version's
-graph; history recorded under the earlier pin keeps its phases.
+tests. Every version change opens a fresh pin epoch, stamped on each
+phase event by the database: current phase and pause derive only from
+the current epoch, so state never resurrects across a version change —
+even back to a previously pinned version — while history recorded under
+earlier pins keeps its phases.
 
 ### Training sessions (slice 2)
 

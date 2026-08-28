@@ -14,6 +14,7 @@ use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 
 use crate::assignments::{self, AssignRefusal};
+use crate::capabilities::{self, Capability};
 use crate::http::{ApiError, AppState, CurrentUser};
 use crate::lifecycle::{self, EnrollmentEventKind, LifecycleRefusal, PhaseEventKind};
 
@@ -76,6 +77,16 @@ fn lifecycle_refusal(refusal: &LifecycleRefusal) -> ApiError {
             StatusCode::CONFLICT,
             "same_version",
             "the enrollment already pins that version",
+        ),
+        LifecycleRefusal::DifferentProgram => ApiError::new(
+            StatusCode::CONFLICT,
+            "different_program",
+            "a version change stays within the enrollment's program; changing programs is a new enrollment",
+        ),
+        LifecycleRefusal::TargetAlreadyEnrolled => ApiError::new(
+            StatusCode::CONFLICT,
+            "already_enrolled",
+            "the trainee already has an enrollment pinning that version",
         ),
         LifecycleRefusal::NoSuchPhase => ApiError::new(
             StatusCode::NOT_FOUND,
@@ -282,11 +293,27 @@ struct MyAssignmentsBody {
     assignments: Vec<assignments::AssignedTrainee>,
 }
 
-/// The caller's own active assignments — the trainer's "my trainees" view.
+/// The caller's own active assignments — the trainer's "my trainees"
+/// view. Being assigned grants nothing by itself: reading trainee
+/// identities takes `view_assigned_records`, the same capability the
+/// enrollment detail requires (PRINCIPLES.md 10).
 async fn my_assignments(
     State(state): State<AppState>,
     current: CurrentUser,
 ) -> Result<Json<MyAssignmentsBody>, ApiError> {
+    if !capabilities::user_has(
+        &state.pool,
+        current.user.id,
+        Capability::ViewAssignedRecords,
+    )
+    .await?
+    {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "capability_required",
+            "listing your assignments requires the view_assigned_records capability",
+        ));
+    }
     let assignments = assignments::list_for_trainer(&state.pool, current.user.id).await?;
     Ok(Json(MyAssignmentsBody { assignments }))
 }

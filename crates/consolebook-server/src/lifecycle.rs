@@ -99,6 +99,10 @@ pub enum LifecycleRefusal {
     NotPublished,
     /// A version change must target a different version.
     SameVersion,
+    /// A version change stays within the enrollment's continuing program.
+    DifferentProgram,
+    /// The trainee already has an enrollment pinning the target version.
+    TargetAlreadyEnrolled,
     /// The phase does not belong to the enrollment's pinned version.
     NoSuchPhase,
     /// The pinned transition graph has no matching edge.
@@ -220,58 +224,101 @@ pub async fn status(
     }))
 }
 
-/// The current phase (id, name) under the enrollment's pinned version.
-/// `None` when the trainee has not entered the current version's graph —
-/// before any phase event, in a phaseless program, or after a version
-/// change (a new pin means re-entering its graph).
+/// The current phase (id, name) under the enrollment's current pin epoch.
+/// `None` when the trainee has not entered the epoch's graph — before any
+/// phase event, in a phaseless program, or after a version change (every
+/// version change opens a fresh epoch, even back to a previously pinned
+/// version).
 async fn current_phase(
     conn: &mut SqliteConnection,
     enrollment_id: i64,
 ) -> Result<Option<(i64, String)>> {
     let row = sqlx::query(
-        "SELECT pe.to_phase_id AS phase_id, p.name, p.program_version_id
+        "SELECT pe.to_phase_id AS phase_id, p.name
          FROM phase_event pe
          JOIN phase p ON p.id = pe.to_phase_id
          WHERE pe.enrollment_id = ?1 AND pe.kind IN ('advance', 'return', 'restart')
+           AND pe.version_change_event_id IS (
+               SELECT MAX(id) FROM enrollment_event
+               WHERE enrollment_id = ?1 AND kind = 'version_change')
          ORDER BY pe.effective_at DESC, pe.id DESC LIMIT 1",
     )
     .bind(enrollment_id)
     .fetch_optional(&mut *conn)
     .await
     .context("deriving current phase")?;
-    let Some(row) = row else {
-        return Ok(None);
-    };
-    let phase_version: i64 = row.get("program_version_id");
-    let pinned: i64 = sqlx::query_scalar("SELECT program_version_id FROM enrollment WHERE id = ?1")
-        .bind(enrollment_id)
-        .fetch_one(&mut *conn)
-        .await
-        .context("reading enrollment pin")?;
-    if phase_version != pinned {
-        return Ok(None);
-    }
-    Ok(Some((row.get("phase_id"), row.get("name"))))
+    Ok(row.map(|row| (row.get("phase_id"), row.get("name"))))
 }
 
-/// Whether the enrollment is paused under its current pin. A pause
-/// recorded under an earlier pin does not carry into a new version's
-/// graph, matching how the current phase resets.
+/// Whether the enrollment is paused under its current pin epoch. A pause
+/// recorded under an earlier epoch does not carry forward, matching how
+/// the current phase resets.
 async fn is_paused(conn: &mut SqliteConnection, enrollment_id: i64) -> Result<bool> {
     let latest: Option<String> = sqlx::query_scalar(
-        "SELECT pe.kind
-         FROM phase_event pe
-         JOIN phase p ON p.id = pe.from_phase_id
-         WHERE pe.enrollment_id = ?1 AND pe.kind IN ('pause', 'resume')
-           AND p.program_version_id
-               = (SELECT program_version_id FROM enrollment WHERE id = ?1)
-         ORDER BY pe.effective_at DESC, pe.id DESC LIMIT 1",
+        "SELECT kind FROM phase_event
+         WHERE enrollment_id = ?1 AND kind IN ('pause', 'resume')
+           AND version_change_event_id IS (
+               SELECT MAX(id) FROM enrollment_event
+               WHERE enrollment_id = ?1 AND kind = 'version_change')
+         ORDER BY effective_at DESC, id DESC LIMIT 1",
     )
     .bind(enrollment_id)
     .fetch_optional(&mut *conn)
     .await
     .context("deriving pause state")?;
     Ok(latest.as_deref() == Some("pause"))
+}
+
+/// Validates a version-change target: it must exist, be published, stay
+/// within the continuing program (changing programs is a new
+/// enrollment), and not collide with another enrollment's pin. Returns
+/// the refusal, or `None` when the change may proceed.
+async fn version_change_refusal(
+    tx: &mut SqliteConnection,
+    enrollment_id: i64,
+    trainee: i64,
+    from: i64,
+    to: i64,
+) -> Result<Option<LifecycleRefusal>> {
+    if to == from {
+        return Ok(Some(LifecycleRefusal::SameVersion));
+    }
+    let target = sqlx::query("SELECT published_at, program_id FROM program_version WHERE id = ?1")
+        .bind(to)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("checking version")?;
+    let Some(target) = target else {
+        return Ok(Some(LifecycleRefusal::NoSuchVersion));
+    };
+    let published: Option<i64> = target.get("published_at");
+    if published.is_none() {
+        return Ok(Some(LifecycleRefusal::NotPublished));
+    }
+    let current_program: i64 =
+        sqlx::query_scalar("SELECT program_id FROM program_version WHERE id = ?1")
+            .bind(from)
+            .fetch_one(&mut *tx)
+            .await
+            .context("reading pinned program")?;
+    let target_program: i64 = target.get("program_id");
+    if target_program != current_program {
+        return Ok(Some(LifecycleRefusal::DifferentProgram));
+    }
+    let duplicate: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM enrollment
+         WHERE user_id = ?1 AND program_version_id = ?2 AND id != ?3",
+    )
+    .bind(trainee)
+    .bind(to)
+    .bind(enrollment_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .context("checking target enrollment")?;
+    if duplicate.is_some() {
+        return Ok(Some(LifecycleRefusal::TargetAlreadyEnrolled));
+    }
+    Ok(None)
 }
 
 /// Records one enrollment lifecycle event, gated on `assign_training`.
@@ -329,19 +376,10 @@ pub async fn record_enrollment_event(
             let Some(to) = to_version_id else {
                 return Ok(Err(LifecycleRefusal::NoSuchVersion));
             };
-            if to == from {
-                return Ok(Err(LifecycleRefusal::SameVersion));
-            }
-            let published: Option<Option<i64>> =
-                sqlx::query_scalar("SELECT published_at FROM program_version WHERE id = ?1")
-                    .bind(to)
-                    .fetch_optional(&mut *tx)
-                    .await
-                    .context("checking version")?;
-            match published {
-                None => return Ok(Err(LifecycleRefusal::NoSuchVersion)),
-                Some(None) => return Ok(Err(LifecycleRefusal::NotPublished)),
-                Some(Some(_)) => {}
+            if let Some(refusal) =
+                version_change_refusal(&mut tx, enrollment_id, trainee, from, to).await?
+            {
+                return Ok(Err(refusal));
             }
             (Some(from), Some(to), EventKind::EnrollmentVersionChanged)
         }
@@ -523,8 +561,11 @@ pub async fn record_phase_event(
     let result = sqlx::query(
         "INSERT INTO phase_event
              (enrollment_id, kind, from_phase_id, to_phase_id,
-              effective_at, recorded_at, actor_user_id, reason)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+              effective_at, recorded_at, actor_user_id, reason,
+              version_change_event_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                 (SELECT MAX(id) FROM enrollment_event
+                  WHERE enrollment_id = ?1 AND kind = 'version_change'))",
     )
     .bind(enrollment_id)
     .bind(kind.as_str())

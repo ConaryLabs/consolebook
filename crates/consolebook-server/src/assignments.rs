@@ -232,8 +232,9 @@ pub async fn list_for_enrollment(pool: &SqlitePool, enrollment_id: i64) -> Resul
         .collect())
 }
 
-/// The caller's own active assignments — their own data, no capability
-/// needed beyond a session.
+/// The caller's own active assignments, with trainee identities resolved.
+/// Capability gating (`view_assigned_records`) is the caller's
+/// responsibility.
 pub async fn list_for_trainer(
     pool: &SqlitePool,
     trainer_user_id: i64,

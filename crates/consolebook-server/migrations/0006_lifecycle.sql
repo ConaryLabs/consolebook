@@ -130,6 +130,12 @@ CREATE TABLE phase_event (
     recorded_at INTEGER NOT NULL,
     actor_user_id INTEGER REFERENCES user (id),
     reason TEXT NOT NULL,
+    -- The version-change event that opened the pin epoch this event was
+    -- recorded under; NULL for the enrollment's original pin. Derived
+    -- state (current phase, pause) reads only the current epoch, so a
+    -- version change always resets it — even back to a previously pinned
+    -- version.
+    version_change_event_id INTEGER REFERENCES enrollment_event (id),
     CHECK (effective_at <= recorded_at),
     CHECK (
         CASE kind
@@ -153,6 +159,17 @@ CREATE TRIGGER phase_event_no_delete
 BEFORE DELETE ON phase_event
 BEGIN
     SELECT RAISE(ABORT, 'phase events are append-only');
+END;
+
+-- Every phase event stamps the pin epoch it was recorded under: the
+-- enrollment's latest version-change event, or NULL before any.
+CREATE TRIGGER phase_event_stamps_current_epoch
+BEFORE INSERT ON phase_event
+WHEN NEW.version_change_event_id IS NOT (
+    SELECT MAX(id) FROM enrollment_event
+    WHERE enrollment_id = NEW.enrollment_id AND kind = 'version_change')
+BEGIN
+    SELECT RAISE(ABORT, 'phase events record the enrollment''s current pin epoch');
 END;
 
 -- Domain invariant 5: referenced phases belong to the enrollment's

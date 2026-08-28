@@ -430,6 +430,21 @@ async fn assignments_scope_reads_notify_and_end() {
         StatusCode::FORBIDDEN,
         "trainee refused until Milestone 4"
     );
+    // Being assigned is not enough to read trainee identities: the mine
+    // listing takes view_assigned_records like every other scoped read.
+    let (status, _) = request(
+        fx.app(),
+        "GET",
+        "/api/assignments/mine",
+        Some(&taylor),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "mine listing requires view_assigned_records"
+    );
 
     // "My trainees" lists the active assignment, and ending it closes
     // both the list and the scoped read.
@@ -655,6 +670,40 @@ async fn enrollment_lifecycle_events_mediate_version_changes() {
         .await
         .expect("pin");
     assert_eq!(pinned, second_version, "the event repointed the pin");
+
+    // A version change stays within the continuing program…
+    let mut other_program = phased_content();
+    other_program.name = "Example County Dispatcher Academy".to_owned();
+    let (_, foreign_version) = fx.publish(None, &other_program).await;
+    let refused = lifecycle::record_enrollment_event(
+        &fx.pool,
+        fx.admin_id,
+        enrollment_id,
+        EnrollmentEventKind::VersionChange,
+        "Wrong continuing program.",
+        Some(foreign_version),
+    )
+    .await
+    .expect("call");
+    assert_eq!(refused, Err(LifecycleRefusal::DifferentProgram));
+    // …and cannot collide with another enrollment's pin: a typed
+    // refusal, never a constraint violation surfacing as a 500.
+    let (_, third_version) = fx.publish(Some(program_id), &phased_content()).await;
+    enrollments::enroll(&fx.pool, fx.admin_id, third_version, taylor_id)
+        .await
+        .expect("call")
+        .expect("enrolled");
+    let refused = lifecycle::record_enrollment_event(
+        &fx.pool,
+        fx.admin_id,
+        enrollment_id,
+        EnrollmentEventKind::VersionChange,
+        "Target collision.",
+        Some(third_version),
+    )
+    .await
+    .expect("call");
+    assert_eq!(refused, Err(LifecycleRefusal::TargetAlreadyEnrolled));
 
     // The database refuses an unmediated repoint and any event edit.
     let repoint = sqlx::query("UPDATE enrollment SET program_version_id = ?1 WHERE id = ?2")
@@ -883,4 +932,113 @@ async fn phase_history_validates_graph_pause_and_effective_order() {
         body["transitions"].as_array().expect("transitions").len() >= 5,
         "the pinned graph rides the detail"
     );
+}
+
+#[tokio::test]
+async fn version_change_opens_a_fresh_phase_epoch() {
+    let fx = Fixture::new().await;
+    let (program_id, v1) = fx.publish(None, &phased_content()).await;
+    let taylor_id = fx
+        .user_with_role("taylor.trainee", "Taylor Trainee", RoleBundle::Trainee)
+        .await;
+    let enrollment_id = enrollments::enroll(&fx.pool, fx.admin_id, v1, taylor_id)
+        .await
+        .expect("call")
+        .expect("enrolled");
+    let one_v1 = fx.phase_id(v1, "Phase One").await;
+
+    // Enter Phase One and pause under the original pin.
+    lifecycle::record_phase_event(
+        &fx.pool,
+        fx.admin_id,
+        enrollment_id,
+        PhaseEventKind::Advance,
+        Some(one_v1),
+        None,
+        "",
+    )
+    .await
+    .expect("call")
+    .expect("entered");
+    lifecycle::record_phase_event(
+        &fx.pool,
+        fx.admin_id,
+        enrollment_id,
+        PhaseEventKind::Pause,
+        None,
+        None,
+        "Invented military leave.",
+    )
+    .await
+    .expect("call")
+    .expect("paused");
+
+    // Change to v2 and straight back to v1, recording nothing between.
+    let (_, v2) = fx.publish(Some(program_id), &phased_content()).await;
+    for (target, reason) in [(v2, "Trying the fall revision."), (v1, "Reverting.")] {
+        lifecycle::record_enrollment_event(
+            &fx.pool,
+            fx.admin_id,
+            enrollment_id,
+            EnrollmentEventKind::VersionChange,
+            reason,
+            Some(target),
+        )
+        .await
+        .expect("call")
+        .expect("recorded");
+    }
+
+    // The old v1 epoch must not resurrect: no current phase, not paused,
+    // and phase work requires re-entry.
+    let detail = lifecycle::enrollment_detail(&fx.pool, fx.admin_id, enrollment_id)
+        .await
+        .expect("call")
+        .expect("read");
+    assert_eq!(
+        detail.current_phase_id, None,
+        "phase state must not survive a version change, even back to the same version"
+    );
+    assert!(!detail.paused, "pause must not survive a version change");
+    let refused = lifecycle::record_phase_event(
+        &fx.pool,
+        fx.admin_id,
+        enrollment_id,
+        PhaseEventKind::Pause,
+        None,
+        None,
+        "",
+    )
+    .await
+    .expect("call");
+    assert_eq!(refused, Err(LifecycleRefusal::NoCurrentPhase));
+    lifecycle::record_phase_event(
+        &fx.pool,
+        fx.admin_id,
+        enrollment_id,
+        PhaseEventKind::Advance,
+        Some(one_v1),
+        None,
+        "",
+    )
+    .await
+    .expect("call")
+    .expect("re-entered the fresh epoch");
+
+    // The database stamps epochs itself: a raw insert claiming the
+    // original epoch is refused.
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let raw = sqlx::query(
+        "INSERT INTO phase_event
+             (enrollment_id, kind, from_phase_id, to_phase_id, effective_at,
+              recorded_at, actor_user_id, reason, version_change_event_id)
+         VALUES (?1, 'pause', ?2, NULL, ?3, ?3, NULL, '', NULL)",
+    )
+    .bind(enrollment_id)
+    .bind(one_v1)
+    .bind(now)
+    .execute(&fx.pool)
+    .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(err.contains("pin epoch"), "stale epoch: {err}");
 }
