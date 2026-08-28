@@ -5,11 +5,12 @@ export const prerender = false;
 
 import { redirect } from '@sveltejs/kit';
 import type { LayoutLoad } from './$types';
-import { getInstance, getSession, type Instance, type Session } from '$lib/api';
+import { getInstance, getNotices, getSession, type Instance, type Session } from '$lib/api';
 
 export interface ShellData {
 	instance: Instance;
 	session: Session | null;
+	unreadNotices: number;
 }
 
 /**
@@ -33,5 +34,6 @@ export const load: LayoutLoad = async ({ url }): Promise<ShellData> => {
 	if (session !== null && (path === '/login' || path === '/reset')) {
 		redirect(307, '/');
 	}
-	return { instance, session };
+	const unreadNotices = session === null ? 0 : (await getNotices()).unread;
+	return { instance, session, unreadNotices };
 };

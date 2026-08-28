@@ -44,6 +44,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/session", get(current_session))
         .route("/api/auth/reset-codes", post(issue_reset_code))
         .route("/api/auth/reset", post(reset_password))
+        .route("/api/notices", get(list_notices))
+        .route("/api/notices/{id}/read", post(mark_notice_read))
         .fallback(crate::web_assets::serve)
         .with_state(state)
 }
@@ -425,6 +427,42 @@ async fn reset_password(
             "password_policy",
             reason,
         )),
+    }
+}
+
+// -------------------------------------------------------------- notices
+
+#[derive(Serialize)]
+struct NoticesBody {
+    notices: Vec<crate::notices::Notice>,
+    unread: i64,
+}
+
+/// The caller's own notices, unread first.
+async fn list_notices(
+    State(state): State<AppState>,
+    current: CurrentUser,
+) -> Result<Json<NoticesBody>, ApiError> {
+    let notices = crate::notices::list_for_user(&state.pool, current.user.id).await?;
+    let unread = crate::notices::unread_count(&state.pool, current.user.id).await?;
+    Ok(Json(NoticesBody { notices, unread }))
+}
+
+/// Marks one of the caller's own notices read. A notice that is not the
+/// caller's is a 404, indistinguishable from one that does not exist.
+async fn mark_notice_read(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<Response, ApiError> {
+    if crate::notices::mark_read(&state.pool, current.user.id, id).await? {
+        Ok(StatusCode::NO_CONTENT.into_response())
+    } else {
+        Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "no_such_notice",
+            "no such unread notice",
+        ))
     }
 }
 

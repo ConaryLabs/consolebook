@@ -73,6 +73,10 @@ test('full shell lifecycle', async ({ page }) => {
 	await expect(page.getByText('Example County Communications').first()).toBeVisible();
 	await expect(page.getByText('manage_users')).toBeVisible();
 
+	// The notices panel exists and is quiet on a healthy installation.
+	await expect(page.getByRole('heading', { name: 'Notices' })).toBeVisible();
+	await expect(page.getByText('No notices.')).toBeVisible();
+
 	// The administrator issues themselves a reset code from the UI.
 	await page.getByLabel('Username').fill('avery.admin');
 	await page.getByRole('button', { name: 'Issue reset code' }).click();

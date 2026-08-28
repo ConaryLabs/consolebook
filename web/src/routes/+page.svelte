@@ -1,6 +1,15 @@
 <script lang="ts">
 	import { goto, invalidateAll } from '$app/navigation';
-	import { ApiError, getHealth, issueResetCode, logout, type Health } from '$lib/api';
+	import {
+		ApiError,
+		getHealth,
+		getNotices,
+		issueResetCode,
+		logout,
+		markNoticeRead,
+		type Health,
+		type Notice
+	} from '$lib/api';
 	import type { ShellData } from './+layout';
 
 	let { data }: { data: ShellData } = $props();
@@ -13,12 +22,23 @@
 	);
 
 	let health: Health | null = $state(null);
+	let notices: Notice[] = $state([]);
 	$effect(() => {
 		getHealth().then(
 			(h) => (health = h),
 			() => (health = null)
 		);
+		getNotices().then(
+			(body) => (notices = body.notices),
+			() => (notices = [])
+		);
 	});
+
+	async function acknowledge(notice: Notice) {
+		await markNoticeRead(notice.id);
+		notices = (await getNotices()).notices;
+		await invalidateAll();
+	}
 
 	let resetUsername = $state('');
 	let issued: { username: string; reset_code: string; expires_at: number } | null =
@@ -72,6 +92,29 @@
 	</dl>
 </section>
 
+<section class="card">
+	<h2>Notices</h2>
+	{#if notices.length === 0}
+		<p class="quiet">No notices.</p>
+	{:else}
+		<ul class="notices">
+			{#each notices as notice (notice.id)}
+				<li class:unread={notice.read_at === null}>
+					<p>{notice.message}</p>
+					<p class="meta">
+						{instant(notice.created_at)}
+						{#if notice.read_at === null}
+							<button class="secondary small" onclick={() => acknowledge(notice)}>
+								Mark read
+							</button>
+						{/if}
+					</p>
+				</li>
+			{/each}
+		</ul>
+	{/if}
+</section>
+
 {#if canManageUsers}
 	<section class="card">
 		<h2>Issue a password reset code</h2>
@@ -114,5 +157,38 @@
 	}
 	code {
 		font-size: 1.05em;
+	}
+	.quiet {
+		opacity: 0.7;
+		margin: 0;
+	}
+	ul.notices {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+	ul.notices li {
+		border-top: 1px solid light-dark(#e2e5ea, #333a47);
+		padding: 0.6rem 0;
+	}
+	ul.notices li:first-child {
+		border-top: 0;
+	}
+	ul.notices li p {
+		margin: 0 0 0.25rem;
+	}
+	ul.notices li.unread > p:first-child {
+		font-weight: 600;
+	}
+	.meta {
+		font-size: 0.82rem;
+		opacity: 0.75;
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+	}
+	button.small {
+		padding: 0.2rem 0.6rem;
+		font-size: 0.82rem;
 	}
 </style>

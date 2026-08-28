@@ -163,6 +163,7 @@ async fn serve(
 
     let scheduler = tokio::spawn(scheduler::run(
         data_dir.clone(),
+        pool.clone(),
         std::time::Duration::from_secs(backup_interval_hours * 3600),
         usize::try_from(backup_keep).unwrap_or(usize::MAX),
     ));

@@ -111,6 +111,27 @@ export function resetPassword(input: {
 	return request('/api/auth/reset', { method: 'POST', body: JSON.stringify(input) });
 }
 
+export interface Notice {
+	id: number;
+	kind: string;
+	message: string;
+	created_at: number;
+	read_at: number | null;
+}
+
+export interface NoticesBody {
+	notices: Notice[];
+	unread: number;
+}
+
+export function getNotices(): Promise<NoticesBody> {
+	return request('/api/notices');
+}
+
+export function markNoticeRead(id: number): Promise<void> {
+	return request(`/api/notices/${id}/read`, { method: 'POST', body: JSON.stringify({}) });
+}
+
 export function issueResetCode(
 	username: string
 ): Promise<{ username: string; reset_code: string; expires_at: number }> {
