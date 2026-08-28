@@ -2,9 +2,12 @@
 
 ## Start With The Smallest Useful Context
 
-Consolebook is a small Rust workspace: the server lives in
-`crates/consolebook-server/` (library modules plus a thin CLI in `main.rs`,
-integration tests in `tests/`, embedded migrations in `migrations/`).
+Consolebook is a small Rust workspace plus one web app: the server lives
+in `crates/consolebook-server/` (library modules plus a thin CLI in
+`main.rs`, integration tests in `tests/`, embedded migrations in
+`migrations/`), and the embedded SvelteKit interface lives in `web/`
+(built statically, embedded by the Rust build; Node.js is build-time
+only).
 
 Durable truth lives in a few files; read only what the task needs:
 
@@ -22,6 +25,12 @@ Durable truth lives in a few files; read only what the task needs:
 - `cargo fmt --check` and
   `cargo clippy --workspace --all-targets -- -D warnings` are repository
   gates; clippy pedantic is enabled workspace-wide.
+- In `web/`: `npm ci`, `npm run check`, and `npm run build` are gates;
+  build `web/` before cargo when interface behavior matters (a bare cargo
+  build compiles but serves an honest "not embedded" notice).
+- `npm run e2e` in `web/` drives the compiled binary through the shell in
+  a real browser (set `CONSOLEBOOK_E2E_CHROMIUM` to a Chromium path when
+  Playwright's own download is unavailable).
 - The toolchain is pinned in `rust-toolchain.toml`; do not float it.
 
 Verification means the reported command actually ran. Preserve exact failure

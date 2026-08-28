@@ -14,6 +14,7 @@ pub mod sessions;
 pub mod setup;
 pub mod storage;
 pub mod users;
+pub mod web_assets;
 
 /// Version of the running build, as reported by `/api/health` and `doctor`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

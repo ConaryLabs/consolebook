@@ -35,7 +35,7 @@ The current design target is a modular monolith:
 - opaque server-side sessions with Argon2id password hashes
 - one executable and one data directory per installation
 
-The server crate implements the Milestone 1 operable shell so far: a CLI, SQLite storage with verified connection invariants and embedded migrations, health and diagnostics, validated backups, and local authentication — first-run setup codes, capability-holding administrator accounts, Argon2id passwords, opaque cookie sessions, reset codes, and offline recovery. There is no web interface or training domain model yet.
+The server crate implements the Milestone 1 operable shell so far: a CLI, SQLite storage with verified connection invariants and embedded migrations, health and diagnostics, validated backups, local authentication — first-run setup codes, capability-holding administrator accounts, Argon2id passwords, opaque cookie sessions, reset codes, and offline recovery — and an embedded SvelteKit shell for setup, sign-in, recovery, and status. There is no training domain model yet.
 
 ## Repository map
 
@@ -51,21 +51,24 @@ The server crate implements the Milestone 1 operable shell so far: a CLI, SQLite
 ## Build and run
 
 ```sh
-cargo run -p consolebook-server -- serve          # initialize ./data and serve the API
+(cd web && npm ci && npm run build)               # build the interface (embedded by cargo)
+cargo run -p consolebook-server -- serve          # initialize ./data and serve UI + API
 cargo run -p consolebook-server -- doctor         # diagnose an installation, read-only
 cargo run -p consolebook-server -- backup         # validated snapshot into ./data/backups
 cargo run -p consolebook-server -- setup-code     # fresh first-run setup code
 cargo run -p consolebook-server -- recover --username ...  # rescue a locked-out administrator
 ```
 
-`serve` binds `127.0.0.1:7770` by default. An uninitialized installation
-prints a short-lived setup code; `POST /api/setup` creates the agency and
-first administrator, then `POST /api/auth/login` starts an HttpOnly cookie
-session. The data directory defaults to `./data` and can be set with
-`--data-dir` or `CONSOLEBOOK_DATA_DIR`. See
+`serve` binds `127.0.0.1:7770` by default and serves the web interface and
+the API from one process. An uninitialized installation prints a
+short-lived setup code; open the interface in a browser to create the
+agency and first administrator, then sign in. The data directory defaults
+to `./data` and can be set with `--data-dir` or `CONSOLEBOOK_DATA_DIR`.
+Node.js is a build-time tool only — production runs the one executable. See
 [ADR 0003](docs/decisions/0003-sqlite-connection-invariants.md) for database
-durability and [ADR 0004](docs/decisions/0004-local-authentication.md) for
-authentication.
+durability, [ADR 0004](docs/decisions/0004-local-authentication.md) for
+authentication, and [ADR 0005](docs/decisions/0005-embedded-web-interface.md)
+for the embedded interface.
 
 ## Privacy
 

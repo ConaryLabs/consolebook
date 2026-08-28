@@ -37,6 +37,22 @@ jobs:
             ~/.cargo/git
             target
           key: pr-gate-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - name: Restore npm cache
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.npm
+          key: pr-gate-npm-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+      # The web app builds first so the Rust build embeds real interface
+      # assets and the asset-serving tests exercise the strict branch.
+      - name: Web install
+        run: npm ci
+        working-directory: web
+      - name: Web check
+        run: npm run check
+        working-directory: web
+      - name: Web build
+        run: npm run build
+        working-directory: web
       - name: Format
         run: cargo fmt --check
       - name: Clippy

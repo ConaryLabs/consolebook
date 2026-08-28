@@ -37,12 +37,14 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
+        .route("/api/instance", get(instance))
         .route("/api/setup", post(setup_handler))
         .route("/api/auth/login", post(login))
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/session", get(current_session))
         .route("/api/auth/reset-codes", post(issue_reset_code))
         .route("/api/auth/reset", post(reset_password))
+        .fallback(crate::web_assets::serve)
         .with_state(state)
 }
 
@@ -174,6 +176,26 @@ async fn health(State(state): State<AppState>) -> Response {
         StatusCode::SERVICE_UNAVAILABLE
     };
     (code, Json(body)).into_response()
+}
+
+// ------------------------------------------------------------- instance
+
+#[derive(Serialize)]
+struct Instance {
+    initialized: bool,
+    version: &'static str,
+    agency: Option<String>,
+}
+
+/// Unauthenticated installation facts the web shell needs to route:
+/// whether setup has run, the running version, and the agency name.
+async fn instance(State(state): State<AppState>) -> Result<Json<Instance>, ApiError> {
+    let agency = setup::agency_name(&state.pool).await?;
+    Ok(Json(Instance {
+        initialized: agency.is_some(),
+        version: VERSION,
+        agency,
+    }))
 }
 
 // ---------------------------------------------------------------- setup
