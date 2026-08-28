@@ -73,6 +73,16 @@ typed check is a defect to engineer, not a class of input to route around.
   input.
 - Treat intermittent or unexplained failures as evidence of a defect, not
   as a reason to retry until green.
+- A slice adding behavior to a Rust source file over 1,000 lines must
+  include an ownership-based reorganization in the same issue or plan.
+  Thin dispatch, registration, and re-export wiring may remain in a large
+  hub.
+- Before changing behavior in a Rust file over 1,500 lines, name the
+  ownership boundary being preserved or improved. Files over 2,500 lines
+  need a reviewed decomposition path before major feature work unless the
+  fix is urgent.
+- Refactors name what moves, its new owner, persisted/public impact, and
+  the focused proof.
 - Decisions that change durable system behavior get an ADR in
   `docs/decisions/`; changes to `PRINCIPLES.md` require one.
 
