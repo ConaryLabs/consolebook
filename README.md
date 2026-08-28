@@ -2,6 +2,8 @@
 
 Consolebook is an early-stage training-record system for emergency communications centers. The initial focus is structured training programs, Daily Observation Reports, weekly summaries, task signoffs, acknowledgments, amendments, and defensible exports.
 
+Consolebook is a [Fieldmouse Works](https://github.com/FieldmouseWorks) project — open tools for closed systems.
+
 > **Status:** pre-alpha design and scaffolding. There is no usable application yet. Do not put production or personnel data into this repository or any current build.
 
 ## Product goals
@@ -35,7 +37,7 @@ The current design target is a modular monolith:
 - opaque server-side sessions with Argon2id password hashes
 - one executable and one data directory per installation
 
-The server crate implements the Milestone 1 operable shell so far: a CLI, SQLite storage with verified connection invariants and embedded migrations, health and diagnostics, automatic validated backups with retention and a tested restore path, local authentication — first-run setup codes, capability-holding administrator accounts, Argon2id passwords, opaque cookie sessions, reset codes, and offline recovery — an embedded SvelteKit shell for setup, sign-in, recovery, and status, and persisted in-app notices (backup failures reach administrators in the interface, not just the log). There is no training domain model yet.
+The server crate implements the Milestone 1 operable shell — a CLI, SQLite storage with verified connection invariants and embedded migrations, health and diagnostics, automatic validated backups with retention and a tested restore path, local authentication and recovery, an embedded SvelteKit shell, and persisted in-app notices — plus the Milestone 2 training-configuration domain: versioned programs whose published versions are immutable at the database, a structured authoring interface with version compare, a documented byte-stable export/import format, external standards citations, minimal user creation, and enrollments that pin published versions. Training sessions and evaluation records arrive with Milestone 3.
 
 ## Repository map
 
