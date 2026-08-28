@@ -9,6 +9,7 @@ pub mod capabilities;
 pub mod data_dir;
 pub mod doctor;
 pub mod http;
+pub mod notices;
 pub mod restore;
 pub mod scheduler;
 pub mod secrets;

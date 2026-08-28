@@ -11,6 +11,11 @@
 		{#if data.instance.agency}
 			<span class="agency">{data.instance.agency}</span>
 		{/if}
+		{#if data.unreadNotices > 0}
+			<span class="badge" aria-label="{data.unreadNotices} unread notices">
+				{data.unreadNotices}
+			</span>
+		{/if}
 	</header>
 	<main>
 		{@render children()}
@@ -56,6 +61,16 @@
 	.agency {
 		opacity: 0.85;
 		font-size: 0.95rem;
+	}
+	.badge {
+		margin-left: auto;
+		background: #c8401a;
+		color: #ffffff;
+		font-size: 0.8rem;
+		font-weight: 700;
+		border-radius: 999px;
+		padding: 0.1rem 0.55rem;
+		align-self: center;
 	}
 	main {
 		flex: 1;

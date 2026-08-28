@@ -7,10 +7,13 @@
 
 use std::time::Duration;
 
+use sqlx::SqlitePool;
 use time::OffsetDateTime;
 
 use crate::backup;
+use crate::capabilities::Capability;
 use crate::data_dir::DataDir;
+use crate::notices::{self, NoticeKind};
 
 /// Default interval between automatic backups.
 pub const DEFAULT_INTERVAL_HOURS: u64 = 24;
@@ -29,8 +32,9 @@ pub fn backup_due(latest_snapshot_mtime: Option<i64>, now: i64, interval_secs: i
 }
 
 /// Runs the automatic-backup loop until the process exits. Failures are
-/// logged and retried on the schedule; they never crash the server.
-pub async fn run(data_dir: DataDir, interval: Duration, keep: usize) {
+/// logged, surfaced to administrators as in-app notices, and retried on
+/// the schedule; they never crash the server.
+pub async fn run(data_dir: DataDir, pool: SqlitePool, interval: Duration, keep: usize) {
     let interval_secs = i64::try_from(interval.as_secs()).unwrap_or(i64::MAX);
     loop {
         let now = OffsetDateTime::now_utc().unix_timestamp();
@@ -49,9 +53,39 @@ pub async fn run(data_dir: DataDir, interval: Duration, keep: usize) {
                     pruned = report.pruned.len(),
                     "automatic backup complete and validated"
                 ),
-                Err(err) => tracing::error!("automatic backup failed: {err:#}"),
+                Err(err) => {
+                    tracing::error!("automatic backup failed: {err:#}");
+                    report_backup_failure(&pool, &err).await;
+                }
             }
         }
         tokio::time::sleep(TICK).await;
+    }
+}
+
+/// Surfaces a backup failure to every administrator as a persisted notice.
+/// Deduplication in the notices service keeps a repeatedly failing backup
+/// at one unread notice per administrator.
+async fn report_backup_failure(pool: &SqlitePool, err: &anyhow::Error) {
+    let message = format!(
+        "Automatic backup failed: {err:#}. Backups retry on schedule; \
+         check disk space and `consolebook doctor`, and treat repeated \
+         failures as urgent."
+    );
+    match notices::notify_capability_holders(
+        pool,
+        Capability::ManageUsers,
+        NoticeKind::BackupFailed,
+        &message,
+    )
+    .await
+    {
+        Ok(created) if created > 0 => {
+            tracing::info!(created, "backup failure surfaced as in-app notices");
+        }
+        Ok(_) => {}
+        Err(notify_err) => {
+            tracing::error!("could not create backup-failure notices: {notify_err:#}");
+        }
     }
 }
