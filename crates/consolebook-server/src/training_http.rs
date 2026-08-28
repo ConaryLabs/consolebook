@@ -151,6 +151,11 @@ fn assign_refusal(refusal: &AssignRefusal) -> ApiError {
             "no_such_user",
             "no user with that id",
         ),
+        AssignRefusal::TrainerLacksCapability => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "trainer_lacks_capability",
+            "the assigned trainer needs the view_assigned_records capability",
+        ),
         AssignRefusal::AlreadyAssigned => ApiError::new(
             StatusCode::CONFLICT,
             "already_assigned",

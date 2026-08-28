@@ -33,6 +33,9 @@ A `training_assignment` connects a trainer to an enrollment with start
 and end instants and attribution. It is the durable grant behind
 assignment-scoped access: a trainer holding `view_assigned_records`
 reads exactly the enrollments they hold an active assignment for.
+Because an assignment exists to grant scoped reads — and its notice
+names the trainee — only holders of `view_assigned_records` are
+assignable.
 Session trainer membership (slice 2) will additionally grant access to
 that session's records, and an unassigned `author_evaluation` holder
 may be added to a session ad hoc — holdover and coverage are real — with

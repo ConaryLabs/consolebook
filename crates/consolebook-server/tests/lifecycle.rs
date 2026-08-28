@@ -371,6 +371,16 @@ async fn assignments_scope_reads_notify_and_end() {
         .await
         .expect("call");
     assert_eq!(refused, Err(assignments::AssignRefusal::CapabilityRequired));
+    // An assignment grants scoped reads, so its trainer must be able to
+    // read: a capability-less user is refused, and the notice naming the
+    // trainee therefore only ever reaches view_assigned_records holders.
+    let refused = assignments::create(&fx.pool, fx.admin_id, enrollment_id, taylor_id)
+        .await
+        .expect("call");
+    assert_eq!(
+        refused,
+        Err(assignments::AssignRefusal::TrainerLacksCapability)
+    );
     let assignment_id = assignments::create(&fx.pool, fx.admin_id, enrollment_id, jordan_id)
         .await
         .expect("call")

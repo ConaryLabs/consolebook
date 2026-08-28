@@ -55,6 +55,11 @@ pub enum AssignRefusal {
     /// Assignments attach to active enrollments.
     EnrollmentInactive,
     NoSuchUser,
+    /// An assignment grants scoped reads, so its trainer must hold
+    /// `view_assigned_records` — otherwise the assignment (and its
+    /// notice naming the trainee) would reach someone with no read
+    /// authority.
+    TrainerLacksCapability,
     AlreadyAssigned,
     NoSuchAssignment,
     AlreadyEnded,
@@ -99,6 +104,16 @@ pub async fn create(
         .context("checking trainer")?;
     if trainer_exists.is_none() {
         return Ok(Err(AssignRefusal::NoSuchUser));
+    }
+    let can_view: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM capability_grant WHERE user_id = ?1 AND capability = ?2")
+            .bind(trainer_user_id)
+            .bind(Capability::ViewAssignedRecords.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .context("checking trainer capability")?;
+    if can_view.is_none() {
+        return Ok(Err(AssignRefusal::TrainerLacksCapability));
     }
     let duplicate: Option<i64> = sqlx::query_scalar(
         "SELECT 1 FROM training_assignment
