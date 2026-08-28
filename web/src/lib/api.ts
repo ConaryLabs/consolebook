@@ -351,6 +351,7 @@ export interface UserSummary {
 	employee_id: string;
 	title: string;
 	created_at: number;
+	capabilities: string[];
 }
 
 export function listUsers(): Promise<{ users: UserSummary[] }> {

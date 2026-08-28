@@ -474,6 +474,22 @@ pub async fn record_phase_event(
     if latest_effective.is_some_and(|latest| effective < latest) {
         return Ok(Err(LifecycleRefusal::OutOfOrder));
     }
+    // The version-change event that opened the current epoch is recorded
+    // history too: a phase event cannot take effect before its epoch
+    // existed, or the stream would claim the trainee moved through a
+    // version the enrollment did not yet pin.
+    let epoch_opened: Option<i64> = sqlx::query_scalar(
+        "SELECT occurred_at FROM enrollment_event
+         WHERE enrollment_id = ?1 AND kind = 'version_change'
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(enrollment_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .context("reading epoch boundary")?;
+    if epoch_opened.is_some_and(|opened| effective < opened) {
+        return Ok(Err(LifecycleRefusal::OutOfOrder));
+    }
 
     let pinned: i64 = sqlx::query_scalar("SELECT program_version_id FROM enrollment WHERE id = ?1")
         .bind(enrollment_id)
@@ -725,8 +741,9 @@ async fn pinned_vocabulary(
     Ok((phases, transitions))
 }
 
-/// The enrollment page's whole story. The capability-and-scope gate runs
-/// before existence is revealed.
+/// The enrollment page's whole story, read from one database snapshot so
+/// a concurrent write cannot mix epochs on the page. The
+/// capability-and-scope gate runs before existence is revealed.
 pub async fn enrollment_detail(
     pool: &SqlitePool,
     actor_user_id: i64,
@@ -735,7 +752,7 @@ pub async fn enrollment_detail(
     if !may_read(pool, actor_user_id, enrollment_id).await? {
         return Ok(Err(LifecycleRefusal::CapabilityRequired));
     }
-    let mut conn = pool.acquire().await.context("acquiring connection")?;
+    let mut tx = pool.begin().await.context("starting detail read")?;
     let Some(header) = sqlx::query(
         "SELECT e.id, e.user_id, u.username, u.display_name, e.enrolled_at,
                 e.program_version_id, pv.program_id, pv.name AS program_name,
@@ -746,7 +763,7 @@ pub async fn enrollment_detail(
          WHERE e.id = ?1",
     )
     .bind(enrollment_id)
-    .fetch_optional(&mut *conn)
+    .fetch_optional(&mut *tx)
     .await
     .context("reading enrollment")?
     else {
@@ -754,16 +771,16 @@ pub async fn enrollment_detail(
     };
     let pinned: i64 = header.get("program_version_id");
 
-    let status = status(&mut conn, enrollment_id)
+    let status = status(&mut tx, enrollment_id)
         .await?
         .unwrap_or(EnrollmentStatus::Active);
-    let current = current_phase(&mut conn, enrollment_id).await?;
-    let paused = is_paused(&mut conn, enrollment_id).await?;
-    let events = list_events(&mut conn, enrollment_id).await?;
-    let phase_events = list_phase_events(&mut conn, enrollment_id).await?;
-    let (phases, transitions) = pinned_vocabulary(&mut conn, pinned).await?;
-    drop(conn);
-    let assignments = assignments::list_for_enrollment(pool, enrollment_id).await?;
+    let current = current_phase(&mut tx, enrollment_id).await?;
+    let paused = is_paused(&mut tx, enrollment_id).await?;
+    let events = list_events(&mut tx, enrollment_id).await?;
+    let phase_events = list_phase_events(&mut tx, enrollment_id).await?;
+    let (phases, transitions) = pinned_vocabulary(&mut tx, pinned).await?;
+    let assignments = assignments::list_for_enrollment(&mut tx, enrollment_id).await?;
+    tx.commit().await.context("finishing detail read")?;
 
     Ok(Ok(EnrollmentDetail {
         enrollment_id: header.get("id"),

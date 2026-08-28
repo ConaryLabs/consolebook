@@ -346,6 +346,15 @@ async fn role_bundles_grant_capabilities_and_profile_fields_list() {
         .expect("coordinator listed");
     assert_eq!(coordinator_row["employee_id"], "C-12");
     assert_eq!(coordinator_row["title"], "Training Coordinator");
+    assert_eq!(
+        coordinator_row["capabilities"],
+        serde_json::json!([
+            "assign_training",
+            "review_evaluation",
+            "view_assigned_records"
+        ]),
+        "the roster presents held capabilities for eligibility pickers"
+    );
 }
 
 #[tokio::test]
@@ -945,6 +954,7 @@ async fn phase_history_validates_graph_pause_and_effective_order() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn version_change_opens_a_fresh_phase_epoch() {
     let fx = Fixture::new().await;
     let (program_id, v1) = fx.publish(None, &phased_content()).await;
@@ -957,14 +967,17 @@ async fn version_change_opens_a_fresh_phase_epoch() {
         .expect("enrolled");
     let one_v1 = fx.phase_id(v1, "Phase One").await;
 
-    // Enter Phase One and pause under the original pin.
+    // Enter Phase One and pause under the original pin, honestly
+    // backdated so the epoch boundary is later distinguishable from
+    // plain effective ordering.
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
     lifecycle::record_phase_event(
         &fx.pool,
         fx.admin_id,
         enrollment_id,
         PhaseEventKind::Advance,
         Some(one_v1),
-        None,
+        Some(now - 5000),
         "",
     )
     .await
@@ -976,7 +989,7 @@ async fn version_change_opens_a_fresh_phase_epoch() {
         enrollment_id,
         PhaseEventKind::Pause,
         None,
-        None,
+        Some(now - 4000),
         "Invented military leave.",
     )
     .await
@@ -1022,6 +1035,24 @@ async fn version_change_opens_a_fresh_phase_epoch() {
     .await
     .expect("call");
     assert_eq!(refused, Err(LifecycleRefusal::NoCurrentPhase));
+    // Re-entry cannot take effect before the version change that opened
+    // the epoch: later than every phase event, still refused.
+    let refused = lifecycle::record_phase_event(
+        &fx.pool,
+        fx.admin_id,
+        enrollment_id,
+        PhaseEventKind::Advance,
+        Some(one_v1),
+        Some(now - 1000),
+        "",
+    )
+    .await
+    .expect("call");
+    assert_eq!(
+        refused,
+        Err(LifecycleRefusal::OutOfOrder),
+        "an event cannot predate its epoch"
+    );
     lifecycle::record_phase_event(
         &fx.pool,
         fx.admin_id,
@@ -1037,7 +1068,6 @@ async fn version_change_opens_a_fresh_phase_epoch() {
 
     // The database stamps epochs itself: a raw insert claiming the
     // original epoch is refused.
-    let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let raw = sqlx::query(
         "INSERT INTO phase_event
              (enrollment_id, kind, from_phase_id, to_phase_id, effective_at,

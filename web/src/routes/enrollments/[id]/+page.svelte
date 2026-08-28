@@ -71,6 +71,8 @@
 	// ------------------------------------------------------- assignments
 	let assignUserId = $state(0);
 	let assignError = $state('');
+	// Only view_assigned_records holders are assignable (the server
+	// refuses anyone else), minus trainers already actively assigned.
 	let assignable = $derived.by(() => {
 		const current = detail;
 		if (current === null) {
@@ -78,6 +80,7 @@
 		}
 		return roster.filter(
 			(person) =>
+				person.capabilities.includes('view_assigned_records') &&
 				!current.assignments.some(
 					(a) => a.ended_at === null && a.trainer_user_id === person.id
 				)

@@ -9,7 +9,7 @@
 
 use anyhow::{Context, Result};
 use serde::Serialize;
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, SqliteConnection, SqlitePool};
 use time::OffsetDateTime;
 
 use crate::audit::{self, EventKind, Subject};
@@ -217,8 +217,11 @@ pub async fn end(
 
 /// Every assignment on the enrollment, active first. Capability and scope
 /// are the caller's responsibility — this backs the already-gated
-/// enrollment detail.
-pub async fn list_for_enrollment(pool: &SqlitePool, enrollment_id: i64) -> Result<Vec<Assignment>> {
+/// enrollment detail, inside its snapshot.
+pub async fn list_for_enrollment(
+    conn: &mut SqliteConnection,
+    enrollment_id: i64,
+) -> Result<Vec<Assignment>> {
     let rows = sqlx::query(
         "SELECT ta.id, ta.enrollment_id, ta.trainer_user_id, u.username, u.display_name,
                 ta.assigned_at, ta.assigned_by, ta.ended_at, ta.ended_by
@@ -228,7 +231,7 @@ pub async fn list_for_enrollment(pool: &SqlitePool, enrollment_id: i64) -> Resul
          ORDER BY (ta.ended_at IS NULL) DESC, ta.assigned_at, ta.id",
     )
     .bind(enrollment_id)
-    .fetch_all(pool)
+    .fetch_all(conn)
     .await
     .context("listing assignments")?;
     Ok(rows

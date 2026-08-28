@@ -85,7 +85,9 @@ pub async fn create(
     Ok(result.last_insert_rowid())
 }
 
-/// A user as listed for rosters; never carries the password hash.
+/// A user as listed for rosters; never carries the password hash. The
+/// held capabilities ride along so administration and assignment pickers
+/// can present eligibility instead of discovering it by refusal.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct UserSummary {
     pub id: i64,
@@ -94,6 +96,7 @@ pub struct UserSummary {
     pub employee_id: String,
     pub title: String,
     pub created_at: i64,
+    pub capabilities: Vec<String>,
 }
 
 /// Every user, ordered by display name. Capability checks are the
@@ -106,15 +109,30 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<UserSummary>> {
     .fetch_all(pool)
     .await
     .context("listing users")?;
+    let grants =
+        sqlx::query("SELECT user_id, capability FROM capability_grant ORDER BY capability")
+            .fetch_all(pool)
+            .await
+            .context("listing capability grants")?;
+    let mut held: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+    for grant in &grants {
+        held.entry(grant.get("user_id"))
+            .or_default()
+            .push(grant.get("capability"));
+    }
     Ok(rows
         .iter()
-        .map(|row| UserSummary {
-            id: row.get("id"),
-            username: row.get("username"),
-            display_name: row.get("display_name"),
-            employee_id: row.get("employee_id"),
-            title: row.get("title"),
-            created_at: row.get("created_at"),
+        .map(|row| {
+            let id: i64 = row.get("id");
+            UserSummary {
+                id,
+                username: row.get("username"),
+                display_name: row.get("display_name"),
+                employee_id: row.get("employee_id"),
+                title: row.get("title"),
+                created_at: row.get("created_at"),
+                capabilities: held.remove(&id).unwrap_or_default(),
+            }
         })
         .collect())
 }

@@ -69,7 +69,9 @@ honest: both instants are kept and visible, ordering uses the effective
 instant, and effective never postdates recorded. Events append in
 effective order — an event that would land between two already-recorded
 events is refused rather than silently reordering history; the
-correction path is recording forward, as on paper.
+correction path is recording forward, as on paper. The boundary applies
+to epochs too: a phase event cannot take effect before the version
+change that opened its epoch was recorded.
 
 Enforcement splits by what each layer can honestly express. The database
 enforces the append-only property, per-kind shape, effective-before-
