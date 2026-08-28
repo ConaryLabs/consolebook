@@ -221,34 +221,47 @@ async fn check_initialization(pool: &SqlitePool, findings: &mut Vec<Finding>) {
 }
 
 fn check_backups(data_dir: &DataDir, findings: &mut Vec<Finding>) {
-    let dir = data_dir.backups();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    if !data_dir.backups().is_dir() {
         return; // Layout check already reported the missing directory.
+    }
+    let snapshots = match crate::backup::snapshots(data_dir) {
+        Ok(snapshots) => snapshots,
+        Err(err) => {
+            findings.push(Finding::fail("backups", format!("{err:#}")));
+            return;
+        }
     };
-    let mut snapshots: Vec<String> = entries
-        .filter_map(std::result::Result::ok)
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|name| {
-            name.starts_with("consolebook-")
-                && std::path::Path::new(name)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("db"))
-        })
-        .collect();
     if snapshots.is_empty() {
         findings.push(Finding::warn(
             "backups",
-            "no snapshots yet; run `consolebook backup`",
+            "no snapshots yet; the server takes one automatically, or run `consolebook backup`",
         ));
-    } else {
-        snapshots.sort();
-        findings.push(Finding::ok(
+        return;
+    }
+    let latest = snapshots.last().expect("non-empty");
+    let latest_name = latest
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let age = crate::backup::latest_snapshot_mtime(data_dir)
+        .ok()
+        .flatten()
+        .map(|mtime| time::OffsetDateTime::now_utc().unix_timestamp() - mtime);
+    let stale_after = i64::try_from(crate::scheduler::DEFAULT_INTERVAL_HOURS * 3600)
+        .expect("interval fits in i64");
+    match age {
+        Some(age) if age > stale_after => findings.push(Finding::warn(
             "backups",
             format!(
-                "{} snapshot(s), latest {}",
+                "{} snapshot(s), newest is {} hours old (older than the default {}-hour interval)",
                 snapshots.len(),
-                snapshots.last().expect("non-empty")
+                age / 3600,
+                crate::scheduler::DEFAULT_INTERVAL_HOURS,
             ),
-        ));
+        )),
+        _ => findings.push(Finding::ok(
+            "backups",
+            format!("{} snapshot(s), latest {latest_name}", snapshots.len()),
+        )),
     }
 }

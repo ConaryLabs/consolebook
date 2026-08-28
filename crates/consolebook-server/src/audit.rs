@@ -19,6 +19,8 @@ pub enum EventKind {
     ResetCodeIssued,
     ResetCodeUsed,
     RecoveryCodeIssued,
+    BackupCompleted,
+    RestoreCompleted,
 }
 
 impl EventKind {
@@ -32,6 +34,8 @@ impl EventKind {
             Self::ResetCodeIssued => "reset_code_issued",
             Self::ResetCodeUsed => "reset_code_used",
             Self::RecoveryCodeIssued => "recovery_code_issued",
+            Self::BackupCompleted => "backup_completed",
+            Self::RestoreCompleted => "restore_completed",
         }
     }
 }
