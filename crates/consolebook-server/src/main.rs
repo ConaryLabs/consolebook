@@ -9,7 +9,8 @@ use clap::{Parser, Subcommand};
 
 use consolebook_server::data_dir::DataDir;
 use consolebook_server::doctor::Verdict;
-use consolebook_server::{VERSION, backup, doctor, http, storage};
+use consolebook_server::users::{IssueRefusal, ResetOrigin};
+use consolebook_server::{VERSION, backup, doctor, http, setup, storage, users};
 
 #[derive(Parser)]
 #[command(name = "consolebook", version = VERSION, about = "Training-record system for emergency communications centers (pre-alpha)")]
@@ -40,6 +41,17 @@ enum Command {
     Doctor,
     /// Take a validated, consistent snapshot of the database into backups/.
     Backup,
+    /// Print a fresh first-run setup code for an uninitialized installation.
+    SetupCode,
+    /// Issue a password reset code for a locked-out administrator.
+    ///
+    /// Requires operating-system access to the data directory and records
+    /// an explicit recovery audit event.
+    Recover {
+        /// Username of the administrator account to recover.
+        #[arg(long)]
+        username: String,
+    },
 }
 
 fn init_logging() {
@@ -61,6 +73,8 @@ async fn main() -> ExitCode {
         Command::Serve { bind } => serve(&cli.data_dir, bind).await,
         Command::Doctor => run_doctor(&cli.data_dir).await,
         Command::Backup => run_backup(&cli.data_dir).await,
+        Command::SetupCode => run_setup_code(&cli.data_dir).await,
+        Command::Recover { username } => run_recover(&cli.data_dir, &username).await,
     };
     match result {
         Ok(code) => code,
@@ -82,6 +96,17 @@ async fn serve(data_dir: &std::path::Path, bind: SocketAddr) -> Result<ExitCode>
         data_dir = %data_dir.root().display(),
         "starting Consolebook (pre-alpha)"
     );
+
+    if let Some((code, expires_at)) = setup::issue_setup_code(&pool).await? {
+        // The one deliberate secret in the log: the operator needs it to
+        // complete first-run setup, and it is useless once setup completes
+        // or the code expires.
+        tracing::warn!(
+            setup_code = code.raw,
+            expires_in_minutes = (expires_at - now_unix()) / 60,
+            "installation is not initialized; complete setup at POST /api/setup with this code"
+        );
+    }
 
     let listener = tokio::net::TcpListener::bind(bind)
         .await
@@ -107,6 +132,55 @@ async fn run_doctor(data_dir: &std::path::Path) -> Result<ExitCode> {
         Ok(ExitCode::FAILURE)
     } else {
         Ok(ExitCode::SUCCESS)
+    }
+}
+
+fn now_unix() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+async fn run_setup_code(data_dir: &std::path::Path) -> Result<ExitCode> {
+    let data_dir = DataDir::new(data_dir);
+    let pool = storage::open(&data_dir.database()).await?;
+    match setup::issue_setup_code(&pool).await? {
+        None => {
+            eprintln!("this installation is already initialized; setup is unavailable");
+            Ok(ExitCode::FAILURE)
+        }
+        Some((code, expires_at)) => {
+            println!("{}", code.raw);
+            eprintln!(
+                "setup code valid for {} minutes; complete setup at POST /api/setup",
+                (expires_at - now_unix()) / 60
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+async fn run_recover(data_dir: &std::path::Path, username: &str) -> Result<ExitCode> {
+    let data_dir = DataDir::new(data_dir);
+    let pool = storage::open(&data_dir.database()).await?;
+    match users::issue_reset_code(&pool, username, ResetOrigin::Recovery).await? {
+        Ok(issued) => {
+            println!("{}", issued.code.raw);
+            eprintln!(
+                "reset code for {} valid for {} minutes; use POST /api/auth/reset with a new password. All sessions revoke when it is used.",
+                issued.user.username,
+                (issued.expires_at - now_unix()) / 60
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(IssueRefusal::NoSuchUser) => {
+            eprintln!("no user named {username}");
+            Ok(ExitCode::FAILURE)
+        }
+        Err(IssueRefusal::NotAnAdministrator) => {
+            eprintln!(
+                "{username} is not an administrator; ask an administrator to issue a reset code instead"
+            );
+            Ok(ExitCode::FAILURE)
+        }
     }
 }
 

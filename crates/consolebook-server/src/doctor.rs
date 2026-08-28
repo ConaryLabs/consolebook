@@ -74,6 +74,7 @@ pub async fn run(data_dir: &DataDir) -> Vec<Finding> {
             check_migrations(&pool, &mut findings).await;
             check_integrity(&pool, &mut findings).await;
             check_identity(&pool, &mut findings).await;
+            check_initialization(&pool, &mut findings).await;
             pool.close().await;
         }
     }
@@ -181,6 +182,41 @@ async fn check_identity(pool: &SqlitePool, findings: &mut Vec<Finding>) {
     match storage::installation_id(pool).await {
         Err(err) => findings.push(Finding::fail("instance identity", format!("{err:#}"))),
         Ok(id) => findings.push(Finding::ok("instance identity", id)),
+    }
+}
+
+async fn check_initialization(pool: &SqlitePool, findings: &mut Vec<Finding>) {
+    match crate::setup::is_initialized(pool).await {
+        Err(err) => findings.push(Finding::fail(
+            "initialization",
+            format!("cannot determine: {err:#}"),
+        )),
+        Ok(false) => findings.push(Finding::warn(
+            "initialization",
+            "not initialized; start the server and complete first-run setup",
+        )),
+        Ok(true) => {
+            let admins: Result<i64, sqlx::Error> = sqlx::query_scalar(
+                "SELECT COUNT(DISTINCT user_id) FROM capability_grant WHERE capability = ?1",
+            )
+            .bind(crate::capabilities::Capability::ManageUsers.as_str())
+            .fetch_one(pool)
+            .await;
+            match admins {
+                Err(err) => findings.push(Finding::fail(
+                    "initialization",
+                    format!("cannot count administrators: {err}"),
+                )),
+                Ok(0) => findings.push(Finding::fail(
+                    "initialization",
+                    "initialized but no user holds manage_users; restore from a backup taken before the grants were lost",
+                )),
+                Ok(n) => findings.push(Finding::ok(
+                    "initialization",
+                    format!("initialized, {n} administrator(s)"),
+                )),
+            }
+        }
     }
 }
 
