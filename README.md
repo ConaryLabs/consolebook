@@ -35,7 +35,7 @@ The current design target is a modular monolith:
 - opaque server-side sessions with Argon2id password hashes
 - one executable and one data directory per installation
 
-The server crate implements the Milestone 1 operable shell so far: a CLI, SQLite storage with verified connection invariants and embedded migrations, health and diagnostics, validated backups, local authentication — first-run setup codes, capability-holding administrator accounts, Argon2id passwords, opaque cookie sessions, reset codes, and offline recovery — and an embedded SvelteKit shell for setup, sign-in, recovery, and status. There is no training domain model yet.
+The server crate implements the Milestone 1 operable shell so far: a CLI, SQLite storage with verified connection invariants and embedded migrations, health and diagnostics, automatic validated backups with retention and a tested restore path, local authentication — first-run setup codes, capability-holding administrator accounts, Argon2id passwords, opaque cookie sessions, reset codes, and offline recovery — and an embedded SvelteKit shell for setup, sign-in, recovery, and status. There is no training domain model yet.
 
 ## Repository map
 
@@ -55,6 +55,7 @@ The server crate implements the Milestone 1 operable shell so far: a CLI, SQLite
 cargo run -p consolebook-server -- serve          # initialize ./data and serve UI + API
 cargo run -p consolebook-server -- doctor         # diagnose an installation, read-only
 cargo run -p consolebook-server -- backup         # validated snapshot into ./data/backups
+cargo run -p consolebook-server -- restore <snapshot>      # recover from a snapshot (server stopped)
 cargo run -p consolebook-server -- setup-code     # fresh first-run setup code
 cargo run -p consolebook-server -- recover --username ...  # rescue a locked-out administrator
 ```

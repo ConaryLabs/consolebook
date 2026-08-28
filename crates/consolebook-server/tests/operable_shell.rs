@@ -112,7 +112,9 @@ async fn backup_produces_validated_snapshot() {
     let live_id = storage::installation_id(&pool).await.expect("id");
     pool.close().await;
 
-    let report = backup::run(&data_dir).await.expect("backup");
+    let report = backup::run(&data_dir, backup::DEFAULT_KEEP)
+        .await
+        .expect("backup");
     assert!(report.snapshot.starts_with(data_dir.backups()));
     assert!(report.size_bytes > 0);
 
@@ -134,7 +136,7 @@ async fn backup_produces_validated_snapshot() {
 #[tokio::test]
 async fn backup_fails_without_database() {
     let (_tmp, data_dir) = temp_data_dir();
-    assert!(backup::run(&data_dir).await.is_err());
+    assert!(backup::run(&data_dir, backup::DEFAULT_KEEP).await.is_err());
 }
 
 #[tokio::test]
