@@ -222,7 +222,11 @@
 					<tbody>
 						{#each enrollees as enrollee (enrollee.enrollment_id)}
 							<tr>
-								<td>{enrollee.display_name}</td>
+								<td>
+									<a href={`/enrollments/${enrollee.enrollment_id}`}>
+										{enrollee.display_name}
+									</a>
+								</td>
 								<td>{enrollee.username}</td>
 								<td>{instant(enrollee.enrolled_at)}</td>
 							</tr>

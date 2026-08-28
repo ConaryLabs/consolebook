@@ -48,9 +48,10 @@ impl Fixture {
         .expect("accepted");
         let hash = secrets::hash_password(PASSWORD).expect("hash");
         let mut conn = pool.acquire().await.expect("conn");
-        let trainee_id = users::create(&mut conn, "taylor.trainee", "Taylor Trainee", &hash)
-            .await
-            .expect("create");
+        let trainee_id =
+            users::create(&mut conn, "taylor.trainee", "Taylor Trainee", "", "", &hash)
+                .await
+                .expect("create");
         drop(conn);
         Self {
             _tmp: tmp,

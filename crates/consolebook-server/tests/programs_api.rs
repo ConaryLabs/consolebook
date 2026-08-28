@@ -52,7 +52,7 @@ impl Fixture {
     async fn create_plain_user(&self) {
         let hash = secrets::hash_password(PASSWORD).expect("hash");
         let mut conn = self.pool.acquire().await.expect("conn");
-        users::create(&mut conn, "jordan.trainer", "Jordan Trainer", &hash)
+        users::create(&mut conn, "jordan.trainer", "Jordan Trainer", "", "", &hash)
             .await
             .expect("create user");
     }

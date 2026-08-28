@@ -113,7 +113,7 @@ pub async fn initialize(
         .execute(&mut *tx)
         .await
         .context("creating agency settings")?;
-    let user_id = users::create(&mut tx, username, display_name, &password_hash).await?;
+    let user_id = users::create(&mut tx, username, display_name, "", "", &password_hash).await?;
     capabilities::grant_bundle(&mut tx, user_id, &ADMINISTRATOR_BUNDLE, None).await?;
     sqlx::query("DELETE FROM setup_code WHERE id = 1")
         .execute(&mut *tx)

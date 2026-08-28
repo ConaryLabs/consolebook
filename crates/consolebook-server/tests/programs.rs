@@ -55,6 +55,8 @@ impl Fixture {
             &mut conn,
             "jordan.trainer",
             "Jordan Trainer",
+            "",
+            "",
             "invented-hash",
         )
         .await

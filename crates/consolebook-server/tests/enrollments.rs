@@ -6,6 +6,7 @@
 use axum::body::Body;
 use axum::http::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
 use axum::http::{Request, StatusCode};
+use consolebook_server::capabilities::RoleBundle;
 use consolebook_server::data_dir::DataDir;
 use consolebook_server::program_export::{self, ImportTarget};
 use consolebook_server::programs::{
@@ -321,10 +322,18 @@ async fn a_created_user_signs_in_through_the_reset_flow() {
 async fn user_creation_refusals_and_roster_gates() {
     let fx = Fixture::new().await;
     let admin = fx.login("avery.admin", PASSWORD).await;
-    users::create_with_reset_code(&fx.pool, fx.admin_id, "jordan.trainee", "Jordan Trainee")
-        .await
-        .expect("create")
-        .expect("accepted");
+    users::create_with_reset_code(
+        &fx.pool,
+        fx.admin_id,
+        "jordan.trainee",
+        "Jordan Trainee",
+        "",
+        "",
+        RoleBundle::Trainee,
+    )
+    .await
+    .expect("create")
+    .expect("accepted");
     // The created account holds no capabilities; give it a session by
     // setting a password through the reset flow at the service level.
     let issued = users::issue_reset_code(
@@ -397,11 +406,18 @@ async fn user_creation_refusals_and_roster_gates() {
 async fn enrollment_pins_published_versions_only() {
     let fx = Fixture::new().await;
     let admin = fx.login("avery.admin", PASSWORD).await;
-    let trainee =
-        users::create_with_reset_code(&fx.pool, fx.admin_id, "jordan.trainee", "Jordan Trainee")
-            .await
-            .expect("create")
-            .expect("accepted");
+    let trainee = users::create_with_reset_code(
+        &fx.pool,
+        fx.admin_id,
+        "jordan.trainee",
+        "Jordan Trainee",
+        "",
+        "",
+        RoleBundle::Trainee,
+    )
+    .await
+    .expect("create")
+    .expect("accepted");
 
     // A draft refuses enrollment at the service…
     let program_id = programs::create_program(&fx.pool, fx.admin_id, "Example County CTO Program")
@@ -483,11 +499,18 @@ async fn enrollment_refusals_and_pin_protection() {
     let fx = Fixture::new().await;
     let admin = fx.login("avery.admin", PASSWORD).await;
     let (program_id, version_id) = fx.published_program(&complete_content()).await;
-    let trainee =
-        users::create_with_reset_code(&fx.pool, fx.admin_id, "jordan.trainee", "Jordan Trainee")
-            .await
-            .expect("create")
-            .expect("accepted");
+    let trainee = users::create_with_reset_code(
+        &fx.pool,
+        fx.admin_id,
+        "jordan.trainee",
+        "Jordan Trainee",
+        "",
+        "",
+        RoleBundle::Trainee,
+    )
+    .await
+    .expect("create")
+    .expect("accepted");
     let enrollment_id = enrollments::enroll(&fx.pool, fx.admin_id, version_id, trainee.id)
         .await
         .expect("call")
@@ -525,11 +548,18 @@ async fn enrollment_refusals_and_pin_protection() {
     assert_eq!(body["error"], "no_such_version");
 
     // A user without assign_training can neither enroll nor read.
-    let plain =
-        users::create_with_reset_code(&fx.pool, fx.admin_id, "casey.caller", "Casey Caller")
-            .await
-            .expect("create")
-            .expect("accepted");
+    let plain = users::create_with_reset_code(
+        &fx.pool,
+        fx.admin_id,
+        "casey.caller",
+        "Casey Caller",
+        "",
+        "",
+        RoleBundle::Trainee,
+    )
+    .await
+    .expect("create")
+    .expect("accepted");
     let refused = enrollments::enroll(&fx.pool, plain.id, version_id, plain.id)
         .await
         .expect("call");
@@ -560,8 +590,8 @@ async fn enrollment_refusals_and_pin_protection() {
         .expect_err("repointing must be rejected")
         .to_string();
     assert!(
-        err.contains("explicit events"),
-        "trigger must refuse repointing: {err}"
+        err.contains("recorded event"),
+        "trigger must refuse an unmediated repoint: {err}"
     );
 }
 
@@ -575,6 +605,9 @@ async fn milestone_two_exit_publish_enroll_export_reproduce() {
         source.admin_id,
         "jordan.trainee",
         "Jordan Trainee",
+        "",
+        "",
+        RoleBundle::Trainee,
     )
     .await
     .expect("create")
@@ -615,6 +648,9 @@ async fn milestone_two_exit_publish_enroll_export_reproduce() {
         target.admin_id,
         "rowan.trainee",
         "Rowan Trainee",
+        "",
+        "",
+        RoleBundle::Trainee,
     )
     .await
     .expect("create")
