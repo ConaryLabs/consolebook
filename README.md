@@ -35,7 +35,7 @@ The current design target is a modular monolith:
 - opaque server-side sessions with Argon2id password hashes
 - one executable and one data directory per installation
 
-The server crate implements the beginnings of the Milestone 1 operable shell: a CLI, SQLite storage with verified connection invariants and embedded migrations, a health endpoint, diagnostics, and validated backups. There is no authentication, web interface, or domain model yet.
+The server crate implements the Milestone 1 operable shell so far: a CLI, SQLite storage with verified connection invariants and embedded migrations, health and diagnostics, validated backups, and local authentication — first-run setup codes, capability-holding administrator accounts, Argon2id passwords, opaque cookie sessions, reset codes, and offline recovery. There is no web interface or training domain model yet.
 
 ## Repository map
 
@@ -54,12 +54,18 @@ The server crate implements the beginnings of the Milestone 1 operable shell: a 
 cargo run -p consolebook-server -- serve          # initialize ./data and serve the API
 cargo run -p consolebook-server -- doctor         # diagnose an installation, read-only
 cargo run -p consolebook-server -- backup         # validated snapshot into ./data/backups
+cargo run -p consolebook-server -- setup-code     # fresh first-run setup code
+cargo run -p consolebook-server -- recover --username ...  # rescue a locked-out administrator
 ```
 
-`serve` binds `127.0.0.1:7770` by default and answers `GET /api/health`. The
-data directory defaults to `./data` and can be set with `--data-dir` or
-`CONSOLEBOOK_DATA_DIR`. See [ADR 0003](docs/decisions/0003-sqlite-connection-invariants.md)
-for the database durability decisions.
+`serve` binds `127.0.0.1:7770` by default. An uninitialized installation
+prints a short-lived setup code; `POST /api/setup` creates the agency and
+first administrator, then `POST /api/auth/login` starts an HttpOnly cookie
+session. The data directory defaults to `./data` and can be set with
+`--data-dir` or `CONSOLEBOOK_DATA_DIR`. See
+[ADR 0003](docs/decisions/0003-sqlite-connection-invariants.md) for database
+durability and [ADR 0004](docs/decisions/0004-local-authentication.md) for
+authentication.
 
 ## Privacy
 
