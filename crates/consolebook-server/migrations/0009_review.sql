@@ -27,11 +27,14 @@ CREATE TABLE review_decision (
     comment TEXT NOT NULL,
     decided_at INTEGER NOT NULL,
     -- A change request explains itself (ADR 0008): blank-equivalent
-    -- comments are refused after trimming ASCII whitespace, mirroring
-    -- the service's (Unicode) trim.
+    -- comments are refused after trimming the full Unicode White_Space
+    -- set, the same characters the service's trim removes.
     CHECK (
         decision != 'changes_requested'
-        OR length(trim(comment, ' ' || char(9, 10, 13))) > 0
+        OR length(trim(comment, char(9, 10, 11, 12, 13, 32, 133, 160,
+                                     5760, 8192, 8193, 8194, 8195, 8196,
+                                     8197, 8198, 8199, 8200, 8201, 8202,
+                                     8232, 8233, 8239, 8287, 12288))) > 0
     )
 ) STRICT;
 
@@ -60,6 +63,25 @@ WHEN (SELECT kind FROM contributor_event
       ORDER BY id DESC LIMIT 1) IS NOT 'submitted_for_review'
 BEGIN
     SELECT RAISE(ABORT, 'reviews decide submitted drafts');
+END;
+
+-- ADR 0008's second snapshot is part of the transition: a change
+-- request lands only when a change_request_return snapshot beyond
+-- those earlier change requests consumed has been taken, so the
+-- reviewed content is anchored before the copy thaws — under raw
+-- writes exactly as through the service, which snapshots first in the
+-- same transaction.
+CREATE TRIGGER review_decision_change_request_snapshots
+BEFORE INSERT ON review_decision
+WHEN NEW.decision = 'changes_requested'
+    AND (SELECT count(*) FROM draft_snapshot
+         WHERE evaluation_record_id = NEW.evaluation_record_id
+           AND reason = 'change_request_return')
+        < (SELECT count(*) FROM review_decision
+           WHERE evaluation_record_id = NEW.evaluation_record_id
+             AND decision = 'changes_requested') + 1
+BEGIN
+    SELECT RAISE(ABORT, 'a change request snapshots what was reviewed');
 END;
 
 -- The decision and the workflow transition are one atomic write: the

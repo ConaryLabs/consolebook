@@ -91,21 +91,9 @@ pub async fn decide(
         return storage::refuse(tx, DraftRefusal::SelfReview).await;
     }
     let now = OffsetDateTime::now_utc().unix_timestamp();
-    sqlx::query(
-        "INSERT INTO review_decision
-             (evaluation_record_id, reviewer_user_id, decision, comment, decided_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-    )
-    .bind(record_id)
-    .bind(actor_user_id)
-    .bind(decision.as_str())
-    .bind(comment)
-    .bind(now)
-    .execute(&mut *tx)
-    .await
-    .context("recording decision")?;
     // The change-request return is ADR 0008's second snapshot point:
-    // the copy reopens, anchored to exactly what the reviewer saw.
+    // the copy reopens, anchored to exactly what the reviewer saw. It
+    // is taken before the decision row, whose triggers require it.
     if decision == ReviewDecisionKind::ChangesRequested {
         let content = draft_content::content_json(&mut tx, record_id).await?;
         sqlx::query(
@@ -121,6 +109,19 @@ pub async fn decide(
         .await
         .context("taking return snapshot")?;
     }
+    sqlx::query(
+        "INSERT INTO review_decision
+             (evaluation_record_id, reviewer_user_id, decision, comment, decided_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )
+    .bind(record_id)
+    .bind(actor_user_id)
+    .bind(decision.as_str())
+    .bind(comment)
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .context("recording decision")?;
     // The paired review_decided event is appended by the database
     // itself (migration 0009's review_decision_advances_workflow), so
     // raw writes advance the workflow exactly as this path does.

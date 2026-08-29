@@ -950,8 +950,37 @@ async fn raw_decisions_advance_the_workflow() {
         .expect("call")
         .expect("submitted");
 
-    // The comment rule holds against raw writes: ASCII-whitespace
-    // padding is not an explanation.
+    // A change request cannot land without ADR 0008's second snapshot
+    // anchoring what was reviewed — the snapshot trigger fires ahead of
+    // the comment CHECK, so this holds even for a well-commented raw
+    // insert.
+    let raw = sqlx::query(
+        "INSERT INTO review_decision
+             (evaluation_record_id, reviewer_user_id, decision, comment, decided_at)
+         VALUES (?1, ?2, 'changes_requested', 'Add the invented callback detail.', 1)",
+    )
+    .bind(record_id)
+    .bind(s.casey_id)
+    .execute(&fx.pool)
+    .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(
+        err.contains("snapshots what was reviewed"),
+        "unanchored change request: {err}"
+    );
+
+    // With the snapshot anchored, the comment rule still holds against
+    // raw writes: whitespace padding is not an explanation.
+    sqlx::query(
+        "INSERT INTO draft_snapshot
+             (evaluation_record_id, reason, content, taken_at, taken_by)
+         VALUES (?1, 'change_request_return', '{}', 1, ?2)",
+    )
+    .bind(record_id)
+    .bind(s.casey_id)
+    .execute(&fx.pool)
+    .await
+    .expect("raw snapshot");
     let raw = sqlx::query(
         "INSERT INTO review_decision
              (evaluation_record_id, reviewer_user_id, decision, comment, decided_at)
@@ -992,6 +1021,23 @@ async fn raw_decisions_advance_the_workflow() {
     .await;
     let err = raw.expect_err("must be refused").to_string();
     assert!(err.contains("pairs with its decision"), "bare event: {err}");
+
+    // The blank-comment rule covers the whole White_Space set, not just
+    // the common characters.
+    let raw = sqlx::query(
+        "INSERT INTO review_decision
+             (evaluation_record_id, reviewer_user_id, decision, comment, decided_at)
+         VALUES (?1, ?2, 'changes_requested', char(11) || char(12) || char(8232), 1)",
+    )
+    .bind(record_id)
+    .bind(s.casey_id)
+    .execute(&fx.pool)
+    .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(
+        err.contains("CHECK constraint failed"),
+        "exotic blank comment: {err}"
+    );
 
     // A raw decision is one atomic write: the database itself appends
     // the paired review_decided event...
