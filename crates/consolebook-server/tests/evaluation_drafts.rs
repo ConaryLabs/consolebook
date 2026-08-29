@@ -1116,7 +1116,7 @@ async fn submission_snapshots_and_freezes() {
     .execute(&fx.pool)
     .await;
     let err = raw.expect_err("must be refused").to_string();
-    assert!(err.contains("frozen until review"), "narrative: {err}");
+    assert!(err.contains("is frozen"), "narrative: {err}");
     let radio = fx
         .form_competency_id(s.version_id, "Radio Discipline")
         .await;
@@ -1131,13 +1131,13 @@ async fn submission_snapshots_and_freezes() {
     .execute(&fx.pool)
     .await;
     let err = raw.expect_err("must be refused").to_string();
-    assert!(err.contains("frozen until review"), "insert: {err}");
+    assert!(err.contains("is frozen"), "insert: {err}");
     let raw = sqlx::query("DELETE FROM draft_rating WHERE evaluation_record_id = ?1")
         .bind(record_id)
         .execute(&fx.pool)
         .await;
     let err = raw.expect_err("must be refused").to_string();
-    assert!(err.contains("frozen until review"), "delete: {err}");
+    assert!(err.contains("is frozen"), "delete: {err}");
     let raw = sqlx::query("UPDATE draft_snapshot SET content = '{}'")
         .execute(&fx.pool)
         .await;

@@ -43,6 +43,7 @@ pub enum EventKind {
     DraftCreated,
     DraftOwnershipTransferred,
     DraftSubmitted,
+    DraftReviewDecided,
 }
 
 impl EventKind {
@@ -80,6 +81,7 @@ impl EventKind {
             Self::DraftCreated => "draft_created",
             Self::DraftOwnershipTransferred => "draft_ownership_transferred",
             Self::DraftSubmitted => "draft_submitted",
+            Self::DraftReviewDecided => "draft_review_decided",
         }
     }
 }

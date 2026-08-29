@@ -13,11 +13,13 @@
 		markNoticeRead,
 		myAssignments,
 		mySessions,
+		reviewQueue,
 		type AssignedTrainee,
 		type CreatedUser,
 		type Health,
 		type MySession,
 		type Notice,
+		type ReviewQueueRow,
 		type Role,
 		type SessionDisposition
 	} from '$lib/api';
@@ -38,11 +40,15 @@
 	let canAuthor = $derived(
 		data.session?.capabilities.includes('author_evaluation') ?? false
 	);
+	let canReview = $derived(
+		data.session?.capabilities.includes('review_evaluation') ?? false
+	);
 
 	let health: Health | null = $state(null);
 	let notices: Notice[] = $state([]);
 	let assigned: AssignedTrainee[] = $state([]);
 	let sessions: MySession[] = $state([]);
+	let queue: ReviewQueueRow[] = $state([]);
 	$effect(() => {
 		getHealth().then(
 			(h) => (health = h),
@@ -62,6 +68,12 @@
 			mySessions().then(
 				(body) => (sessions = body.sessions),
 				() => (sessions = [])
+			);
+		}
+		if (canReview) {
+			reviewQueue().then(
+				(body) => (queue = body.drafts),
+				() => (queue = [])
 			);
 		}
 	});
@@ -372,6 +384,45 @@
 		{/if}
 		{#if sessionError}
 			<p class="error" role="alert">{sessionError}</p>
+		{/if}
+	</section>
+{/if}
+
+{#if canReview}
+	<section class="card">
+		<h2>Review queue</h2>
+		{#if queue.length === 0}
+			<p class="quiet">Nothing awaiting review.</p>
+		{:else}
+			<table class="grid">
+				<thead>
+					<tr>
+						<th>Trainee</th>
+						<th>Program</th>
+						<th>Owner</th>
+						<th>Submitted</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each queue as row (row.record_id)}
+						<tr>
+							<td>{row.trainee_display_name}</td>
+							<td>{row.program_name} — v{row.version_number}</td>
+							<td>{row.owner_display_name}</td>
+							<td>{instant(row.submitted_at)}</td>
+							<td>
+								<a href={`/drafts/${row.record_id}`}>
+									{row.eligible ? 'Review' : 'Open'}
+								</a>
+								{#if !row.eligible}
+									<span class="quiet-inline">(you contributed)</span>
+								{/if}
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
 		{/if}
 	</section>
 {/if}

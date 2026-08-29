@@ -18,6 +18,10 @@ pub enum NoticeKind {
     BackupFailed,
     AssignmentCreated,
     DraftOwnershipReceived,
+    DraftSubmittedForReview,
+    DraftApproved,
+    DraftChangesRequested,
+    DraftReturned,
 }
 
 impl NoticeKind {
@@ -27,6 +31,10 @@ impl NoticeKind {
             Self::BackupFailed => "backup_failed",
             Self::AssignmentCreated => "assignment_created",
             Self::DraftOwnershipReceived => "draft_ownership_received",
+            Self::DraftSubmittedForReview => "draft_submitted_for_review",
+            Self::DraftApproved => "draft_approved",
+            Self::DraftChangesRequested => "draft_changes_requested",
+            Self::DraftReturned => "draft_returned",
         }
     }
 }

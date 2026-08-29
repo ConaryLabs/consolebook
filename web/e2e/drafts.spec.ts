@@ -17,6 +17,7 @@ const BASE = 'http://127.0.0.1:7785';
 const PASSWORD = 'invented-passphrase-1';
 const JORDAN_PASSWORD = 'trainer-passphrase-3';
 const ROWAN_PASSWORD = 'trainer-passphrase-4';
+const CASEY_PASSWORD = 'coordinator-passphrase-5';
 
 let server: ChildProcess;
 let dataDir: string;
@@ -172,6 +173,15 @@ test('draft, collaborate, transfer, and submit a daily evaluation', async ({ pag
 			data: { username: 'rowan.trainer', display_name: 'Rowan Trainer', role: 'trainer' }
 		})
 	).json();
+	const casey = await (
+		await page.request.post(`${BASE}/api/users`, {
+			data: {
+				username: 'casey.coord',
+				display_name: 'Casey Coordinator',
+				role: 'coordinator'
+			}
+		})
+	).json();
 	const enrollment = await (
 		await page.request.post(`${BASE}/api/program-versions/${version.id}/enrollments`, {
 			data: { user_id: trainee.id }
@@ -253,4 +263,53 @@ test('draft, collaborate, transfer, and submit a daily evaluation', async ({ pag
 	await page.reload();
 	await expect(page.getByText('Submitted for review', { exact: true })).toBeVisible();
 	await expect(page.getByText('Session 2026-06-02:')).toBeVisible();
+
+	// The coordinator finds the draft on the review queue; a change
+	// request needs its comment, then reopens the draft.
+	await page.getByRole('link', { name: 'Home' }).click();
+	await page.getByRole('button', { name: 'Sign out' }).click();
+	await resetAndLogin(page, 'casey.coord', casey.reset_code, CASEY_PASSWORD);
+	await expect(page.getByRole('heading', { name: 'Review queue' })).toBeVisible();
+	await page.getByRole('link', { name: 'Review', exact: true }).click();
+	await expect(page).toHaveURL(draftUrl);
+	await page.getByLabel('Decision').selectOption({ label: 'Request changes' });
+	await expect(page.getByRole('button', { name: 'Decide' })).toBeDisabled();
+	await page
+		.getByLabel('Comment (required when requesting changes)')
+		.fill('Name the invented callback number in the narrative.');
+	await page.getByRole('button', { name: 'Decide' }).click();
+	await expect(page.getByText('Changes requested', { exact: true })).toBeVisible();
+	await expect(
+		page.getByText('Change request: Name the invented callback number in the narrative.')
+	).toBeVisible();
+
+	// The owner revises the reopened draft and resubmits.
+	await page.getByRole('link', { name: 'Home' }).click();
+	await page.getByRole('button', { name: 'Sign out' }).click();
+	await page.getByLabel('Username').fill('rowan.trainer');
+	await page.getByLabel('Password').fill(ROWAN_PASSWORD);
+	await page.getByRole('button', { name: 'Sign in' }).click();
+	await page.getByRole('link', { name: 'Open draft' }).click();
+	await expect(page).toHaveURL(draftUrl);
+	await page
+		.getByLabel('Least acceptable performance.')
+		.fill('Callback 555-0100 (invented) now named; corrected.');
+	await expect(page.getByText('Saved', { exact: true })).toBeVisible();
+	await page.getByRole('button', { name: 'Submit for review' }).click();
+	await expect(page.getByText('Submitted for review', { exact: true })).toBeVisible();
+
+	// The same reviewer approves the resubmission; the draft stays
+	// frozen and the verdicts stand in the record.
+	await page.getByRole('link', { name: 'Home' }).click();
+	await page.getByRole('button', { name: 'Sign out' }).click();
+	await page.getByLabel('Username').fill('casey.coord');
+	await page.getByLabel('Password').fill(CASEY_PASSWORD);
+	await page.getByRole('button', { name: 'Sign in' }).click();
+	await page.getByRole('link', { name: 'Review', exact: true }).click();
+	await page.getByLabel('Decision').selectOption({ label: 'Approve' });
+	await page.getByRole('button', { name: 'Decide' }).click();
+	await expect(page.getByText('Approved', { exact: true })).toBeVisible();
+	await expect(page.getByLabel('Most acceptable performance.')).toBeDisabled();
+	await expect(page.getByText('Casey Coordinator requested changes')).toBeVisible();
+	await expect(page.getByText('Casey Coordinator approved the draft')).toBeVisible();
 });
