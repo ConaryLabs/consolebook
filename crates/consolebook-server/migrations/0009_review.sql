@@ -115,6 +115,35 @@ SELECT r.id AS evaluation_record_id,
        END AS frozen
 FROM evaluation_record r;
 
+-- The frozen state is derived from the event stream, so the stream
+-- itself is guarded: while a draft is frozen, no event lands except
+-- the review_decided a decision generates — a raw append can neither
+-- thaw an approved copy nor slip past a submission.
+CREATE TRIGGER contributor_event_frozen_insert
+BEFORE INSERT ON contributor_event
+WHEN NEW.kind IN ('created', 'contributed', 'ownership_transferred',
+                  'submitted_for_review')
+    AND (SELECT frozen FROM evaluation_record_frozen
+         WHERE evaluation_record_id = NEW.evaluation_record_id) = 1
+BEGIN
+    SELECT RAISE(ABORT, 'a submitted or approved draft is frozen');
+END;
+
+-- And a review_decided event exists only as a decision's pair: the
+-- generating trigger above runs after its decision row, so exactly one
+-- unpaired decision precedes each legitimate event.
+CREATE TRIGGER contributor_event_review_pairs_decision
+BEFORE INSERT ON contributor_event
+WHEN NEW.kind = 'review_decided'
+    AND (SELECT count(*) FROM review_decision
+         WHERE evaluation_record_id = NEW.evaluation_record_id)
+        != (SELECT count(*) FROM contributor_event
+            WHERE evaluation_record_id = NEW.evaluation_record_id
+              AND kind = 'review_decided') + 1
+BEGIN
+    SELECT RAISE(ABORT, 'a review event pairs with its decision');
+END;
+
 DROP TRIGGER draft_rating_frozen_insert;
 DROP TRIGGER draft_rating_frozen_update;
 DROP TRIGGER draft_rating_frozen_delete;

@@ -967,6 +967,32 @@ async fn raw_decisions_advance_the_workflow() {
         "blank comment: {err}"
     );
 
+    // The event stream is guarded while frozen: no raw append thaws a
+    // submitted draft, and a review event without its decision is
+    // refused.
+    let raw = sqlx::query(
+        "INSERT INTO contributor_event
+             (evaluation_record_id, kind, actor_user_id, to_user_id, recorded_at)
+         VALUES (?1, 'contributed', ?2, NULL, 1)",
+    )
+    .bind(record_id)
+    .bind(s.jordan_id)
+    .execute(&fx.pool)
+    .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(err.contains("is frozen"), "submitted thaw-forge: {err}");
+    let raw = sqlx::query(
+        "INSERT INTO contributor_event
+             (evaluation_record_id, kind, actor_user_id, to_user_id, recorded_at)
+         VALUES (?1, 'review_decided', ?2, NULL, 1)",
+    )
+    .bind(record_id)
+    .bind(s.casey_id)
+    .execute(&fx.pool)
+    .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(err.contains("pairs with its decision"), "bare event: {err}");
+
     // A raw decision is one atomic write: the database itself appends
     // the paired review_decided event...
     sqlx::query(
@@ -1047,4 +1073,38 @@ async fn raw_decisions_advance_the_workflow() {
         .expect("read");
     assert_eq!(workspace.detail.status, DraftStatus::Approved);
     assert_eq!(workspace.detail.decisions.len(), 2);
+
+    // Approval is permanent at the database: no raw event thaws or
+    // reroutes the approved copy.
+    let raw = sqlx::query(
+        "INSERT INTO contributor_event
+             (evaluation_record_id, kind, actor_user_id, to_user_id, recorded_at)
+         VALUES (?1, 'contributed', ?2, NULL, 9)",
+    )
+    .bind(record_id)
+    .bind(s.jordan_id)
+    .execute(&fx.pool)
+    .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(err.contains("is frozen"), "approved thaw-forge: {err}");
+    let raw = sqlx::query(
+        "INSERT INTO contributor_event
+             (evaluation_record_id, kind, actor_user_id, to_user_id, recorded_at)
+         VALUES (?1, 'ownership_transferred', ?2, ?3, 9)",
+    )
+    .bind(record_id)
+    .bind(s.casey_id)
+    .bind(s.rowan_id)
+    .execute(&fx.pool)
+    .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(err.contains("is frozen"), "approved reroute: {err}");
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM contributor_event WHERE evaluation_record_id = ?1",
+    )
+    .bind(record_id)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("count");
+    assert_eq!(total, 5);
 }
