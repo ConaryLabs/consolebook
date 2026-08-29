@@ -19,6 +19,7 @@ use crate::http::{ApiError, AppState, CurrentUser};
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/sessions/{id}/draft", post(create_draft))
+        .route("/api/sessions/{id}/daily-forms", get(list_daily_forms))
         .route("/api/drafts/{id}", get(get_draft))
         .route("/api/drafts/{id}/content", put(save_content))
         .route("/api/drafts/{id}/transfer", post(transfer_draft))
@@ -116,6 +117,11 @@ fn draft_refusal(refusal: &DraftRefusal) -> ApiError {
             "duplicate_entry",
             "a competency or narrative appears twice in one save",
         ),
+        DraftRefusal::StaleSave => ApiError::new(
+            StatusCode::CONFLICT,
+            "stale_save",
+            "another contributor saved first; reload the draft and reapply",
+        ),
     }
 }
 
@@ -184,14 +190,51 @@ async fn get_draft(
     .into_response())
 }
 
+#[derive(Deserialize)]
+struct SaveContentRequest {
+    /// The revision this save was based on.
+    revision: i64,
+    #[serde(flatten)]
+    content: DraftContent,
+}
+
+#[derive(Serialize)]
+struct SavedBody {
+    revision: i64,
+}
+
 async fn save_content(
     State(state): State<AppState>,
     current: CurrentUser,
     Path(record_id): Path<i64>,
-    Json(input): Json<DraftContent>,
+    Json(req): Json<SaveContentRequest>,
 ) -> Result<Response, ApiError> {
-    match draft_content::save(&state.pool, current.user.id, record_id, &input).await? {
-        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
+    match draft_content::save(
+        &state.pool,
+        current.user.id,
+        record_id,
+        req.revision,
+        &req.content,
+    )
+    .await?
+    {
+        Ok(revision) => Ok(Json(SavedBody { revision }).into_response()),
+        Err(refusal) => Err(draft_refusal(&refusal)),
+    }
+}
+
+#[derive(Serialize)]
+struct DailyFormsBody {
+    forms: Vec<evaluation_drafts::DailyForm>,
+}
+
+async fn list_daily_forms(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(session_id): Path<i64>,
+) -> Result<Response, ApiError> {
+    match evaluation_drafts::list_daily_forms(&state.pool, current.user.id, session_id).await? {
+        Ok(forms) => Ok(Json(DailyFormsBody { forms }).into_response()),
         Err(refusal) => Err(draft_refusal(&refusal)),
     }
 }

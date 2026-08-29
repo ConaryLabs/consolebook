@@ -589,6 +589,19 @@ async fn create_gates_policy_and_form_resolution() {
         .expect("call")
         .expect("created with the named form");
 
+    // The picker's list carries both daily forms — never the weekly —
+    // and is gated like starting the draft.
+    let forms = evaluation_drafts::list_daily_forms(&fx.pool, fx.admin_id, doubled_session)
+        .await
+        .expect("call")
+        .expect("listed");
+    assert_eq!(forms.len(), 2);
+    assert!(forms.iter().all(|form| form.name != "Weekly Summary"));
+    let refused = evaluation_drafts::list_daily_forms(&fx.pool, s.rowan_id, doubled_session)
+        .await
+        .expect("call");
+    assert_eq!(refused, Err(DraftRefusal::CapabilityRequired));
+
     // The coverage join agrees at the database: a record cannot cover a
     // session of another enrollment or version.
     let raw = sqlx::query(
@@ -627,7 +640,7 @@ async fn attribution_streams_and_coalescing() {
         ratings: vec![rating(eci, Some(4), Vec::new())],
         narratives: vec![narrative(most, "Handled the invented fire call cleanly.")],
     };
-    draft_content::save(&fx.pool, s.jordan_id, record_id, &content)
+    draft_content::save(&fx.pool, s.jordan_id, record_id, 0, &content)
         .await
         .expect("call")
         .expect("saved");
@@ -635,10 +648,16 @@ async fn attribution_streams_and_coalescing() {
         ratings: vec![rating(eci, Some(5), Vec::new())],
         narratives: vec![narrative(most, "Handled the invented fire call very well.")],
     };
-    draft_content::save(&fx.pool, s.jordan_id, record_id, &again)
+    draft_content::save(&fx.pool, s.jordan_id, record_id, 1, &again)
         .await
         .expect("call")
         .expect("saved");
+    // A save based on a superseded revision is refused, never a silent
+    // overwrite of another contributor's work.
+    let refused = draft_content::save(&fx.pool, s.jordan_id, record_id, 1, &again)
+        .await
+        .expect("call");
+    assert_eq!(refused, Err(DraftRefusal::StaleSave));
     assert_eq!(
         fx.event_kinds(record_id).await,
         vec![
@@ -650,7 +669,7 @@ async fn attribution_streams_and_coalescing() {
 
     // An out-of-scope author cannot contribute; membership admits them,
     // and the interleaved stretch is separately attributed.
-    let refused = draft_content::save(&fx.pool, s.rowan_id, record_id, &content)
+    let refused = draft_content::save(&fx.pool, s.rowan_id, record_id, 2, &content)
         .await
         .expect("call");
     assert_eq!(refused, Err(DraftRefusal::CapabilityRequired));
@@ -658,11 +677,11 @@ async fn attribution_streams_and_coalescing() {
         .await
         .expect("call")
         .expect("added");
-    draft_content::save(&fx.pool, s.rowan_id, record_id, &content)
+    draft_content::save(&fx.pool, s.rowan_id, record_id, 2, &content)
         .await
         .expect("call")
         .expect("saved");
-    draft_content::save(&fx.pool, s.jordan_id, record_id, &again)
+    draft_content::save(&fx.pool, s.jordan_id, record_id, 3, &again)
         .await
         .expect("call")
         .expect("saved");
@@ -716,7 +735,7 @@ async fn content_validates_against_the_pinned_vocabulary() {
 
     let save = |actor: i64, content: DraftContent| {
         let pool = fx.pool.clone();
-        async move { draft_content::save(&pool, actor, record_id, &content).await }
+        async move { draft_content::save(&pool, actor, record_id, 0, &content).await }
     };
 
     // Another version's vocabulary is refused even by a coordinator.
@@ -810,6 +829,7 @@ async fn content_validates_against_the_pinned_vocabulary() {
         &fx.pool,
         s.jordan_id,
         record_id,
+        0,
         &DraftContent {
             ratings: vec![
                 rating(eci, Some(7), Vec::new()),
@@ -942,6 +962,7 @@ async fn submission_snapshots_and_freezes() {
         &fx.pool,
         s.jordan_id,
         record_id,
+        0,
         &DraftContent {
             ratings: vec![rating(eci, Some(4), Vec::new())],
             narratives: vec![narrative(most, "Met the invented standard today.")],
@@ -986,6 +1007,7 @@ async fn submission_snapshots_and_freezes() {
         &fx.pool,
         s.jordan_id,
         record_id,
+        1,
         &DraftContent {
             ratings: vec![rating(eci, Some(7), Vec::new())],
             narratives: Vec::new(),
@@ -1126,13 +1148,28 @@ async fn drafts_api_round_trip() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
-    // Contribute, and read the copy back verbatim.
+    // The single daily form resolves without a picker.
+    let (status, body) = request(
+        fx.app(),
+        "GET",
+        &format!("/api/sessions/{}/daily-forms", s.session_id),
+        Some(&jordan),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["forms"].as_array().expect("rows").len(), 1);
+    assert_eq!(body["forms"][0]["name"], "Daily Observation Report");
+
+    // Contribute, and read the copy back verbatim; the save carries the
+    // revision it read and returns the next one.
     let (status, body) = request(
         fx.app(),
         "PUT",
         &format!("/api/drafts/{draft_id}/content"),
         Some(&jordan),
         Some(serde_json::json!({
+            "revision": 0,
             "ratings": [
                 { "form_competency_id": eci, "value": 5, "modifier_ids": [nrt] }
             ],
@@ -1142,7 +1179,22 @@ async fn drafts_api_round_trip() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "save: {body}");
+    assert_eq!(status, StatusCode::OK, "save: {body}");
+    assert_eq!(body["revision"], 1);
+
+    // A stale full replacement is a typed conflict, not a silent
+    // overwrite.
+    let (status, body) = request(
+        fx.app(),
+        "PUT",
+        &format!("/api/drafts/{draft_id}/content"),
+        Some(&jordan),
+        Some(serde_json::json!({ "revision": 0, "ratings": [], "narratives": [] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"], "stale_save");
+
     let (status, body) = request(
         fx.app(),
         "GET",
@@ -1152,6 +1204,7 @@ async fn drafts_api_round_trip() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["revision"], 1);
     assert_eq!(body["content"]["ratings"][0]["value"], 5);
     assert_eq!(body["content"]["ratings"][0]["modifier_ids"][0], nrt);
     assert_eq!(
@@ -1189,7 +1242,7 @@ async fn drafts_api_round_trip() {
         "PUT",
         &format!("/api/drafts/{draft_id}/content"),
         Some(&jordan),
-        Some(serde_json::json!({ "ratings": [], "narratives": [] })),
+        Some(serde_json::json!({ "revision": 1, "ratings": [], "narratives": [] })),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);

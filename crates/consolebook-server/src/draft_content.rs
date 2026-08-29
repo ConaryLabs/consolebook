@@ -253,14 +253,17 @@ pub(crate) async fn content_json(conn: &mut SqliteConnection, record_id: i64) ->
 
 /// Replaces the working copy after validating every id and value against
 /// the record's pinned vocabulary, then attributes the save with a
-/// coalesced contributed event.
+/// coalesced contributed event. The save carries the revision it read;
+/// a stale one is refused rather than silently overwriting another
+/// contributor's work, and the new revision is returned.
 #[allow(clippy::too_many_lines)]
 pub async fn save(
     pool: &SqlitePool,
     actor_user_id: i64,
     record_id: i64,
+    revision: i64,
     input: &DraftContent,
-) -> Result<std::result::Result<(), DraftRefusal>> {
+) -> Result<std::result::Result<i64, DraftRefusal>> {
     let mut conn = pool.acquire().await.context("acquiring connection")?;
     let Some(record) = evaluation_drafts::load_record(&mut conn, record_id).await? else {
         return Ok(Err(DraftRefusal::NoSuchRecord));
@@ -273,6 +276,14 @@ pub async fn save(
     let mut tx = pool.begin().await.context("starting save")?;
     if evaluation_drafts::status_of(&mut tx, record_id).await? == DraftStatus::Submitted {
         return Ok(Err(DraftRefusal::DraftSubmitted));
+    }
+    let current: i64 = sqlx::query_scalar("SELECT revision FROM evaluation_record WHERE id = ?1")
+        .bind(record_id)
+        .fetch_one(&mut *tx)
+        .await
+        .context("reading revision")?;
+    if revision != current {
+        return Ok(Err(DraftRefusal::StaleSave));
     }
 
     // Validate against the pinned vocabulary before touching the copy.
@@ -416,6 +427,15 @@ pub async fn save(
         .context("writing narrative")?;
     }
 
+    // The saved copy supersedes revision `current`.
+    let next_revision = current + 1;
+    sqlx::query("UPDATE evaluation_record SET revision = ?1 WHERE id = ?2")
+        .bind(next_revision)
+        .bind(record_id)
+        .execute(&mut *tx)
+        .await
+        .context("bumping revision")?;
+
     // One contributed event per working stretch: consecutive saves by
     // the same contributor coalesce (ADR 0008).
     let latest = sqlx::query(
@@ -443,5 +463,5 @@ pub async fn save(
         .await?;
     }
     tx.commit().await.context("committing save")?;
-    Ok(Ok(()))
+    Ok(Ok(next_revision))
 }

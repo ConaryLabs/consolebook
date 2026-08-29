@@ -57,6 +57,9 @@ pub enum DraftRefusal {
     ValueNotAllowed,
     /// The same competency or narrative appears twice in one save.
     DuplicateEntry,
+    /// The save was based on an older revision of the working copy;
+    /// another contributor saved first.
+    StaleSave,
 }
 
 /// Workflow status derived from the latest contributor event — never
@@ -76,6 +79,7 @@ pub(crate) struct RecordRow {
     pub program_version_id: i64,
     pub evaluation_form_id: i64,
     pub owner_user_id: i64,
+    pub revision: i64,
 }
 
 pub(crate) async fn load_record(
@@ -83,7 +87,8 @@ pub(crate) async fn load_record(
     record_id: i64,
 ) -> Result<Option<RecordRow>> {
     let row = sqlx::query(
-        "SELECT id, enrollment_id, program_version_id, evaluation_form_id, owner_user_id
+        "SELECT id, enrollment_id, program_version_id, evaluation_form_id,
+                owner_user_id, revision
          FROM evaluation_record WHERE id = ?1",
     )
     .bind(record_id)
@@ -96,6 +101,7 @@ pub(crate) async fn load_record(
         program_version_id: row.get("program_version_id"),
         evaluation_form_id: row.get("evaluation_form_id"),
         owner_user_id: row.get("owner_user_id"),
+        revision: row.get("revision"),
     }))
 }
 
@@ -166,6 +172,74 @@ pub(crate) async fn may_read(
     lifecycle::may_read(pool, actor_user_id, record.enrollment_id).await
 }
 
+/// Whether the actor may start (or offer to start) the session's draft:
+/// a coordinator, or an evaluation author who is a member of the session
+/// or assigned to its enrollment.
+async fn may_start(
+    pool: &SqlitePool,
+    actor_user_id: i64,
+    session_id: i64,
+    enrollment_id: i64,
+) -> Result<bool> {
+    if capabilities::user_has(pool, actor_user_id, Capability::AssignTraining).await? {
+        return Ok(true);
+    }
+    if !capabilities::user_has(pool, actor_user_id, Capability::AuthorEvaluation).await? {
+        return Ok(false);
+    }
+    Ok(
+        crate::session_membership::is_member(pool, actor_user_id, session_id).await?
+            || assignments::is_assigned(pool, actor_user_id, enrollment_id).await?,
+    )
+}
+
+/// One `daily_report` form of a session's stamped version, for the
+/// start-draft picker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DailyForm {
+    pub id: i64,
+    pub name: String,
+}
+
+/// The stamped version's daily report forms, gated like starting the
+/// draft itself.
+pub async fn list_daily_forms(
+    pool: &SqlitePool,
+    actor_user_id: i64,
+    session_id: i64,
+) -> Result<std::result::Result<Vec<DailyForm>, DraftRefusal>> {
+    let Some(session) =
+        sqlx::query("SELECT enrollment_id, program_version_id FROM training_session WHERE id = ?1")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await
+            .context("reading session")?
+    else {
+        return Ok(Err(DraftRefusal::NoSuchSession));
+    };
+    let enrollment_id: i64 = session.get("enrollment_id");
+    let version_id: i64 = session.get("program_version_id");
+    if !may_start(pool, actor_user_id, session_id, enrollment_id).await? {
+        return Ok(Err(DraftRefusal::CapabilityRequired));
+    }
+    let forms = sqlx::query(
+        "SELECT id, name FROM evaluation_form
+         WHERE program_version_id = ?1 AND record_type = 'daily_report'
+         ORDER BY name COLLATE NOCASE, id",
+    )
+    .bind(version_id)
+    .fetch_all(pool)
+    .await
+    .context("listing daily forms")?
+    .iter()
+    .map(|row| DailyForm {
+        id: row.get("id"),
+        name: row.get("name"),
+    })
+    .collect();
+    Ok(Ok(forms))
+}
+
 // ---------------------------------------------------------------- write
 
 /// Creates the daily draft for a session: stamps the session's version,
@@ -195,18 +269,7 @@ pub async fn create(
         return Ok(Err(DraftRefusal::SessionCancelled));
     }
 
-    // The create gate mirrors the contribute gate, with the session
-    // itself as the membership scope.
-    let allowed = if capabilities::user_has(pool, actor_user_id, Capability::AssignTraining).await?
-    {
-        true
-    } else if capabilities::user_has(pool, actor_user_id, Capability::AuthorEvaluation).await? {
-        crate::session_membership::is_member(pool, actor_user_id, session_id).await?
-            || assignments::is_assigned(pool, actor_user_id, enrollment_id).await?
-    } else {
-        false
-    };
-    if !allowed {
+    if !may_start(pool, actor_user_id, session_id, enrollment_id).await? {
         return Ok(Err(DraftRefusal::CapabilityRequired));
     }
 
@@ -537,6 +600,9 @@ pub struct DraftDetail {
     pub snapshots: Vec<SnapshotMeta>,
     pub eligible_recipients: Vec<EligibleRecipient>,
     pub created_at: i64,
+    /// The working copy's optimistic-concurrency revision; every save
+    /// carries the revision it read.
+    pub revision: i64,
 }
 
 /// Reads the workflow view, gated like the record's reads.
@@ -679,5 +745,6 @@ pub async fn detail(
         snapshots,
         eligible_recipients,
         created_at: header.get("created_at"),
+        revision: record.revision,
     }))
 }

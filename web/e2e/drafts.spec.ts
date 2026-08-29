@@ -212,6 +212,10 @@ test('draft, collaborate, transfer, and submit a daily evaluation', async ({ pag
 	await expect(page.getByText('Saved', { exact: true })).toBeVisible();
 	await page.reload();
 	await expect(page.getByLabel('Rate Emergency Call Interrogation')).toHaveValue('4');
+	// Anchors are sparse (1, 4, 7); the scale still offers every value.
+	await expect(
+		page.getByLabel('Rate Emergency Call Interrogation').locator('option[value="2"]')
+	).toHaveCount(1);
 	await expect(page.getByLabel('Most acceptable performance.')).toHaveValue(
 		'Ran the invented structure fire cleanly.'
 	);

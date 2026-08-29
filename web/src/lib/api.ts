@@ -755,6 +755,7 @@ export interface DraftView {
 	snapshots: SnapshotMeta[];
 	eligible_recipients: EligibleRecipient[];
 	created_at: number;
+	revision: number;
 	form: {
 		form_name: string;
 		instructions: string;
@@ -772,14 +773,24 @@ export function createDraft(sessionId: number, formId?: number): Promise<{ id: n
 	});
 }
 
+export function dailyForms(
+	sessionId: number
+): Promise<{ forms: { id: number; name: string }[] }> {
+	return request(`/api/sessions/${sessionId}/daily-forms`);
+}
+
 export function getDraft(draftId: number): Promise<DraftView> {
 	return request(`/api/drafts/${draftId}`);
 }
 
-export function saveDraftContent(draftId: number, content: DraftContent): Promise<void> {
+export function saveDraftContent(
+	draftId: number,
+	revision: number,
+	content: DraftContent
+): Promise<{ revision: number }> {
 	return request(`/api/drafts/${draftId}/content`, {
 		method: 'PUT',
-		body: JSON.stringify(content)
+		body: JSON.stringify({ revision, ...content })
 	});
 }
 

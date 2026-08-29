@@ -5,6 +5,7 @@
 		closeSession,
 		createDraft,
 		createUser,
+		dailyForms,
 		getHealth,
 		getNotices,
 		issueResetCode,
@@ -105,11 +106,25 @@
 		}
 	}
 
-	async function startDraft(session: MySession) {
+	// A version may pin several daily forms; the picker appears exactly
+	// when the choice is real.
+	let draftForms: Record<number, { id: number; name: string }[]> = $state({});
+	let draftFormChoice: Record<number, number> = $state({});
+
+	async function startDraft(session: MySession, formId?: number) {
 		sessionError = '';
 		busy = true;
 		try {
-			const created = await createDraft(session.session_id);
+			if (formId === undefined) {
+				const { forms } = await dailyForms(session.session_id);
+				if (forms.length > 1) {
+					draftForms[session.session_id] = forms;
+					draftFormChoice[session.session_id] = forms[0].id;
+					return;
+				}
+				formId = forms[0]?.id;
+			}
+			const created = await createDraft(session.session_id, formId);
 			await goto(`/drafts/${created.id}`);
 		} catch (err) {
 			sessionError =
@@ -279,14 +294,36 @@
 								{#if session.draft_id !== null}
 									<a href={`/drafts/${session.draft_id}`}>Open draft</a>
 								{:else if session.disposition !== 'cancelled'}
-									<button
-										type="button"
-										class="secondary small"
-										disabled={busy}
-										onclick={() => startDraft(session)}
-									>
-										Start draft
-									</button>
+									{#if draftForms[session.session_id]}
+										<span class="sessionbar">
+											<select
+												aria-label="Daily form"
+												bind:value={draftFormChoice[session.session_id]}
+											>
+												{#each draftForms[session.session_id] as form (form.id)}
+													<option value={form.id}>{form.name}</option>
+												{/each}
+											</select>
+											<button
+												type="button"
+												class="secondary small"
+												disabled={busy}
+												onclick={() =>
+													startDraft(session, draftFormChoice[session.session_id])}
+											>
+												Create
+											</button>
+										</span>
+									{:else}
+										<button
+											type="button"
+											class="secondary small"
+											disabled={busy}
+											onclick={() => startDraft(session)}
+										>
+											Start draft
+										</button>
+									{/if}
 								{:else}
 									<span class="quiet-inline">—</span>
 								{/if}

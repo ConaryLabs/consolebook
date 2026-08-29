@@ -34,6 +34,11 @@ CREATE TABLE evaluation_record (
     program_version_id INTEGER NOT NULL REFERENCES program_version (id),
     evaluation_form_id INTEGER NOT NULL,
     owner_user_id INTEGER NOT NULL REFERENCES user (id),
+    -- Optimistic concurrency for the working copy: every content save
+    -- carries the revision it read and bumps it, so a stale full
+    -- replacement is a typed refusal, never a silent overwrite of
+    -- another contributor's work.
+    revision INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     created_by INTEGER REFERENCES user (id),
     -- Invariant 5: the form belongs to the stamped version.

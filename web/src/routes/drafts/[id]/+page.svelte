@@ -27,7 +27,10 @@
 	let error = $state('');
 	let busy = $state(false);
 
-	// The working copy under edit, keyed by the pinned vocabulary ids.
+	// The working copy under edit, keyed by the pinned vocabulary ids,
+	// and the revision it was based on — every save carries it, so a
+	// concurrent contributor's work is never silently overwritten.
+	let revision = $state(0);
 	let values: Record<number, number | null> = $state({});
 	let modifiers: Record<number, Record<number, boolean>> = $state({});
 	let narratives: Record<number, string> = $state({});
@@ -60,6 +63,7 @@
 			values = nextValues;
 			modifiers = nextModifiers;
 			narratives = nextNarratives;
+			revision = fetched.revision;
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : 'the server could not be reached';
 		}
@@ -109,6 +113,8 @@
 	// never depends on a submit button.
 	let saveState: 'idle' | 'pending' | 'saving' | 'saved' | 'failed' = $state('idle');
 	let saveTimer: ReturnType<typeof setTimeout> | null = null;
+	let inFlight: Promise<void> | null = null;
+	let staleReloaded = false;
 
 	function scheduleSave() {
 		if (!editable) {
@@ -121,16 +127,44 @@
 		saveTimer = setTimeout(() => void saveNow(), 600);
 	}
 
-	async function saveNow() {
+	function saveNow(): Promise<void> {
 		saveTimer = null;
 		saveState = 'saving';
-		try {
-			await saveDraftContent(draftId, buildContent());
-			saveState = 'saved';
-			await refreshMeta();
-		} catch (err) {
-			saveState = 'failed';
-			error = err instanceof ApiError ? err.message : 'the server could not be reached';
+		const run = (async () => {
+			try {
+				const saved = await saveDraftContent(draftId, revision, buildContent());
+				revision = saved.revision;
+				saveState = 'saved';
+				await refreshMeta();
+			} catch (err) {
+				if (err instanceof ApiError && err.code === 'stale_save') {
+					// Another contributor saved first: their copy wins and
+					// the page says so, rather than overwriting it.
+					staleReloaded = true;
+					await load();
+					saveState = 'idle';
+					error =
+						'Another contributor saved first; the draft reloaded with their latest content.';
+					return;
+				}
+				saveState = 'failed';
+				error = err instanceof ApiError ? err.message : 'the server could not be reached';
+			}
+		})();
+		inFlight = run;
+		return run;
+	}
+
+	// Nothing workflow-shaped runs over unsaved edits: a pending or
+	// in-flight save lands first.
+	async function flushSaves() {
+		if (saveTimer !== null) {
+			clearTimeout(saveTimer);
+			await saveNow();
+			return;
+		}
+		if (inFlight !== null) {
+			await inFlight;
 		}
 	}
 
@@ -176,6 +210,13 @@
 		busy = true;
 		error = '';
 		try {
+			await flushSaves();
+			if (saveState === 'failed' || staleReloaded) {
+				// A failed save or a reload from another contributor's copy
+				// is not something to submit sight unseen.
+				staleReloaded = false;
+				return;
+			}
 			await submitDraft(draftId);
 			await load();
 		} catch (err) {
@@ -205,6 +246,20 @@
 	function anchorLabel(competency: SkeletonCompetency, value: number): string {
 		const anchor = competency.anchors.find((candidate) => candidate.value === value);
 		return anchor ? `${value} — ${anchor.label}` : String(value);
+	}
+
+	// Every value the pinned scale accepts, not just the anchored ones —
+	// anchors may be sparse (say, 1, 4, and 7 of a 1–7 scale) and label
+	// the values they define.
+	function numericValues(competency: SkeletonCompetency): number[] {
+		if (competency.min_value === null || competency.max_value === null) {
+			return competency.anchors.map((anchor) => anchor.value);
+		}
+		const range: number[] = [];
+		for (let value = competency.min_value; value <= competency.max_value; value += 1) {
+			range.push(value);
+		}
+		return range;
 	}
 </script>
 
@@ -306,10 +361,11 @@
 										onchange={scheduleSave}
 									>
 										<option value={null}>—</option>
-										<option value={1}>Pass</option>
-										<option value={0}>Fail</option>
+										{#each competency.anchors as anchor (anchor.value)}
+											<option value={anchor.value}>{anchor.label}</option>
+										{/each}
 									</select>
-								{:else if competency.anchors.length > 0}
+								{:else}
 									<select
 										aria-label={`Rate ${competency.name}`}
 										disabled={!editable}
@@ -317,22 +373,10 @@
 										onchange={scheduleSave}
 									>
 										<option value={null}>—</option>
-										{#each competency.anchors as anchor (anchor.value)}
-											<option value={anchor.value}>
-												{anchorLabel(competency, anchor.value)}
-											</option>
+										{#each numericValues(competency) as value (value)}
+											<option {value}>{anchorLabel(competency, value)}</option>
 										{/each}
 									</select>
-								{:else}
-									<input
-										aria-label={`Rate ${competency.name}`}
-										type="number"
-										min={competency.min_value}
-										max={competency.max_value}
-										disabled={!editable}
-										bind:value={values[competency.form_competency_id]}
-										oninput={scheduleSave}
-									/>
 								{/if}
 							</td>
 							{#if view.form.modifiers.length > 0}
