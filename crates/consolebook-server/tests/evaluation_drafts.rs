@@ -15,7 +15,7 @@ use consolebook_server::programs::{
     PhaseDef, RecordType, ScaleDef, ScaleKind, TaskDef, TransitionDef, TransitionKind,
     VersionContent,
 };
-use consolebook_server::training_sessions::{self, SessionInput};
+use consolebook_server::training_sessions::{self, Disposition, SessionInput};
 use consolebook_server::{
     assignments, data_dir::DataDir, enrollments, session_membership, setup, storage, users,
 };
@@ -1553,4 +1553,58 @@ async fn frozen_backstop_covers_raw_row_moves() {
     .await
     .expect("counts");
     assert_eq!(counts, (2, 1, 1));
+
+    // Coverage is frozen with the copy: the sessions a submission
+    // attests can neither shrink nor grow raw.
+    let raw = sqlx::query("DELETE FROM evaluation_session WHERE evaluation_record_id = ?1")
+        .bind(frozen_id)
+        .execute(&fx.pool)
+        .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(err.contains("is frozen"), "coverage shrink: {err}");
+    training_sessions::close(
+        &fx.pool,
+        s.jordan_id,
+        s.session_id,
+        Disposition::Completed,
+        Some("2026-06-02T15:00"),
+    )
+    .await
+    .expect("call")
+    .expect("closed");
+    let second_session = training_sessions::create(
+        &fx.pool,
+        s.jordan_id,
+        s.enrollment_id,
+        &SessionInput {
+            business_date: "2026-06-03".to_owned(),
+            timezone: "America/Chicago".to_owned(),
+            local_start: "2026-06-03T07:00".to_owned(),
+            local_end: None,
+            disposition: None,
+            phase_id: None,
+            trainer_user_ids: Vec::new(),
+        },
+    )
+    .await
+    .expect("call")
+    .expect("created");
+    let raw = sqlx::query(
+        "INSERT INTO evaluation_session (evaluation_record_id, training_session_id)
+         VALUES (?1, ?2)",
+    )
+    .bind(frozen_id)
+    .bind(second_session)
+    .execute(&fx.pool)
+    .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(err.contains("is frozen"), "coverage growth: {err}");
+    let covered: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM evaluation_session WHERE evaluation_record_id = ?1",
+    )
+    .bind(frozen_id)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("count");
+    assert_eq!(covered, 1);
 }

@@ -223,6 +223,25 @@ BEGIN
     SELECT RAISE(ABORT, 'a submitted or approved draft is frozen');
 END;
 
+-- Coverage is part of what a submission or approval attests: while the
+-- record is frozen, the sessions it documents can neither grow nor
+-- shrink (updates were never edits — 0008's keeps_identity).
+CREATE TRIGGER evaluation_session_frozen_insert
+BEFORE INSERT ON evaluation_session
+WHEN (SELECT frozen FROM evaluation_record_frozen
+      WHERE evaluation_record_id = NEW.evaluation_record_id) = 1
+BEGIN
+    SELECT RAISE(ABORT, 'a submitted or approved draft is frozen');
+END;
+
+CREATE TRIGGER evaluation_session_frozen_delete
+BEFORE DELETE ON evaluation_session
+WHEN (SELECT frozen FROM evaluation_record_frozen
+      WHERE evaluation_record_id = OLD.evaluation_record_id) = 1
+BEGIN
+    SELECT RAISE(ABORT, 'a submitted or approved draft is frozen');
+END;
+
 -- 0008 shipped no update guard for modifier rows; with both-sides
 -- checks this closes re-pointing a modifier onto a frozen rating and
 -- swapping which modifier a frozen rating carries.
