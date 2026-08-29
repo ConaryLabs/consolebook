@@ -15,7 +15,9 @@ use consolebook_server::programs::{
 use consolebook_server::training_sessions::{
     self, Disposition, SessionInput, SessionRefusal, SessionUpdate,
 };
-use consolebook_server::{assignments, data_dir::DataDir, enrollments, setup, storage, users};
+use consolebook_server::{
+    assignments, data_dir::DataDir, enrollments, session_membership, setup, storage, users,
+};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
@@ -569,7 +571,7 @@ async fn session_gates_membership_and_close_rules() {
     .expect("call")
     .expect("created");
     assert!(
-        training_sessions::is_member(&fx.pool, jordan_id, session_id)
+        session_membership::is_member(&fx.pool, jordan_id, session_id)
             .await
             .expect("check"),
         "the recording trainer is the default member"
@@ -593,7 +595,7 @@ async fn session_gates_membership_and_close_rules() {
         StatusCode::FORBIDDEN,
         "unassigned non-member refused"
     );
-    training_sessions::add_trainer(&fx.pool, jordan_id, session_id, rowan_id)
+    session_membership::add_trainer(&fx.pool, jordan_id, session_id, rowan_id)
         .await
         .expect("call")
         .expect("a member may add a handoff trainer");
@@ -635,23 +637,23 @@ async fn session_gates_membership_and_close_rules() {
 
     // Membership rules: capability floor, no duplicates, coordinator-only
     // removal, and the database keeps the last trainer.
-    let refused = training_sessions::add_trainer(&fx.pool, jordan_id, session_id, taylor_id)
+    let refused = session_membership::add_trainer(&fx.pool, jordan_id, session_id, taylor_id)
         .await
         .expect("call");
     assert_eq!(refused, Err(SessionRefusal::TrainerLacksCapability));
-    let refused = training_sessions::add_trainer(&fx.pool, jordan_id, session_id, rowan_id)
+    let refused = session_membership::add_trainer(&fx.pool, jordan_id, session_id, rowan_id)
         .await
         .expect("call");
     assert_eq!(refused, Err(SessionRefusal::AlreadyMember));
-    let refused = training_sessions::remove_trainer(&fx.pool, jordan_id, session_id, rowan_id)
+    let refused = session_membership::remove_trainer(&fx.pool, jordan_id, session_id, rowan_id)
         .await
         .expect("call");
     assert_eq!(refused, Err(SessionRefusal::CapabilityRequired));
-    training_sessions::remove_trainer(&fx.pool, fx.admin_id, session_id, rowan_id)
+    session_membership::remove_trainer(&fx.pool, fx.admin_id, session_id, rowan_id)
         .await
         .expect("call")
         .expect("removed");
-    let refused = training_sessions::remove_trainer(&fx.pool, fx.admin_id, session_id, jordan_id)
+    let refused = session_membership::remove_trainer(&fx.pool, fx.admin_id, session_id, jordan_id)
         .await
         .expect("call");
     assert_eq!(refused, Err(SessionRefusal::LastTrainer));
@@ -670,6 +672,20 @@ async fn session_gates_membership_and_close_rules() {
         .await;
     let err = raw.expect_err("must be refused").to_string();
     assert!(err.contains("never edits"), "membership identity: {err}");
+    // The trainee identity of an enrollment never moves either: sessions
+    // and the overlap triggers derive ownership from enrollment.user_id,
+    // so a raw reassignment would rewrite whose training the sessions
+    // recorded and slip past the interval invariant.
+    let raw = sqlx::query("UPDATE enrollment SET user_id = ?1 WHERE id = ?2")
+        .bind(rowan_id)
+        .bind(enrollment_id)
+        .execute(&fx.pool)
+        .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(
+        err.contains("belongs to its trainee"),
+        "enrollment identity: {err}"
+    );
 
     // Editing an open session re-resolves UTC and stays verbatim; the
     // member closes it; closed sessions refuse further work.

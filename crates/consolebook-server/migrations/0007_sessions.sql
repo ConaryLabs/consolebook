@@ -123,6 +123,20 @@ BEGIN
     SELECT RAISE(ABORT, 'active training intervals for one trainee cannot overlap');
 END;
 
+-- The overlap invariant and session reads derive the trainee from
+-- enrollment.user_id, so that identity must never move: reassigning an
+-- enrollment to another person would rewrite whose training its sessions
+-- recorded and slip past the interval triggers above, which only fire on
+-- session writes. An enrollment connects one trainee to one program
+-- version (docs/domain-model.md Enrollment); a different trainee is a new
+-- enrollment.
+CREATE TRIGGER enrollment_keeps_user
+BEFORE UPDATE OF user_id ON enrollment
+WHEN OLD.user_id != NEW.user_id
+BEGIN
+    SELECT RAISE(ABORT, 'an enrollment belongs to its trainee');
+END;
+
 -- One or more trainers per session (docs/domain-model.md TrainingSession).
 -- Members hold author_evaluation, enforced by the service and audited;
 -- the database keeps the floor.

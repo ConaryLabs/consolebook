@@ -17,6 +17,7 @@ use crate::assignments::{self, AssignRefusal};
 use crate::capabilities::{self, Capability};
 use crate::http::{ApiError, AppState, CurrentUser};
 use crate::lifecycle::{self, EnrollmentEventKind, LifecycleRefusal, PhaseEventKind};
+use crate::session_membership;
 use crate::training_sessions::{self, Disposition, SessionInput, SessionRefusal, SessionUpdate};
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -543,7 +544,7 @@ async fn add_session_trainer(
     Path(session_id): Path<i64>,
     Json(req): Json<AddSessionTrainerRequest>,
 ) -> Result<Response, ApiError> {
-    match training_sessions::add_trainer(
+    match session_membership::add_trainer(
         &state.pool,
         current.user.id,
         session_id,
@@ -561,7 +562,7 @@ async fn remove_session_trainer(
     current: CurrentUser,
     Path((session_id, user_id)): Path<(i64, i64)>,
 ) -> Result<Response, ApiError> {
-    match training_sessions::remove_trainer(&state.pool, current.user.id, session_id, user_id)
+    match session_membership::remove_trainer(&state.pool, current.user.id, session_id, user_id)
         .await?
     {
         Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),

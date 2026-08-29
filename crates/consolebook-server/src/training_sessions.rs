@@ -1,21 +1,18 @@
-//! Training sessions with explicit time semantics (ADR 0008, ADR 0009;
+//! Training session lifecycle (ADR 0008, ADR 0009;
 //! docs/domain-model.md `TrainingSession`).
 //!
 //! A session captures agency-local meaning (business date, timezone
 //! snapshot, local start/end stored verbatim) beside the UTC instants
 //! that ordering, duration, and the overlap invariant reason about
-//! (PRINCIPLES.md 6). UTC is computed once at entry from the local
-//! representation and the IANA timezone, server-side, with RFC 5545
-//! compatible disambiguation — a spring-forward gap rolls forward, a
-//! fall-back fold takes the earlier offset (ADR 0009).
-//!
-//! Migration 0007 enforces the schema-level invariants: end never
-//! precedes start, active intervals for one trainee never overlap (open
-//! sessions unbounded, contiguity legal, cancelled sessions released),
-//! session phases belong to the enrollment's pinned version, and a
-//! session keeps at least one trainer. This module owns the rest:
-//! capability-plus-scope gates, the disposition rules, member
-//! eligibility, and typed refusals ahead of every database backstop.
+//! (PRINCIPLES.md 6). Each capability has one owner: `session_time`
+//! resolves entered local times to instants (ADR 0009),
+//! `session_membership` owns the trainer-membership grants, migration
+//! 0007 enforces the schema-level invariants (end never precedes start,
+//! active intervals never overlap, phases belong to the stamped version,
+//! the one-trainer floor, immutable identities), and this module owns
+//! the lifecycle: capability-plus-scope gates, the disposition rules,
+//! creation, editing open sessions, closing, and the session reads —
+//! with typed refusals ahead of every database backstop.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -26,6 +23,8 @@ use crate::assignments;
 use crate::audit::{self, EventKind, Subject};
 use crate::capabilities::{self, Capability};
 use crate::lifecycle::{self, EnrollmentStatus};
+use crate::session_membership::{self, SessionTrainerRow};
+use crate::session_time::{self, TimeRefusal};
 
 /// Session dispositions: a closed set, like scale kinds (ADR 0007's
 /// pattern). Completed and interrupted training occupied their interval;
@@ -90,6 +89,17 @@ pub enum SessionRefusal {
     NoTrainers,
 }
 
+impl From<TimeRefusal> for SessionRefusal {
+    fn from(refusal: TimeRefusal) -> Self {
+        match refusal {
+            TimeRefusal::InvalidBusinessDate => Self::InvalidBusinessDate,
+            TimeRefusal::UnknownTimezone => Self::UnknownTimezone,
+            TimeRefusal::InvalidLocalTime => Self::InvalidLocalTime,
+            TimeRefusal::EndBeforeStart => Self::EndBeforeStart,
+        }
+    }
+}
+
 /// What the operator entered for a new session, verbatim.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SessionInput {
@@ -107,15 +117,6 @@ pub struct SessionInput {
     /// Empty means the acting trainer records their own session.
     #[serde(default)]
     pub trainer_user_ids: Vec<i64>,
-}
-
-/// One trainer on a session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SessionTrainerRow {
-    pub user_id: i64,
-    pub username: String,
-    pub display_name: String,
-    pub added_at: i64,
 }
 
 /// One session with presentation fields resolved.
@@ -171,91 +172,7 @@ pub struct MySession {
     pub version_number: i64,
 }
 
-// ------------------------------------------------------ time resolution
-
-/// Parses an operator-entered local time ("YYYY-MM-DDTHH:MM", seconds
-/// optional — the `datetime-local` shape).
-fn parse_local(value: &str) -> Option<jiff::civil::DateTime> {
-    jiff::civil::DateTime::strptime("%Y-%m-%dT%H:%M:%S", value)
-        .or_else(|_| jiff::civil::DateTime::strptime("%Y-%m-%dT%H:%M", value))
-        .ok()
-}
-
-/// Resolves a local time in `tz` to a UTC unix second with RFC 5545
-/// compatible disambiguation (ADR 0009).
-fn resolve_local(tz: &jiff::tz::TimeZone, value: &str) -> Option<i64> {
-    let local = parse_local(value)?;
-    let zoned = tz.to_ambiguous_zoned(local).compatible().ok()?;
-    Some(zoned.timestamp().as_second())
-}
-
-/// Validated time fields for a session write.
-struct ResolvedTimes {
-    business_date: String,
-    timezone: String,
-    local_start: String,
-    local_end: Option<String>,
-    utc_start: i64,
-    utc_end: Option<i64>,
-}
-
-/// Validates and resolves the entered strings; the strings themselves are
-/// stored verbatim (trimmed), never derived back from the instants.
-fn resolve_times(
-    business_date: &str,
-    timezone: &str,
-    local_start: &str,
-    local_end: Option<&str>,
-) -> std::result::Result<ResolvedTimes, SessionRefusal> {
-    let business_date = business_date.trim();
-    if jiff::civil::Date::strptime("%Y-%m-%d", business_date).is_err() {
-        return Err(SessionRefusal::InvalidBusinessDate);
-    }
-    let timezone = timezone.trim();
-    let Ok(tz) = jiff::tz::TimeZone::get(timezone) else {
-        return Err(SessionRefusal::UnknownTimezone);
-    };
-    let local_start = local_start.trim();
-    let Some(utc_start) = resolve_local(&tz, local_start) else {
-        return Err(SessionRefusal::InvalidLocalTime);
-    };
-    let local_end = local_end.map(str::trim).filter(|value| !value.is_empty());
-    let utc_end = match local_end {
-        None => None,
-        Some(value) => {
-            let Some(instant) = resolve_local(&tz, value) else {
-                return Err(SessionRefusal::InvalidLocalTime);
-            };
-            if instant < utc_start {
-                return Err(SessionRefusal::EndBeforeStart);
-            }
-            Some(instant)
-        }
-    };
-    Ok(ResolvedTimes {
-        business_date: business_date.to_owned(),
-        timezone: timezone.to_owned(),
-        local_start: local_start.to_owned(),
-        local_end: local_end.map(str::to_owned),
-        utc_start,
-        utc_end,
-    })
-}
-
 // ---------------------------------------------------------------- gates
-
-/// Whether `user_id` is a trainer on `session_id`.
-pub async fn is_member(pool: &SqlitePool, user_id: i64, session_id: i64) -> Result<bool> {
-    let held: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM session_trainer WHERE session_id = ?1 AND trainer_user_id = ?2",
-    )
-    .bind(session_id)
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await
-    .context("checking session membership")?;
-    Ok(held.is_some())
-}
 
 /// Whether the actor may create sessions on this enrollment: a
 /// coordinator, or an assigned trainer who authors evaluations.
@@ -269,60 +186,7 @@ async fn may_create(pool: &SqlitePool, actor_user_id: i64, enrollment_id: i64) -
     )
 }
 
-/// Whether the actor may work this session: a coordinator or one of the
-/// session's trainers.
-async fn may_work(pool: &SqlitePool, actor_user_id: i64, session_id: i64) -> Result<bool> {
-    if capabilities::user_has(pool, actor_user_id, Capability::AssignTraining).await? {
-        return Ok(true);
-    }
-    is_member(pool, actor_user_id, session_id).await
-}
-
 // ---------------------------------------------------------------- write
-
-/// Refuses trainers who cannot author evaluations; returns the resolved,
-/// deduplicated member list.
-async fn validate_trainers(
-    tx: &mut SqliteConnection,
-    actor_user_id: i64,
-    requested: &[i64],
-) -> Result<std::result::Result<Vec<i64>, SessionRefusal>> {
-    let mut trainers: Vec<i64> = Vec::new();
-    let candidates: Vec<i64> = if requested.is_empty() {
-        vec![actor_user_id]
-    } else {
-        requested.to_vec()
-    };
-    for user_id in candidates {
-        if trainers.contains(&user_id) {
-            continue;
-        }
-        let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM user WHERE id = ?1")
-            .bind(user_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .context("checking trainer")?;
-        if exists.is_none() {
-            return Ok(Err(SessionRefusal::NoSuchUser));
-        }
-        let can_author: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM capability_grant WHERE user_id = ?1 AND capability = ?2",
-        )
-        .bind(user_id)
-        .bind(Capability::AuthorEvaluation.as_str())
-        .fetch_optional(&mut *tx)
-        .await
-        .context("checking trainer capability")?;
-        if can_author.is_none() {
-            return Ok(Err(SessionRefusal::TrainerLacksCapability));
-        }
-        trainers.push(user_id);
-    }
-    if trainers.is_empty() {
-        return Ok(Err(SessionRefusal::NoTrainers));
-    }
-    Ok(Ok(trainers))
-}
 
 /// Typed overlap check ahead of the database trigger. `exclude` skips the
 /// session being updated; pass 0 on creation.
@@ -366,7 +230,7 @@ pub async fn create(
         return Ok(Err(SessionRefusal::CapabilityRequired));
     }
     // Normalize before the disposition rules so an empty or whitespace
-    // end means "no end", matching how resolve_times stores it.
+    // end means "no end", matching how the resolver stores it.
     let local_end = input
         .local_end
         .as_deref()
@@ -380,14 +244,14 @@ pub async fn create(
         (Some(_), None) => return Ok(Err(SessionRefusal::EndRequired)),
         _ => {}
     }
-    let times = match resolve_times(
+    let times = match session_time::resolve(
         &input.business_date,
         &input.timezone,
         &input.local_start,
         local_end,
     ) {
         Ok(times) => times,
-        Err(refusal) => return Ok(Err(refusal)),
+        Err(refusal) => return Ok(Err(refusal.into())),
     };
 
     let mut tx = pool.begin().await.context("starting session")?;
@@ -416,7 +280,13 @@ pub async fn create(
             return Ok(Err(SessionRefusal::NoSuchPhase));
         }
     }
-    let trainers = match validate_trainers(&mut tx, actor_user_id, &input.trainer_user_ids).await? {
+    let trainers = match session_membership::validate_trainers(
+        &mut tx,
+        actor_user_id,
+        &input.trainer_user_ids,
+    )
+    .await?
+    {
         Ok(trainers) => trainers,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -471,27 +341,8 @@ pub async fn create(
     )
     .await?;
     for trainer in &trainers {
-        sqlx::query(
-            "INSERT INTO session_trainer (session_id, trainer_user_id, added_at, added_by)
-             VALUES (?1, ?2, ?3, ?4)",
-        )
-        .bind(session_id)
-        .bind(trainer)
-        .bind(now)
-        .bind(actor_user_id)
-        .execute(&mut *tx)
-        .await
-        .context("adding session trainer")?;
-        // Every access grant is audited, initial members included, so a
-        // later removal never outlives the record of the grant.
-        audit::record_for_subject(
-            &mut *tx,
-            EventKind::SessionTrainerAdded,
-            Some(actor_user_id),
-            Some(*trainer),
-            Subject::Session(session_id),
-        )
-        .await?;
+        session_membership::insert_member(&mut tx, session_id, *trainer, actor_user_id, now)
+            .await?;
     }
     tx.commit().await.context("committing session")?;
     Ok(Ok(session_id))
@@ -516,17 +367,17 @@ pub async fn update_open(
     session_id: i64,
     update: &SessionUpdate,
 ) -> Result<std::result::Result<(), SessionRefusal>> {
-    if !may_work(pool, actor_user_id, session_id).await? {
+    if !session_membership::may_work(pool, actor_user_id, session_id).await? {
         return Ok(Err(SessionRefusal::CapabilityRequired));
     }
-    let times = match resolve_times(
+    let times = match session_time::resolve(
         &update.business_date,
         &update.timezone,
         &update.local_start,
         None,
     ) {
         Ok(times) => times,
-        Err(refusal) => return Ok(Err(refusal)),
+        Err(refusal) => return Ok(Err(refusal.into())),
     };
     let mut tx = pool.begin().await.context("starting session update")?;
     let Some(row) = sqlx::query(
@@ -605,7 +456,7 @@ pub async fn close(
     disposition: Disposition,
     local_end: Option<&str>,
 ) -> Result<std::result::Result<(), SessionRefusal>> {
-    if !may_work(pool, actor_user_id, session_id).await? {
+    if !session_membership::may_work(pool, actor_user_id, session_id).await? {
         return Ok(Err(SessionRefusal::CapabilityRequired));
     }
     let mut tx = pool.begin().await.context("starting session close")?;
@@ -636,17 +487,11 @@ pub async fn close(
                 return Ok(Err(SessionRefusal::EndRequired));
             };
             let timezone: String = row.get("timezone");
-            let Ok(tz) = jiff::tz::TimeZone::get(&timezone) else {
-                return Ok(Err(SessionRefusal::UnknownTimezone));
-            };
-            let Some(instant) = resolve_local(&tz, value) else {
-                return Ok(Err(SessionRefusal::InvalidLocalTime));
-            };
             let utc_start: i64 = row.get("utc_start");
-            if instant < utc_start {
-                return Ok(Err(SessionRefusal::EndBeforeStart));
+            match session_time::resolve_end(&timezone, value, utc_start) {
+                Ok(instant) => (Some(value.to_owned()), Some(instant)),
+                Err(refusal) => return Ok(Err(refusal.into())),
             }
-            (Some(value.to_owned()), Some(instant))
         }
     };
 
@@ -678,129 +523,6 @@ pub async fn close(
     Ok(Ok(()))
 }
 
-/// Adds an `author_evaluation` holder to the session — the ad-hoc,
-/// audited addition #22 decision 2 allows. Coordinators and current
-/// members may add.
-pub async fn add_trainer(
-    pool: &SqlitePool,
-    actor_user_id: i64,
-    session_id: i64,
-    trainer_user_id: i64,
-) -> Result<std::result::Result<(), SessionRefusal>> {
-    if !may_work(pool, actor_user_id, session_id).await? {
-        return Ok(Err(SessionRefusal::CapabilityRequired));
-    }
-    let mut tx = pool.begin().await.context("starting trainer add")?;
-    let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM training_session WHERE id = ?1")
-        .bind(session_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .context("checking session")?;
-    if exists.is_none() {
-        return Ok(Err(SessionRefusal::NoSuchSession));
-    }
-    let user_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM user WHERE id = ?1")
-        .bind(trainer_user_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .context("checking trainer")?;
-    if user_exists.is_none() {
-        return Ok(Err(SessionRefusal::NoSuchUser));
-    }
-    let can_author: Option<i64> =
-        sqlx::query_scalar("SELECT 1 FROM capability_grant WHERE user_id = ?1 AND capability = ?2")
-            .bind(trainer_user_id)
-            .bind(Capability::AuthorEvaluation.as_str())
-            .fetch_optional(&mut *tx)
-            .await
-            .context("checking trainer capability")?;
-    if can_author.is_none() {
-        return Ok(Err(SessionRefusal::TrainerLacksCapability));
-    }
-    let member: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM session_trainer WHERE session_id = ?1 AND trainer_user_id = ?2",
-    )
-    .bind(session_id)
-    .bind(trainer_user_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .context("checking membership")?;
-    if member.is_some() {
-        return Ok(Err(SessionRefusal::AlreadyMember));
-    }
-    sqlx::query(
-        "INSERT INTO session_trainer (session_id, trainer_user_id, added_at, added_by)
-         VALUES (?1, ?2, ?3, ?4)",
-    )
-    .bind(session_id)
-    .bind(trainer_user_id)
-    .bind(OffsetDateTime::now_utc().unix_timestamp())
-    .bind(actor_user_id)
-    .execute(&mut *tx)
-    .await
-    .context("adding session trainer")?;
-    audit::record_for_subject(
-        &mut *tx,
-        EventKind::SessionTrainerAdded,
-        Some(actor_user_id),
-        Some(trainer_user_id),
-        Subject::Session(session_id),
-    )
-    .await?;
-    tx.commit().await.context("committing trainer add")?;
-    Ok(Ok(()))
-}
-
-/// Removes a trainer from a session — a correction, coordinator-only and
-/// audited. The database keeps the one-trainer floor.
-pub async fn remove_trainer(
-    pool: &SqlitePool,
-    actor_user_id: i64,
-    session_id: i64,
-    trainer_user_id: i64,
-) -> Result<std::result::Result<(), SessionRefusal>> {
-    if !capabilities::user_has(pool, actor_user_id, Capability::AssignTraining).await? {
-        return Ok(Err(SessionRefusal::CapabilityRequired));
-    }
-    let mut tx = pool.begin().await.context("starting trainer removal")?;
-    let member: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM session_trainer WHERE session_id = ?1 AND trainer_user_id = ?2",
-    )
-    .bind(session_id)
-    .bind(trainer_user_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .context("checking membership")?;
-    if member.is_none() {
-        return Ok(Err(SessionRefusal::NotMember));
-    }
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM session_trainer WHERE session_id = ?1")
-            .bind(session_id)
-            .fetch_one(&mut *tx)
-            .await
-            .context("counting trainers")?;
-    if count <= 1 {
-        return Ok(Err(SessionRefusal::LastTrainer));
-    }
-    sqlx::query("DELETE FROM session_trainer WHERE session_id = ?1 AND trainer_user_id = ?2")
-        .bind(session_id)
-        .bind(trainer_user_id)
-        .execute(&mut *tx)
-        .await
-        .context("removing session trainer")?;
-    audit::record_for_subject(
-        &mut *tx,
-        EventKind::SessionTrainerRemoved,
-        Some(actor_user_id),
-        Some(trainer_user_id),
-        Subject::Session(session_id),
-    )
-    .await?;
-    tx.commit().await.context("committing trainer removal")?;
-    Ok(Ok(()))
-}
-
 // ----------------------------------------------------------------- read
 
 fn session_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionRow {
@@ -822,39 +544,6 @@ fn session_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionRow {
         closed_by: row.get("closed_by"),
         trainers: Vec::new(),
     }
-}
-
-async fn trainers_for(
-    conn: &mut SqliteConnection,
-    session_ids: &[i64],
-) -> Result<std::collections::HashMap<i64, Vec<SessionTrainerRow>>> {
-    let mut by_session: std::collections::HashMap<i64, Vec<SessionTrainerRow>> =
-        std::collections::HashMap::new();
-    for chunk in session_ids {
-        let rows = sqlx::query(
-            "SELECT st.trainer_user_id, u.username, u.display_name, st.added_at
-             FROM session_trainer st
-             JOIN user u ON u.id = st.trainer_user_id
-             WHERE st.session_id = ?1
-             ORDER BY st.added_at, st.id",
-        )
-        .bind(chunk)
-        .fetch_all(&mut *conn)
-        .await
-        .context("listing session trainers")?;
-        by_session.insert(
-            *chunk,
-            rows.iter()
-                .map(|row| SessionTrainerRow {
-                    user_id: row.get("trainer_user_id"),
-                    username: row.get("username"),
-                    display_name: row.get("display_name"),
-                    added_at: row.get("added_at"),
-                })
-                .collect(),
-        );
-    }
-    Ok(by_session)
 }
 
 /// The enrollment's sessions, newest first, gated like the enrollment
@@ -891,7 +580,7 @@ pub async fn list_for_enrollment(
     .context("listing sessions")?;
     let mut sessions: Vec<SessionRow> = rows.iter().map(session_from_row).collect();
     let ids: Vec<i64> = sessions.iter().map(|session| session.id).collect();
-    let mut trainers = trainers_for(&mut conn, &ids).await?;
+    let mut trainers = session_membership::trainers_for(&mut conn, &ids).await?;
     for session in &mut sessions {
         session.trainers = trainers.remove(&session.id).unwrap_or_default();
     }
@@ -906,7 +595,7 @@ pub async fn get(
     actor_user_id: i64,
     session_id: i64,
 ) -> Result<std::result::Result<SessionDetail, SessionRefusal>> {
-    let allowed = may_work(pool, actor_user_id, session_id).await? || {
+    let allowed = session_membership::may_work(pool, actor_user_id, session_id).await? || {
         let enrollment: Option<i64> =
             sqlx::query_scalar("SELECT enrollment_id FROM training_session WHERE id = ?1")
                 .bind(session_id)
@@ -944,7 +633,7 @@ pub async fn get(
         return Ok(Err(SessionRefusal::NoSuchSession));
     };
     let mut session = session_from_row(&row);
-    let mut trainers = trainers_for(&mut conn, &[session.id]).await?;
+    let mut trainers = session_membership::trainers_for(&mut conn, &[session.id]).await?;
     session.trainers = trainers.remove(&session.id).unwrap_or_default();
     Ok(Ok(SessionDetail {
         session,
