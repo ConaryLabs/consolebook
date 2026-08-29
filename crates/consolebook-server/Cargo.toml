@@ -29,7 +29,10 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
-jiff = "0.2"
+# The timezone database is always the bundled one — never the host's —
+# so local-time resolution has the one-executable semantics ADR 0009
+# documents, on every platform.
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
 
 [dev-dependencies]
 http-body-util = "0.1"

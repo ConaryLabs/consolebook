@@ -454,6 +454,22 @@ pub async fn create(
     .await
     .context("creating session")?;
     let session_id = result.last_insert_rowid();
+    // Creation is recorded before its grants: audit ids are the tie-break
+    // within one second, so the stream never shows access preceding the
+    // session it opens.
+    let trainee: i64 = sqlx::query_scalar("SELECT user_id FROM enrollment WHERE id = ?1")
+        .bind(enrollment_id)
+        .fetch_one(&mut *tx)
+        .await
+        .context("reading enrollment")?;
+    audit::record_for_subject(
+        &mut *tx,
+        EventKind::SessionCreated,
+        Some(actor_user_id),
+        Some(trainee),
+        Subject::Session(session_id),
+    )
+    .await?;
     for trainer in &trainers {
         sqlx::query(
             "INSERT INTO session_trainer (session_id, trainer_user_id, added_at, added_by)
@@ -477,19 +493,6 @@ pub async fn create(
         )
         .await?;
     }
-    let trainee: i64 = sqlx::query_scalar("SELECT user_id FROM enrollment WHERE id = ?1")
-        .bind(enrollment_id)
-        .fetch_one(&mut *tx)
-        .await
-        .context("reading enrollment")?;
-    audit::record_for_subject(
-        &mut *tx,
-        EventKind::SessionCreated,
-        Some(actor_user_id),
-        Some(trainee),
-        Subject::Session(session_id),
-    )
-    .await?;
     tx.commit().await.context("committing session")?;
     Ok(Ok(session_id))
 }
