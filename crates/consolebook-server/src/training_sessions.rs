@@ -365,7 +365,14 @@ pub async fn create(
     if !may_create(pool, actor_user_id, enrollment_id).await? {
         return Ok(Err(SessionRefusal::CapabilityRequired));
     }
-    match (input.disposition, input.local_end.as_deref()) {
+    // Normalize before the disposition rules so an empty or whitespace
+    // end means "no end", matching how resolve_times stores it.
+    let local_end = input
+        .local_end
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (input.disposition, local_end) {
         (None, Some(_)) => return Ok(Err(SessionRefusal::DispositionRequired)),
         (Some(Disposition::Cancelled), _) => {
             return Ok(Err(SessionRefusal::InvalidDisposition));
@@ -377,7 +384,7 @@ pub async fn create(
         &input.business_date,
         &input.timezone,
         &input.local_start,
-        input.local_end.as_deref(),
+        local_end,
     ) {
         Ok(times) => times,
         Err(refusal) => return Ok(Err(refusal)),
@@ -504,12 +511,13 @@ pub async fn update_open(
         Err(refusal) => return Ok(Err(refusal)),
     };
     let mut tx = pool.begin().await.context("starting session update")?;
-    let Some(row) =
-        sqlx::query("SELECT enrollment_id, disposition FROM training_session WHERE id = ?1")
-            .bind(session_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .context("reading session")?
+    let Some(row) = sqlx::query(
+        "SELECT enrollment_id, disposition, phase_id FROM training_session WHERE id = ?1",
+    )
+    .bind(session_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .context("reading session")?
     else {
         return Ok(Err(SessionRefusal::NoSuchSession));
     };
@@ -518,7 +526,13 @@ pub async fn update_open(
         return Ok(Err(SessionRefusal::SessionClosed));
     }
     let enrollment_id: i64 = row.get("enrollment_id");
-    if let Some(phase_id) = update.phase_id {
+    // A session recorded under an earlier pin keeps its phase (migration
+    // 0007); only an actual phase change validates against the current
+    // pin, mirroring the database trigger.
+    let stored_phase: Option<i64> = row.get("phase_id");
+    if let Some(phase_id) = update.phase_id
+        && Some(phase_id) != stored_phase
+    {
         let in_version: Option<i64> = sqlx::query_scalar(
             "SELECT 1 FROM phase
              WHERE id = ?1 AND program_version_id

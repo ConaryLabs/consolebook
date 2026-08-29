@@ -921,3 +921,131 @@ async fn sessions_api_round_trip() {
     .expect("count");
     assert_eq!(audited, 1);
 }
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn blank_ends_normalize_and_historic_phases_survive_edits() {
+    let fx = Fixture::new().await;
+    let (program_id, v1) = fx.publish(None, &phased_content()).await;
+    let taylor_id = fx
+        .user_with_role("taylor.trainee", "Taylor Trainee", RoleBundle::Trainee)
+        .await;
+    let jordan_id = fx
+        .user_with_role("jordan.trainer", "Jordan Trainer", RoleBundle::Trainer)
+        .await;
+    let enrollment_id = enrollments::enroll(&fx.pool, fx.admin_id, v1, taylor_id)
+        .await
+        .expect("call")
+        .expect("enrolled");
+    let one_v1 = fx.phase_id(v1, "Phase One").await;
+
+    // A blank end is no end: with a disposition that is a typed refusal,
+    // never a constraint violation surfacing as a 500…
+    let refused = training_sessions::create(
+        &fx.pool,
+        fx.admin_id,
+        enrollment_id,
+        &input(
+            "2026-06-02",
+            "America/Chicago",
+            "2026-06-02T07:00",
+            Some("   "),
+            Some(Disposition::Completed),
+            vec![jordan_id],
+        ),
+    )
+    .await
+    .expect("call");
+    assert_eq!(refused, Err(SessionRefusal::EndRequired));
+    // …a real end without a disposition is refused, not defaulted…
+    let refused = training_sessions::create(
+        &fx.pool,
+        fx.admin_id,
+        enrollment_id,
+        &input(
+            "2026-06-02",
+            "America/Chicago",
+            "2026-06-02T07:00",
+            Some("2026-06-02T15:00"),
+            None,
+            vec![jordan_id],
+        ),
+    )
+    .await
+    .expect("call");
+    assert_eq!(refused, Err(SessionRefusal::DispositionRequired));
+    // …and an empty-string end records an ordinary open session.
+    let mut open_input = input(
+        "2026-06-02",
+        "America/Chicago",
+        "2026-06-02T07:00",
+        Some(""),
+        None,
+        vec![jordan_id],
+    );
+    open_input.phase_id = Some(one_v1);
+    let session_id = training_sessions::create(&fx.pool, fx.admin_id, enrollment_id, &open_input)
+        .await
+        .expect("call")
+        .expect("open session with a blank end");
+
+    // A version change leaves the open session's historic phase intact:
+    // editing other fields with the unchanged phase still succeeds.
+    let (_, v2) = fx.publish(Some(program_id), &phased_content()).await;
+    lifecycle::record_enrollment_event(
+        &fx.pool,
+        fx.admin_id,
+        enrollment_id,
+        EnrollmentEventKind::VersionChange,
+        "Moving to the fall revision.",
+        Some(v2),
+    )
+    .await
+    .expect("call")
+    .expect("recorded");
+    training_sessions::update_open(
+        &fx.pool,
+        fx.admin_id,
+        session_id,
+        &SessionUpdate {
+            business_date: "2026-06-02".to_owned(),
+            timezone: "America/Chicago".to_owned(),
+            local_start: "2026-06-02T06:30".to_owned(),
+            phase_id: Some(one_v1),
+        },
+    )
+    .await
+    .expect("call")
+    .expect("an unchanged historic phase survives the edit");
+    // An actual phase change validates against the current pin: a new-pin
+    // phase is accepted, and moving back to the old-version phase is not.
+    let two_v2 = fx.phase_id(v2, "Phase Two").await;
+    training_sessions::update_open(
+        &fx.pool,
+        fx.admin_id,
+        session_id,
+        &SessionUpdate {
+            business_date: "2026-06-02".to_owned(),
+            timezone: "America/Chicago".to_owned(),
+            local_start: "2026-06-02T06:30".to_owned(),
+            phase_id: Some(two_v2),
+        },
+    )
+    .await
+    .expect("call")
+    .expect("a current-pin phase is accepted");
+    let refused = training_sessions::update_open(
+        &fx.pool,
+        fx.admin_id,
+        session_id,
+        &SessionUpdate {
+            business_date: "2026-06-02".to_owned(),
+            timezone: "America/Chicago".to_owned(),
+            local_start: "2026-06-02T06:30".to_owned(),
+            phase_id: Some(one_v1),
+        },
+    )
+    .await
+    .expect("call");
+    assert_eq!(refused, Err(SessionRefusal::NoSuchPhase));
+}
