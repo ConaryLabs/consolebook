@@ -619,6 +619,30 @@ async fn create_gates_policy_and_form_resolution() {
         "join: {err}"
     );
 
+    // The mirror invariant: a documented session cannot become one that
+    // never happened — at the service and at the database.
+    let refused = training_sessions::close(
+        &fx.pool,
+        s.jordan_id,
+        s.session_id,
+        training_sessions::Disposition::Cancelled,
+        None,
+    )
+    .await
+    .expect("call");
+    assert_eq!(
+        refused,
+        Err(training_sessions::SessionRefusal::SessionDocumented)
+    );
+    let raw = sqlx::query(
+        "UPDATE training_session SET disposition = 'cancelled', closed_at = 1 WHERE id = ?1",
+    )
+    .bind(s.session_id)
+    .execute(&fx.pool)
+    .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(err.contains("documented session"), "documented: {err}");
+
     // And the database refuses coverage of a cancelled session even when
     // enrollment and version agree — the backstop under the typed
     // refusal.
@@ -1120,12 +1144,16 @@ async fn submission_snapshots_and_freezes() {
     let err = raw.expect_err("must be refused").to_string();
     assert!(err.contains("append-only"), "snapshot: {err}");
 
-    let detail = evaluation_drafts::detail(&fx.pool, s.jordan_id, record_id)
+    let workspace = evaluation_drafts::workspace(&fx.pool, s.jordan_id, record_id)
         .await
         .expect("call")
         .expect("read");
-    assert_eq!(detail.status, DraftStatus::Submitted);
-    assert_eq!(detail.snapshots.len(), 1);
+    assert_eq!(workspace.detail.status, DraftStatus::Submitted);
+    assert_eq!(workspace.detail.snapshots.len(), 1);
+    // The view is one snapshot: the revision answers for the content
+    // beside it.
+    assert_eq!(workspace.detail.revision, 1);
+    assert_eq!(workspace.content.ratings.len(), 1);
 }
 
 #[tokio::test]

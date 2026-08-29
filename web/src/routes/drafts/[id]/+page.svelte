@@ -142,13 +142,17 @@
 		saveState = 'saving';
 		const run = (async () => {
 			try {
+				// The metadata refresh stays inside the loop: an edit made
+				// while it is awaited marks the chain dirty and re-runs the
+				// save, so nothing typed during any await is dropped.
 				do {
 					dirtyAgain = false;
+					saveState = 'saving';
 					const saved = await saveDraftContent(draftId, revision, buildContent());
 					revision = saved.revision;
+					saveState = 'saved';
+					await refreshMeta();
 				} while (dirtyAgain);
-				saveState = 'saved';
-				await refreshMeta();
 			} catch (err) {
 				if (err instanceof ApiError && err.code === 'stale_save') {
 					// Another contributor saved first: their copy wins and

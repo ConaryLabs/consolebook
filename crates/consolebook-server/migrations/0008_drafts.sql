@@ -107,6 +107,18 @@ BEGIN
     SELECT RAISE(ABORT, 'a cancelled session takes no evaluation');
 END;
 
+-- And the mirror image: a session with documentation was worked, so it
+-- cannot become one that never happened. It closes as completed or
+-- interrupted instead.
+CREATE TRIGGER training_session_documented_never_cancels
+BEFORE UPDATE OF disposition ON training_session
+WHEN NEW.disposition = 'cancelled'
+    AND EXISTS (SELECT 1 FROM evaluation_session
+                WHERE training_session_id = OLD.id)
+BEGIN
+    SELECT RAISE(ABORT, 'a documented session cannot be cancelled');
+END;
+
 -- Metadata-only attribution (docs/domain-model.md ContributorEvent): who
 -- touched the draft and how, never the content itself. The closed kind
 -- set covers the whole workflow; review_decided is written by the review

@@ -661,13 +661,25 @@ pub struct DraftDetail {
     pub revision: i64,
 }
 
-/// Reads the workflow view, gated like the record's reads.
+/// The workspace read: the workflow view, the pinned form skeleton, and
+/// the working copy, assembled under one database snapshot so the
+/// revision describes exactly the content returned beside it.
+#[derive(Debug)]
+pub struct DraftWorkspace {
+    pub detail: DraftDetail,
+    pub form: draft_content::FormSkeleton,
+    pub content: draft_content::DraftContent,
+}
+
+/// Reads the workspace, gated like the record's reads. Every data read
+/// shares one transaction: a concurrent save moves the whole view or
+/// none of it, never the content without its revision.
 #[allow(clippy::too_many_lines)]
-pub async fn detail(
+pub async fn workspace(
     pool: &SqlitePool,
     actor_user_id: i64,
     record_id: i64,
-) -> Result<std::result::Result<DraftDetail, DraftRefusal>> {
+) -> Result<std::result::Result<DraftWorkspace, DraftRefusal>> {
     let mut conn = pool.acquire().await.context("acquiring connection")?;
     let Some(record) = load_record(&mut conn, record_id).await? else {
         return Ok(Err(DraftRefusal::NoSuchRecord));
@@ -676,7 +688,12 @@ pub async fn detail(
     if !may_read(pool, actor_user_id, &record).await? {
         return Ok(Err(DraftRefusal::CapabilityRequired));
     }
-    let mut conn = pool.acquire().await.context("acquiring connection")?;
+    let mut conn = pool.begin().await.context("starting workspace read")?;
+    // Reread inside the snapshot: this revision is the one the returned
+    // content answers to.
+    let Some(record) = load_record(&mut conn, record_id).await? else {
+        return Ok(Err(DraftRefusal::NoSuchRecord));
+    };
     let status = status_of(&mut conn, record_id).await?;
     let header = sqlx::query(
         "SELECT r.created_at, e.user_id AS trainee_user_id,
@@ -784,23 +801,34 @@ pub async fn detail(
         display_name: row.get("display_name"),
     })
     .collect();
-    Ok(Ok(DraftDetail {
-        id: record.id,
-        enrollment_id: record.enrollment_id,
-        program_version_id: record.program_version_id,
-        evaluation_form_id: record.evaluation_form_id,
-        owner_user_id: record.owner_user_id,
-        owner_display_name: header.get("owner_display_name"),
-        status,
-        trainee_user_id: header.get("trainee_user_id"),
-        trainee_display_name: header.get("trainee_display_name"),
-        program_name: header.get("program_name"),
-        version_number: header.get("version_number"),
-        sessions,
-        events,
-        snapshots,
-        eligible_recipients,
-        created_at: header.get("created_at"),
-        revision: record.revision,
+    let form = draft_content::skeleton(
+        &mut conn,
+        record.program_version_id,
+        record.evaluation_form_id,
+    )
+    .await?;
+    let content = draft_content::content(&mut conn, record_id).await?;
+    Ok(Ok(DraftWorkspace {
+        detail: DraftDetail {
+            id: record.id,
+            enrollment_id: record.enrollment_id,
+            program_version_id: record.program_version_id,
+            evaluation_form_id: record.evaluation_form_id,
+            owner_user_id: record.owner_user_id,
+            owner_display_name: header.get("owner_display_name"),
+            status,
+            trainee_user_id: header.get("trainee_user_id"),
+            trainee_display_name: header.get("trainee_display_name"),
+            program_name: header.get("program_name"),
+            version_number: header.get("version_number"),
+            sessions,
+            events,
+            snapshots,
+            eligible_recipients,
+            created_at: header.get("created_at"),
+            revision: record.revision,
+        },
+        form,
+        content,
     }))
 }

@@ -352,14 +352,16 @@
 										>
 											Interrupt
 										</button>
-										<button
-											type="button"
-											class="secondary small"
-											disabled={busy}
-											onclick={() => closeMine(session, 'cancelled')}
-										>
-											Cancel session
-										</button>
+										{#if session.draft_id === null}
+											<button
+												type="button"
+												class="secondary small"
+												disabled={busy}
+												onclick={() => closeMine(session, 'cancelled')}
+											>
+												Cancel session
+											</button>
+										{/if}
 									</div>
 								{/if}
 							</td>

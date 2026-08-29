@@ -4,7 +4,6 @@
 //! Gates live in the domain services; handlers translate refusal enums
 //! into stable error codes and never restate policy.
 
-use anyhow::Context;
 use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -170,24 +169,15 @@ async fn get_draft(
     current: CurrentUser,
     Path(record_id): Path<i64>,
 ) -> Result<Response, ApiError> {
-    let detail = match evaluation_drafts::detail(&state.pool, current.user.id, record_id).await? {
-        Ok(detail) => detail,
-        Err(refusal) => return Err(draft_refusal(&refusal)),
-    };
-    let mut conn = state.pool.acquire().await.context("acquiring connection")?;
-    let form = draft_content::skeleton(
-        &mut conn,
-        detail.program_version_id,
-        detail.evaluation_form_id,
-    )
-    .await?;
-    let content = draft_content::content(&mut conn, record_id).await?;
-    Ok(Json(DraftView {
-        detail,
-        form,
-        content,
-    })
-    .into_response())
+    match evaluation_drafts::workspace(&state.pool, current.user.id, record_id).await? {
+        Ok(workspace) => Ok(Json(DraftView {
+            detail: workspace.detail,
+            form: workspace.form,
+            content: workspace.content,
+        })
+        .into_response()),
+        Err(refusal) => Err(draft_refusal(&refusal)),
+    }
 }
 
 #[derive(Deserialize)]

@@ -87,6 +87,9 @@ pub enum SessionRefusal {
     LastTrainer,
     /// A session needs at least one trainer at creation.
     NoTrainers,
+    /// A documented session cannot have never happened; it closes as
+    /// completed or interrupted.
+    SessionDocumented,
 }
 
 impl From<TimeRefusal> for SessionRefusal {
@@ -481,6 +484,18 @@ pub async fn close(
     let local_end = local_end.map(str::trim).filter(|value| !value.is_empty());
     let (local_end, utc_end) = match disposition {
         Disposition::Cancelled => {
+            // A documented session was worked: it cannot have never
+            // happened. Interrupt or complete it instead.
+            let covered: Option<i64> = sqlx::query_scalar(
+                "SELECT 1 FROM evaluation_session WHERE training_session_id = ?1",
+            )
+            .bind(session_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .context("checking coverage")?;
+            if covered.is_some() {
+                return Ok(Err(SessionRefusal::SessionDocumented));
+            }
             if local_end.is_some() {
                 return Ok(Err(SessionRefusal::EndNotAllowed));
             }
