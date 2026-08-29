@@ -1386,3 +1386,171 @@ async fn refusal_releases_the_write_lock() {
         .await
         .expect("probe rollback");
 }
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn frozen_backstop_covers_raw_row_moves() {
+    let fx = Fixture::new().await;
+    let s = seed(&fx).await;
+    let eci = fx
+        .form_competency_id(s.version_id, "Emergency Call Interrogation")
+        .await;
+    let radio = fx
+        .form_competency_id(s.version_id, "Radio Discipline")
+        .await;
+    let stress = fx.form_competency_id(s.version_id, "Stress Response").await;
+    let most = fx
+        .narrative_id(s.version_id, "Most acceptable performance.")
+        .await;
+    let least = fx
+        .narrative_id(s.version_id, "Least acceptable performance.")
+        .await;
+    let nrt = fx.modifier_id(s.version_id, "NRT").await;
+
+    // Taylor's draft gets content and freezes on submission.
+    let frozen_id = evaluation_drafts::create(&fx.pool, s.jordan_id, s.session_id, None)
+        .await
+        .expect("call")
+        .expect("created");
+    let content = DraftContent {
+        ratings: vec![
+            rating(eci, Some(4), vec![nrt]),
+            rating(stress, None, Vec::new()),
+        ],
+        narratives: vec![narrative(
+            most,
+            "Handled the invented fire call to standard.",
+        )],
+    };
+    let revision = draft_content::save(&fx.pool, s.jordan_id, frozen_id, 0, &content)
+        .await
+        .expect("call")
+        .expect("saved");
+    evaluation_drafts::submit(&fx.pool, s.jordan_id, frozen_id, revision)
+        .await
+        .expect("call")
+        .expect("submitted");
+
+    // A second trainee's open draft of the same program version supplies
+    // rows whose foreign keys stay valid if re-pointed at the frozen
+    // draft.
+    let quinn_id = fx
+        .user_with_role("quinn.trainee", "Quinn Trainee", RoleBundle::Trainee)
+        .await;
+    let quinn_enrollment = enrollments::enroll(&fx.pool, fx.admin_id, s.version_id, quinn_id)
+        .await
+        .expect("call")
+        .expect("enrolled");
+    let quinn_session = training_sessions::create(
+        &fx.pool,
+        fx.admin_id,
+        quinn_enrollment,
+        &SessionInput {
+            business_date: "2026-06-02".to_owned(),
+            timezone: "America/Chicago".to_owned(),
+            local_start: "2026-06-02T07:00".to_owned(),
+            local_end: None,
+            disposition: None,
+            phase_id: None,
+            trainer_user_ids: vec![s.jordan_id],
+        },
+    )
+    .await
+    .expect("call")
+    .expect("created");
+    let open_id = evaluation_drafts::create(&fx.pool, s.jordan_id, quinn_session, None)
+        .await
+        .expect("call")
+        .expect("created");
+    let content = DraftContent {
+        ratings: vec![rating(radio, Some(1), vec![nrt])],
+        narratives: vec![narrative(
+            least,
+            "Missed one acknowledgment on the invented medical call.",
+        )],
+    };
+    draft_content::save(&fx.pool, s.jordan_id, open_id, 0, &content)
+        .await
+        .expect("call")
+        .expect("saved");
+
+    let open_rating: i64 =
+        sqlx::query_scalar("SELECT id FROM draft_rating WHERE evaluation_record_id = ?1")
+            .bind(open_id)
+            .fetch_one(&fx.pool)
+            .await
+            .expect("open rating");
+    let frozen_stress_rating: i64 = sqlx::query_scalar(
+        "SELECT id FROM draft_rating
+         WHERE evaluation_record_id = ?1 AND form_competency_id = ?2",
+    )
+    .bind(frozen_id)
+    .bind(stress)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("frozen rating");
+    let frozen_modifier: i64 = sqlx::query_scalar(
+        "SELECT m.id FROM draft_rating_modifier m
+         JOIN draft_rating r ON r.id = m.draft_rating_id
+         WHERE r.evaluation_record_id = ?1",
+    )
+    .bind(frozen_id)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("frozen modifier");
+
+    // Every raw move into (or edit inside) the frozen draft aborts: a
+    // rating re-pointed at it, a narrative re-pointed at it, a modifier
+    // re-pointed onto its rating, and a modifier swap on its own row.
+    let cases: Vec<(&str, i64, i64)> = vec![
+        (
+            "UPDATE draft_rating SET evaluation_record_id = ?1 WHERE id = ?2",
+            frozen_id,
+            open_rating,
+        ),
+        (
+            "UPDATE draft_narrative SET evaluation_record_id = ?1
+             WHERE evaluation_record_id = ?2",
+            frozen_id,
+            open_id,
+        ),
+        (
+            "UPDATE draft_rating_modifier SET draft_rating_id = ?1
+             WHERE draft_rating_id = ?2",
+            frozen_stress_rating,
+            open_rating,
+        ),
+        (
+            "UPDATE draft_rating_modifier SET rating_modifier_id = ?1 WHERE id = ?2",
+            nrt,
+            frozen_modifier,
+        ),
+    ];
+    for (sql, first, second) in cases {
+        let err = sqlx::query(sql)
+            .bind(first)
+            .bind(second)
+            .execute(&fx.pool)
+            .await
+            .expect_err("raw move into a frozen draft must abort");
+        assert!(
+            err.to_string()
+                .contains("a submitted or approved draft is frozen"),
+            "unexpected error for {sql}: {err}"
+        );
+    }
+
+    // The frozen working copy is untouched.
+    let counts: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM draft_rating WHERE evaluation_record_id = ?1),
+                (SELECT count(*) FROM draft_narrative WHERE evaluation_record_id = ?1),
+                (SELECT count(*) FROM draft_rating_modifier m
+                 JOIN draft_rating r ON r.id = m.draft_rating_id
+                 WHERE r.evaluation_record_id = ?1)",
+    )
+    .bind(frozen_id)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("counts");
+    assert_eq!(counts, (2, 1, 1));
+}

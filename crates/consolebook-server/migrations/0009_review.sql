@@ -113,10 +113,14 @@ BEGIN
     SELECT RAISE(ABORT, 'a submitted or approved draft is frozen');
 END;
 
+-- Updates guard both sides: content neither changes inside a frozen
+-- copy nor gets re-pointed into one from an editable draft.
 CREATE TRIGGER draft_rating_frozen_update
 BEFORE UPDATE ON draft_rating
 WHEN (SELECT frozen FROM evaluation_record_frozen
       WHERE evaluation_record_id = OLD.evaluation_record_id) = 1
+    OR (SELECT frozen FROM evaluation_record_frozen
+        WHERE evaluation_record_id = NEW.evaluation_record_id) = 1
 BEGIN
     SELECT RAISE(ABORT, 'a submitted or approved draft is frozen');
 END;
@@ -149,6 +153,23 @@ BEGIN
     SELECT RAISE(ABORT, 'a submitted or approved draft is frozen');
 END;
 
+-- 0008 shipped no update guard for modifier rows; with both-sides
+-- checks this closes re-pointing a modifier onto a frozen rating and
+-- swapping which modifier a frozen rating carries.
+CREATE TRIGGER draft_rating_modifier_frozen_update
+BEFORE UPDATE ON draft_rating_modifier
+WHEN (SELECT frozen FROM evaluation_record_frozen
+      WHERE evaluation_record_id = (SELECT evaluation_record_id
+                                    FROM draft_rating
+                                    WHERE id = OLD.draft_rating_id)) = 1
+    OR (SELECT frozen FROM evaluation_record_frozen
+        WHERE evaluation_record_id = (SELECT evaluation_record_id
+                                      FROM draft_rating
+                                      WHERE id = NEW.draft_rating_id)) = 1
+BEGIN
+    SELECT RAISE(ABORT, 'a submitted or approved draft is frozen');
+END;
+
 CREATE TRIGGER draft_narrative_frozen_insert
 BEFORE INSERT ON draft_narrative
 WHEN (SELECT frozen FROM evaluation_record_frozen
@@ -161,6 +182,8 @@ CREATE TRIGGER draft_narrative_frozen_update
 BEFORE UPDATE ON draft_narrative
 WHEN (SELECT frozen FROM evaluation_record_frozen
       WHERE evaluation_record_id = OLD.evaluation_record_id) = 1
+    OR (SELECT frozen FROM evaluation_record_frozen
+        WHERE evaluation_record_id = NEW.evaluation_record_id) = 1
 BEGIN
     SELECT RAISE(ABORT, 'a submitted or approved draft is frozen');
 END;
