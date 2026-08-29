@@ -143,3 +143,13 @@ WHEN (SELECT COUNT(*) FROM session_trainer WHERE session_id = OLD.session_id) = 
 BEGIN
     SELECT RAISE(ABORT, 'a training session keeps at least one trainer');
 END;
+
+-- Membership identity never moves: grants are inserted and removed
+-- through the audited service path, so an UPDATE cannot transfer access
+-- or drain a session past the floor.
+CREATE TRIGGER session_trainer_keeps_identity
+BEFORE UPDATE OF session_id, trainer_user_id ON session_trainer
+WHEN OLD.session_id != NEW.session_id OR OLD.trainer_user_id != NEW.trainer_user_id
+BEGIN
+    SELECT RAISE(ABORT, 'membership changes are inserts and deletes, never edits');
+END;

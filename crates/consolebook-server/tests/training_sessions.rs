@@ -661,6 +661,15 @@ async fn session_gates_membership_and_close_rules() {
         .await;
     let err = raw.expect_err("must be refused").to_string();
     assert!(err.contains("at least one trainer"), "floor: {err}");
+    // Membership identity never moves either: an UPDATE cannot transfer
+    // access around the audited insert-and-delete path.
+    let raw = sqlx::query("UPDATE session_trainer SET trainer_user_id = ?1 WHERE session_id = ?2")
+        .bind(rowan_id)
+        .bind(session_id)
+        .execute(&fx.pool)
+        .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(err.contains("never edits"), "membership identity: {err}");
 
     // Editing an open session re-resolves UTC and stays verbatim; the
     // member closes it; closed sessions refuse further work.
