@@ -12,6 +12,7 @@ use axum::routing::{get, post, put};
 use serde::{Deserialize, Serialize};
 
 use crate::draft_content::{self, DraftContent, FormSkeleton};
+use crate::draft_review::{self, ReviewDecisionKind};
 use crate::evaluation_drafts::{self, DraftDetail, DraftRefusal};
 use crate::http::{ApiError, AppState, CurrentUser};
 
@@ -23,6 +24,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/drafts/{id}/content", put(save_content))
         .route("/api/drafts/{id}/transfer", post(transfer_draft))
         .route("/api/drafts/{id}/submit", post(submit_draft))
+        .route("/api/drafts/{id}/review", post(review_draft))
+        .route("/api/reviews/queue", get(review_queue))
 }
 
 // ------------------------------------------------------ refusal mapping
@@ -120,6 +123,26 @@ fn draft_refusal(refusal: &DraftRefusal) -> ApiError {
             StatusCode::CONFLICT,
             "stale_save",
             "another contributor saved first; reload the draft and reapply",
+        ),
+        DraftRefusal::DraftApproved => ApiError::new(
+            StatusCode::CONFLICT,
+            "draft_approved",
+            "an approved draft stays frozen until finalization",
+        ),
+        DraftRefusal::SelfReview => ApiError::new(
+            StatusCode::FORBIDDEN,
+            "self_review",
+            "a contributor cannot review their own draft",
+        ),
+        DraftRefusal::NotSubmitted => ApiError::new(
+            StatusCode::CONFLICT,
+            "not_submitted",
+            "reviews decide submitted drafts",
+        ),
+        DraftRefusal::CommentRequired => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "comment_required",
+            "a change request explains itself; add a comment",
         ),
     }
 }
@@ -244,6 +267,48 @@ async fn transfer_draft(
         .await?
     {
         Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(refusal) => Err(draft_refusal(&refusal)),
+    }
+}
+
+#[derive(Deserialize)]
+struct ReviewRequest {
+    decision: ReviewDecisionKind,
+    #[serde(default)]
+    comment: Option<String>,
+}
+
+async fn review_draft(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(record_id): Path<i64>,
+    Json(req): Json<ReviewRequest>,
+) -> Result<Response, ApiError> {
+    match draft_review::decide(
+        &state.pool,
+        current.user.id,
+        record_id,
+        req.decision,
+        req.comment.as_deref(),
+    )
+    .await?
+    {
+        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(refusal) => Err(draft_refusal(&refusal)),
+    }
+}
+
+#[derive(Serialize)]
+struct QueueBody {
+    drafts: Vec<draft_review::QueueRow>,
+}
+
+async fn review_queue(
+    State(state): State<AppState>,
+    current: CurrentUser,
+) -> Result<Response, ApiError> {
+    match draft_review::queue(&state.pool, current.user.id).await? {
+        Ok(drafts) => Ok(Json(QueueBody { drafts }).into_response()),
         Err(refusal) => Err(draft_refusal(&refusal)),
     }
 }

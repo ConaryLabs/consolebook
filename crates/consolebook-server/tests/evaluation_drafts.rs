@@ -15,17 +15,19 @@ use consolebook_server::programs::{
     PhaseDef, RecordType, ScaleDef, ScaleKind, TaskDef, TransitionDef, TransitionKind,
     VersionContent,
 };
-use consolebook_server::training_sessions::{self, SessionInput};
+use consolebook_server::training_sessions::{self, Disposition, SessionInput};
 use consolebook_server::{
     assignments, data_dir::DataDir, enrollments, session_membership, setup, storage, users,
 };
 use http_body_util::BodyExt;
+use sqlx::ConnectOptions;
 use tower::ServiceExt;
 
 const PASSWORD: &str = "invented-passphrase-1";
 
 struct Fixture {
     _tmp: tempfile::TempDir,
+    db_path: std::path::PathBuf,
     pool: sqlx::SqlitePool,
     admin_id: i64,
 }
@@ -35,7 +37,8 @@ impl Fixture {
         let tmp = tempfile::tempdir().expect("create temp dir");
         let data_dir = DataDir::new(tmp.path().join("data"));
         data_dir.ensure_layout().expect("create layout");
-        let pool = storage::open(&data_dir.database()).await.expect("open");
+        let db_path = data_dir.database();
+        let pool = storage::open(&db_path).await.expect("open");
         let code = setup::issue_setup_code(&pool)
             .await
             .expect("issue")
@@ -54,6 +57,7 @@ impl Fixture {
         .expect("accepted");
         Self {
             _tmp: tmp,
+            db_path,
             pool,
             admin_id,
         }
@@ -1116,7 +1120,7 @@ async fn submission_snapshots_and_freezes() {
     .execute(&fx.pool)
     .await;
     let err = raw.expect_err("must be refused").to_string();
-    assert!(err.contains("frozen until review"), "narrative: {err}");
+    assert!(err.contains("is frozen"), "narrative: {err}");
     let radio = fx
         .form_competency_id(s.version_id, "Radio Discipline")
         .await;
@@ -1131,13 +1135,13 @@ async fn submission_snapshots_and_freezes() {
     .execute(&fx.pool)
     .await;
     let err = raw.expect_err("must be refused").to_string();
-    assert!(err.contains("frozen until review"), "insert: {err}");
+    assert!(err.contains("is frozen"), "insert: {err}");
     let raw = sqlx::query("DELETE FROM draft_rating WHERE evaluation_record_id = ?1")
         .bind(record_id)
         .execute(&fx.pool)
         .await;
     let err = raw.expect_err("must be refused").to_string();
-    assert!(err.contains("frozen until review"), "delete: {err}");
+    assert!(err.contains("is frozen"), "delete: {err}");
     let raw = sqlx::query("UPDATE draft_snapshot SET content = '{}'")
         .execute(&fx.pool)
         .await;
@@ -1346,4 +1350,261 @@ async fn drafts_api_round_trip() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "submitted");
     assert_eq!(body["snapshots"].as_array().expect("rows").len(), 1);
+}
+
+#[tokio::test]
+async fn refusal_releases_the_write_lock() {
+    let fx = Fixture::new().await;
+    let s = seed(&fx).await;
+    evaluation_drafts::create(&fx.pool, s.jordan_id, s.session_id, None)
+        .await
+        .expect("call")
+        .expect("created");
+    let refused = evaluation_drafts::create(&fx.pool, fx.admin_id, s.session_id, None)
+        .await
+        .expect("call");
+    assert_eq!(refused, Err(DraftRefusal::DraftAlreadyExists));
+
+    // A probe connection that is not allowed to wait at all: it takes the
+    // write lock only if the refusal above rolled its transaction back
+    // before returning. A refusal that merely drops its transaction leaves
+    // the lock to a background rollback, and a deferred writer that meets
+    // the leftover lock fails immediately — SQLite does not consult the
+    // busy timeout when promoting an open read transaction to a write.
+    let mut probe = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&fx.db_path)
+        .busy_timeout(std::time::Duration::ZERO)
+        .connect()
+        .await
+        .expect("probe connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut probe)
+        .await
+        .expect("write lock free after refusal");
+    sqlx::query("ROLLBACK")
+        .execute(&mut probe)
+        .await
+        .expect("probe rollback");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn frozen_backstop_covers_raw_row_moves() {
+    let fx = Fixture::new().await;
+    let s = seed(&fx).await;
+    let eci = fx
+        .form_competency_id(s.version_id, "Emergency Call Interrogation")
+        .await;
+    let radio = fx
+        .form_competency_id(s.version_id, "Radio Discipline")
+        .await;
+    let stress = fx.form_competency_id(s.version_id, "Stress Response").await;
+    let most = fx
+        .narrative_id(s.version_id, "Most acceptable performance.")
+        .await;
+    let least = fx
+        .narrative_id(s.version_id, "Least acceptable performance.")
+        .await;
+    let nrt = fx.modifier_id(s.version_id, "NRT").await;
+
+    // Taylor's draft gets content and freezes on submission.
+    let frozen_id = evaluation_drafts::create(&fx.pool, s.jordan_id, s.session_id, None)
+        .await
+        .expect("call")
+        .expect("created");
+    let content = DraftContent {
+        ratings: vec![
+            rating(eci, Some(4), vec![nrt]),
+            rating(stress, None, Vec::new()),
+        ],
+        narratives: vec![narrative(
+            most,
+            "Handled the invented fire call to standard.",
+        )],
+    };
+    let revision = draft_content::save(&fx.pool, s.jordan_id, frozen_id, 0, &content)
+        .await
+        .expect("call")
+        .expect("saved");
+    evaluation_drafts::submit(&fx.pool, s.jordan_id, frozen_id, revision)
+        .await
+        .expect("call")
+        .expect("submitted");
+
+    // A second trainee's open draft of the same program version supplies
+    // rows whose foreign keys stay valid if re-pointed at the frozen
+    // draft.
+    let quinn_id = fx
+        .user_with_role("quinn.trainee", "Quinn Trainee", RoleBundle::Trainee)
+        .await;
+    let quinn_enrollment = enrollments::enroll(&fx.pool, fx.admin_id, s.version_id, quinn_id)
+        .await
+        .expect("call")
+        .expect("enrolled");
+    let quinn_session = training_sessions::create(
+        &fx.pool,
+        fx.admin_id,
+        quinn_enrollment,
+        &SessionInput {
+            business_date: "2026-06-02".to_owned(),
+            timezone: "America/Chicago".to_owned(),
+            local_start: "2026-06-02T07:00".to_owned(),
+            local_end: None,
+            disposition: None,
+            phase_id: None,
+            trainer_user_ids: vec![s.jordan_id],
+        },
+    )
+    .await
+    .expect("call")
+    .expect("created");
+    let open_id = evaluation_drafts::create(&fx.pool, s.jordan_id, quinn_session, None)
+        .await
+        .expect("call")
+        .expect("created");
+    let content = DraftContent {
+        ratings: vec![rating(radio, Some(1), vec![nrt])],
+        narratives: vec![narrative(
+            least,
+            "Missed one acknowledgment on the invented medical call.",
+        )],
+    };
+    draft_content::save(&fx.pool, s.jordan_id, open_id, 0, &content)
+        .await
+        .expect("call")
+        .expect("saved");
+
+    let open_rating: i64 =
+        sqlx::query_scalar("SELECT id FROM draft_rating WHERE evaluation_record_id = ?1")
+            .bind(open_id)
+            .fetch_one(&fx.pool)
+            .await
+            .expect("open rating");
+    let frozen_stress_rating: i64 = sqlx::query_scalar(
+        "SELECT id FROM draft_rating
+         WHERE evaluation_record_id = ?1 AND form_competency_id = ?2",
+    )
+    .bind(frozen_id)
+    .bind(stress)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("frozen rating");
+    let frozen_modifier: i64 = sqlx::query_scalar(
+        "SELECT m.id FROM draft_rating_modifier m
+         JOIN draft_rating r ON r.id = m.draft_rating_id
+         WHERE r.evaluation_record_id = ?1",
+    )
+    .bind(frozen_id)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("frozen modifier");
+
+    // Every raw move into (or edit inside) the frozen draft aborts: a
+    // rating re-pointed at it, a narrative re-pointed at it, a modifier
+    // re-pointed onto its rating, and a modifier swap on its own row.
+    let cases: Vec<(&str, i64, i64)> = vec![
+        (
+            "UPDATE draft_rating SET evaluation_record_id = ?1 WHERE id = ?2",
+            frozen_id,
+            open_rating,
+        ),
+        (
+            "UPDATE draft_narrative SET evaluation_record_id = ?1
+             WHERE evaluation_record_id = ?2",
+            frozen_id,
+            open_id,
+        ),
+        (
+            "UPDATE draft_rating_modifier SET draft_rating_id = ?1
+             WHERE draft_rating_id = ?2",
+            frozen_stress_rating,
+            open_rating,
+        ),
+        (
+            "UPDATE draft_rating_modifier SET rating_modifier_id = ?1 WHERE id = ?2",
+            nrt,
+            frozen_modifier,
+        ),
+    ];
+    for (sql, first, second) in cases {
+        let err = sqlx::query(sql)
+            .bind(first)
+            .bind(second)
+            .execute(&fx.pool)
+            .await
+            .expect_err("raw move into a frozen draft must abort");
+        assert!(
+            err.to_string()
+                .contains("a submitted or approved draft is frozen"),
+            "unexpected error for {sql}: {err}"
+        );
+    }
+
+    // The frozen working copy is untouched.
+    let counts: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM draft_rating WHERE evaluation_record_id = ?1),
+                (SELECT count(*) FROM draft_narrative WHERE evaluation_record_id = ?1),
+                (SELECT count(*) FROM draft_rating_modifier m
+                 JOIN draft_rating r ON r.id = m.draft_rating_id
+                 WHERE r.evaluation_record_id = ?1)",
+    )
+    .bind(frozen_id)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("counts");
+    assert_eq!(counts, (2, 1, 1));
+
+    // Coverage is frozen with the copy: the sessions a submission
+    // attests can neither shrink nor grow raw.
+    let raw = sqlx::query("DELETE FROM evaluation_session WHERE evaluation_record_id = ?1")
+        .bind(frozen_id)
+        .execute(&fx.pool)
+        .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(err.contains("is frozen"), "coverage shrink: {err}");
+    training_sessions::close(
+        &fx.pool,
+        s.jordan_id,
+        s.session_id,
+        Disposition::Completed,
+        Some("2026-06-02T15:00"),
+    )
+    .await
+    .expect("call")
+    .expect("closed");
+    let second_session = training_sessions::create(
+        &fx.pool,
+        s.jordan_id,
+        s.enrollment_id,
+        &SessionInput {
+            business_date: "2026-06-03".to_owned(),
+            timezone: "America/Chicago".to_owned(),
+            local_start: "2026-06-03T07:00".to_owned(),
+            local_end: None,
+            disposition: None,
+            phase_id: None,
+            trainer_user_ids: Vec::new(),
+        },
+    )
+    .await
+    .expect("call")
+    .expect("created");
+    let raw = sqlx::query(
+        "INSERT INTO evaluation_session (evaluation_record_id, training_session_id)
+         VALUES (?1, ?2)",
+    )
+    .bind(frozen_id)
+    .bind(second_session)
+    .execute(&fx.pool)
+    .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(err.contains("is frozen"), "coverage growth: {err}");
+    let covered: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM evaluation_session WHERE evaluation_record_id = ?1",
+    )
+    .bind(frozen_id)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("count");
+    assert_eq!(covered, 1);
 }

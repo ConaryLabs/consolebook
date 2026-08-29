@@ -61,15 +61,39 @@ pub enum DraftRefusal {
     /// The save was based on an older revision of the working copy;
     /// another contributor saved first.
     StaleSave,
+    /// An approved draft stays frozen until finalization.
+    DraftApproved,
+    /// A contributor cannot review their own draft (ADR 0008).
+    SelfReview,
+    /// Reviews decide submitted drafts.
+    NotSubmitted,
+    /// A change request explains itself.
+    CommentRequired,
 }
 
-/// Workflow status derived from the latest contributor event — never
-/// stored beside the stream (ADR 0008's enrollment pattern).
+/// Workflow status derived from the latest contributor event plus the
+/// latest review decision — never stored beside the streams (ADR 0008's
+/// enrollment pattern).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DraftStatus {
     Draft,
     Submitted,
+    ChangesRequested,
+    Returned,
+    Approved,
+}
+
+impl DraftStatus {
+    /// The typed refusal a frozen state answers writes with; editable
+    /// states answer `None`.
+    pub(crate) fn frozen_refusal(self) -> Option<DraftRefusal> {
+        match self {
+            Self::Submitted => Some(DraftRefusal::DraftSubmitted),
+            Self::Approved => Some(DraftRefusal::DraftApproved),
+            Self::Draft | Self::ChangesRequested | Self::Returned => None,
+        }
+    }
 }
 
 /// The record row the services act on.
@@ -118,8 +142,59 @@ pub(crate) async fn status_of(conn: &mut SqliteConnection, record_id: i64) -> Re
     .context("reading latest contributor event")?;
     Ok(match latest.as_deref() {
         Some("submitted_for_review") => DraftStatus::Submitted,
+        Some("review_decided") => {
+            let decision: Option<String> = sqlx::query_scalar(
+                "SELECT decision FROM review_decision
+                 WHERE evaluation_record_id = ?1
+                 ORDER BY id DESC LIMIT 1",
+            )
+            .bind(record_id)
+            .fetch_optional(&mut *conn)
+            .await
+            .context("reading latest review decision")?;
+            match decision.as_deref() {
+                Some("approved") => DraftStatus::Approved,
+                Some("changes_requested") => DraftStatus::ChangesRequested,
+                Some("returned") => DraftStatus::Returned,
+                _ => DraftStatus::Draft,
+            }
+        }
         _ => DraftStatus::Draft,
     })
+}
+
+/// Whether `user_id` is a contributor to the record: its current owner,
+/// an actor of created/contributed/submitted events, or an ownership
+/// recipient. A coordinator who only moved ownership between others is
+/// not one. Self-review turns on this (ADR 0008).
+pub(crate) async fn is_contributor(
+    conn: &mut SqliteConnection,
+    record_id: i64,
+    user_id: i64,
+) -> Result<bool> {
+    let owner: i64 =
+        sqlx::query_scalar("SELECT owner_user_id FROM evaluation_record WHERE id = ?1")
+            .bind(record_id)
+            .fetch_one(&mut *conn)
+            .await
+            .context("reading owner")?;
+    if owner == user_id {
+        return Ok(true);
+    }
+    let touched: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM contributor_event
+         WHERE evaluation_record_id = ?1
+           AND ((kind IN ('created', 'contributed', 'submitted_for_review')
+                   AND actor_user_id = ?2)
+               OR (kind = 'ownership_transferred' AND to_user_id = ?2))
+         LIMIT 1",
+    )
+    .bind(record_id)
+    .bind(user_id)
+    .fetch_optional(&mut *conn)
+    .await
+    .context("checking contribution")?;
+    Ok(touched.is_some())
 }
 
 // ---------------------------------------------------------------- gates
@@ -160,8 +235,9 @@ pub(crate) async fn may_contribute(
     )
 }
 
-/// Whether the actor may read this draft: contributors, plus everyone
-/// the enrollment history is open to.
+/// Whether the actor may read this draft: contributors, everyone the
+/// enrollment history is open to, and — once the record has been
+/// submitted at least once — evaluation reviewers.
 pub(crate) async fn may_read(
     pool: &SqlitePool,
     actor_user_id: i64,
@@ -170,7 +246,22 @@ pub(crate) async fn may_read(
     if may_contribute(pool, actor_user_id, record).await? {
         return Ok(true);
     }
-    lifecycle::may_read(pool, actor_user_id, record.enrollment_id).await
+    if lifecycle::may_read(pool, actor_user_id, record.enrollment_id).await? {
+        return Ok(true);
+    }
+    if capabilities::user_has(pool, actor_user_id, Capability::ReviewEvaluation).await? {
+        let submitted: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM contributor_event
+             WHERE evaluation_record_id = ?1 AND kind = 'submitted_for_review'
+             LIMIT 1",
+        )
+        .bind(record.id)
+        .fetch_optional(pool)
+        .await
+        .context("checking submission history")?;
+        return Ok(submitted.is_some());
+    }
+    Ok(false)
 }
 
 /// Whether the actor may start (or offer to start) the session's draft:
@@ -286,13 +377,13 @@ pub async fn create(
     .await
     .context("rereading session")?
     else {
-        return Ok(Err(DraftRefusal::NoSuchSession));
+        return storage::refuse(tx, DraftRefusal::NoSuchSession).await;
     };
     let enrollment_id: i64 = session.get("enrollment_id");
     let version_id: i64 = session.get("program_version_id");
     let disposition: Option<String> = session.get("disposition");
     if disposition.as_deref() == Some("cancelled") {
-        return Ok(Err(DraftRefusal::SessionCancelled));
+        return storage::refuse(tx, DraftRefusal::SessionCancelled).await;
     }
     // v1 policy, not schema: one daily draft per training session.
     let existing: Option<i64> = sqlx::query_scalar(
@@ -303,11 +394,11 @@ pub async fn create(
     .await
     .context("checking existing draft")?;
     if existing.is_some() {
-        return Ok(Err(DraftRefusal::DraftAlreadyExists));
+        return storage::refuse(tx, DraftRefusal::DraftAlreadyExists).await;
     }
     let form_id = match resolve_form(&mut tx, version_id, form_id).await? {
         Ok(form_id) => form_id,
-        Err(refusal) => return Ok(Err(refusal)),
+        Err(refusal) => return storage::refuse(tx, refusal).await,
     };
 
     let now = OffsetDateTime::now_utc().unix_timestamp();
@@ -455,8 +546,8 @@ pub async fn transfer(
     }
 
     let mut tx = storage::write_tx(pool).await.context("starting transfer")?;
-    if status_of(&mut tx, record_id).await? == DraftStatus::Submitted {
-        return Ok(Err(DraftRefusal::DraftSubmitted));
+    if let Some(refusal) = status_of(&mut tx, record_id).await?.frozen_refusal() {
+        return storage::refuse(tx, refusal).await;
     }
     // Ownership is rechecked inside the transaction: a raced transfer
     // must never let a former owner exercise authority they no longer
@@ -468,10 +559,10 @@ pub async fn transfer(
             .await
             .context("rechecking owner")?;
     if actor_user_id != owner_now && !coordinator {
-        return Ok(Err(DraftRefusal::CapabilityRequired));
+        return storage::refuse(tx, DraftRefusal::CapabilityRequired).await;
     }
     if to_user_id == owner_now {
-        return Ok(Err(DraftRefusal::AlreadyOwner));
+        return storage::refuse(tx, DraftRefusal::AlreadyOwner).await;
     }
     let now = OffsetDateTime::now_utc().unix_timestamp();
     append_event(
@@ -542,8 +633,8 @@ pub async fn submit(
     let mut tx = storage::write_tx(pool)
         .await
         .context("starting submission")?;
-    if status_of(&mut tx, record_id).await? == DraftStatus::Submitted {
-        return Ok(Err(DraftRefusal::DraftSubmitted));
+    if let Some(refusal) = status_of(&mut tx, record_id).await?.frozen_refusal() {
+        return storage::refuse(tx, refusal).await;
     }
     // Ownership and revision are rechecked inside the transaction: a
     // raced transfer or a concurrent save means the submitter is no
@@ -555,11 +646,11 @@ pub async fn submit(
         .context("rechecking record")?;
     let owner_now: i64 = row.get("owner_user_id");
     if actor_user_id != owner_now && !coordinator {
-        return Ok(Err(DraftRefusal::CapabilityRequired));
+        return storage::refuse(tx, DraftRefusal::CapabilityRequired).await;
     }
     let revision_now: i64 = row.get("revision");
     if expected_revision != revision_now {
-        return Ok(Err(DraftRefusal::StaleSave));
+        return storage::refuse(tx, DraftRefusal::StaleSave).await;
     }
     let content = draft_content::content_json(&mut tx, record_id).await?;
     let now = OffsetDateTime::now_utc().unix_timestamp();
@@ -592,6 +683,34 @@ pub async fn submit(
         Subject::Record(record_id),
     )
     .await?;
+    // The review queue's nudge: every evaluation reviewer except the
+    // submitter hears a draft awaits them (ADR 0008 notices).
+    let trainee: String = sqlx::query_scalar(
+        "SELECT u.display_name FROM enrollment e
+         JOIN user u ON u.id = e.user_id
+         WHERE e.id = ?1",
+    )
+    .bind(record.enrollment_id)
+    .fetch_one(&mut *tx)
+    .await
+    .context("reading trainee name")?;
+    let reviewers: Vec<i64> =
+        sqlx::query_scalar("SELECT user_id FROM capability_grant WHERE capability = ?1")
+            .bind(Capability::ReviewEvaluation.as_str())
+            .fetch_all(&mut *tx)
+            .await
+            .context("listing reviewers")?;
+    for reviewer in reviewers {
+        if reviewer != actor_user_id {
+            notices::notify_user(
+                &mut *tx,
+                reviewer,
+                NoticeKind::DraftSubmittedForReview,
+                &format!("A draft evaluation for {trainee} awaits review."),
+            )
+            .await?;
+        }
+    }
     tx.commit().await.context("committing submission")?;
     Ok(Ok(()))
 }
@@ -637,6 +756,18 @@ pub struct EligibleRecipient {
     pub display_name: String,
 }
 
+/// One review decision, presented with its comment — the workflow's
+/// permanent verdicts.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewDecisionRow {
+    pub id: i64,
+    pub reviewer_user_id: i64,
+    pub reviewer_display_name: String,
+    pub decision: String,
+    pub comment: String,
+    pub decided_at: i64,
+}
+
 /// The draft's workflow view: identity, status, attribution, coverage.
 #[derive(Debug, Serialize)]
 pub struct DraftDetail {
@@ -655,6 +786,10 @@ pub struct DraftDetail {
     pub events: Vec<ContributorEventRow>,
     pub snapshots: Vec<SnapshotMeta>,
     pub eligible_recipients: Vec<EligibleRecipient>,
+    pub decisions: Vec<ReviewDecisionRow>,
+    /// Whether the caller may decide this draft right now: a qualified
+    /// non-contributor reviewer looking at a submitted draft.
+    pub viewer_may_review: bool,
     pub created_at: i64,
     /// The working copy's optimistic-concurrency revision; every save
     /// carries the revision it read.
@@ -688,6 +823,8 @@ pub async fn workspace(
     if !may_read(pool, actor_user_id, &record).await? {
         return Ok(Err(DraftRefusal::CapabilityRequired));
     }
+    let reviewer_capability =
+        capabilities::user_has(pool, actor_user_id, Capability::ReviewEvaluation).await?;
     let mut conn = pool.begin().await.context("starting workspace read")?;
     // Reread inside the snapshot: this revision is the one the returned
     // content answers to.
@@ -695,6 +832,9 @@ pub async fn workspace(
         return Ok(Err(DraftRefusal::NoSuchRecord));
     };
     let status = status_of(&mut conn, record_id).await?;
+    let viewer_may_review = reviewer_capability
+        && status == DraftStatus::Submitted
+        && !is_contributor(&mut conn, record_id, actor_user_id).await?;
     let header = sqlx::query(
         "SELECT r.created_at, e.user_id AS trainee_user_id,
                 tu.display_name AS trainee_display_name,
@@ -801,6 +941,28 @@ pub async fn workspace(
         display_name: row.get("display_name"),
     })
     .collect();
+    let decisions = sqlx::query(
+        "SELECT rd.id, rd.reviewer_user_id, u.display_name AS reviewer_display_name,
+                rd.decision, rd.comment, rd.decided_at
+         FROM review_decision rd
+         JOIN user u ON u.id = rd.reviewer_user_id
+         WHERE rd.evaluation_record_id = ?1
+         ORDER BY rd.id",
+    )
+    .bind(record_id)
+    .fetch_all(&mut *conn)
+    .await
+    .context("listing review decisions")?
+    .iter()
+    .map(|row| ReviewDecisionRow {
+        id: row.get("id"),
+        reviewer_user_id: row.get("reviewer_user_id"),
+        reviewer_display_name: row.get("reviewer_display_name"),
+        decision: row.get("decision"),
+        comment: row.get("comment"),
+        decided_at: row.get("decided_at"),
+    })
+    .collect();
     let form = draft_content::skeleton(
         &mut conn,
         record.program_version_id,
@@ -825,6 +987,8 @@ pub async fn workspace(
             events,
             snapshots,
             eligible_recipients,
+            decisions,
+            viewer_may_review,
             created_at: header.get("created_at"),
             revision: record.revision,
         },

@@ -31,6 +31,21 @@ pub async fn write_tx(pool: &SqlitePool) -> sqlx::Result<sqlx::Transaction<'stat
     pool.begin_with("BEGIN IMMEDIATE").await
 }
 
+/// Ends a write transaction on a refusal path with the rollback awaited,
+/// so the write lock never outlives the decision. A dropped transaction
+/// only queues its rollback on the connection's worker thread; until that
+/// runs, the lock lingers — and a deferred writer elsewhere meets it as
+/// an immediate `SQLITE_BUSY`, because `SQLite` does not consult the busy
+/// timeout when promoting an open read transaction to a write (#27 tracks
+/// converting those deferred paths themselves).
+pub async fn refuse<T, E>(
+    tx: sqlx::Transaction<'static, sqlx::Sqlite>,
+    refusal: E,
+) -> Result<std::result::Result<T, E>> {
+    tx.rollback().await.context("rolling back refused write")?;
+    Ok(Err(refusal))
+}
+
 /// Embedded, application-owned migrations.
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 

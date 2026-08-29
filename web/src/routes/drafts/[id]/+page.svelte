@@ -3,11 +3,14 @@
 	import {
 		ApiError,
 		getDraft,
+		reviewDraft,
 		saveDraftContent,
 		submitDraft,
 		transferDraft,
 		type DraftContent,
+		type DraftStatus,
 		type DraftView,
+		type ReviewDecisionKind,
 		type SkeletonCompetency
 	} from '$lib/api';
 	import { instant } from '$lib/format';
@@ -73,9 +76,15 @@
 		void load();
 	});
 
+	// Draft, changes-requested, and returned states edit and resubmit;
+	// submitted and approved states are frozen.
+	function openStatus(status: DraftStatus): boolean {
+		return status === 'draft' || status === 'changes_requested' || status === 'returned';
+	}
+
 	let editable = $derived.by(() => {
 		const current = view;
-		return current !== null && current.status === 'draft' && (canAssign || canAuthor);
+		return current !== null && openStatus(current.status) && (canAssign || canAuthor);
 	});
 	let mayRoute = $derived.by(() => {
 		const current = view;
@@ -253,6 +262,50 @@
 		}
 	}
 
+	// The reviewer's decision, sent with its comment; the workspace
+	// reloads onto the decided state.
+	let reviewChoice: ReviewDecisionKind = $state('approved');
+	let reviewComment = $state('');
+	async function decide() {
+		busy = true;
+		error = '';
+		try {
+			await reviewDraft(draftId, reviewChoice, reviewComment.trim() || undefined);
+			reviewComment = '';
+			await load();
+		} catch (err) {
+			error = err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
+
+	function statusLabel(status: DraftStatus): string {
+		switch (status) {
+			case 'draft':
+				return 'Draft';
+			case 'submitted':
+				return 'Submitted for review';
+			case 'changes_requested':
+				return 'Changes requested';
+			case 'returned':
+				return 'Returned';
+			case 'approved':
+				return 'Approved';
+		}
+	}
+
+	function decisionLabel(decision: ReviewDecisionKind): string {
+		switch (decision) {
+			case 'approved':
+				return 'approved the draft';
+			case 'changes_requested':
+				return 'requested changes';
+			case 'returned':
+				return 'returned the draft';
+		}
+	}
+
 	function eventLine(kind: string): string {
 		switch (kind) {
 			case 'created':
@@ -338,10 +391,14 @@
 				{/each}
 			</div>
 			<div class="workflow">
-				{#if view.status === 'submitted'}
-					<span class="pill submitted">Submitted for review</span>
-				{:else}
-					<span class="pill draft">Draft</span>
+				<span
+					class="pill"
+					class:submitted={view.status === 'submitted' || view.status === 'approved'}
+					class:draft={openStatus(view.status)}
+				>
+					{statusLabel(view.status)}
+				</span>
+				{#if openStatus(view.status)}
 					<span class="savestate" role="status">
 						{#if saveState === 'pending' || saveState === 'saving'}
 							Saving…
@@ -361,11 +418,43 @@
 			<p class="quiet">
 				The draft is frozen; its submitted content is snapshotted for review.
 			</p>
+		{:else if view.status === 'approved'}
+			<p class="quiet">The draft is approved and stays frozen until finalization.</p>
+		{:else if view.status === 'changes_requested' && view.decisions.length > 0}
+			<p class="callout">
+				Change request: {view.decisions[view.decisions.length - 1].comment}
+			</p>
 		{/if}
 		{#if error}
 			<p class="error" role="alert">{error}</p>
 		{/if}
 	</section>
+
+	{#if view.viewer_may_review}
+		<section class="panel">
+			<h2>Review</h2>
+			<label for="review-comment">
+				Comment <span class="quiet-inline">(required when requesting changes)</span>
+			</label>
+			<textarea id="review-comment" rows="3" bind:value={reviewComment}></textarea>
+			<div class="row route">
+				<label class="inline" for="review-decision">Decision</label>
+				<select id="review-decision" bind:value={reviewChoice}>
+					<option value="approved">Approve</option>
+					<option value="changes_requested">Request changes</option>
+					<option value="returned">Return</option>
+				</select>
+				<button
+					type="button"
+					disabled={busy ||
+						(reviewChoice === 'changes_requested' && reviewComment.trim() === '')}
+					onclick={decide}
+				>
+					Decide
+				</button>
+			</div>
+		</section>
+	{/if}
 
 	<section class="panel">
 		<h2>Ratings</h2>
@@ -516,13 +605,28 @@
 				</li>
 			{/each}
 		</ul>
+		{#if view.decisions.length > 0}
+			<h3>Review decisions</h3>
+			<ul class="history">
+				{#each view.decisions as decision (decision.id)}
+					<li>
+						<strong>{decision.reviewer_display_name}</strong>
+						{decisionLabel(decision.decision)}
+						<span class="quiet-inline">{instant(decision.decided_at)}</span>
+						{#if decision.comment}
+							<p class="decision-comment">{decision.comment}</p>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		{/if}
 		{#if view.snapshots.length > 0}
 			<p class="quiet">
 				{view.snapshots.length}
 				{view.snapshots.length === 1 ? 'snapshot' : 'snapshots'} on file.
 			</p>
 		{/if}
-		{#if mayRoute && view.status === 'draft'}
+		{#if mayRoute && openStatus(view.status)}
 			<div class="row route">
 				{#if view.eligible_recipients.length > 0}
 					<label class="inline" for="transfer-to">Transfer ownership</label>
@@ -650,6 +754,25 @@
 	}
 	.history li {
 		padding: 0.2rem 0;
+	}
+	.decision-comment {
+		margin: 0.2rem 0 0.3rem;
+		padding: 0.35rem 0.6rem;
+		background: #f4f6f8;
+		border-left: 3px solid #b9c2cc;
+		white-space: pre-wrap;
+	}
+	.callout {
+		padding: 0.45rem 0.6rem;
+		background: #fdf3e3;
+		border-left: 3px solid #d9a441;
+		white-space: pre-wrap;
+	}
+	#review-comment {
+		width: 100%;
+		font: inherit;
+		padding: 0.5rem;
+		margin-bottom: 0.5rem;
 	}
 	.row.route {
 		display: flex;

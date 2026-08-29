@@ -659,7 +659,34 @@ export function mySessions(): Promise<{ sessions: MySession[] }> {
 	return request('/api/sessions/mine');
 }
 
-export type DraftStatus = 'draft' | 'submitted';
+export type DraftStatus =
+	| 'draft'
+	| 'submitted'
+	| 'changes_requested'
+	| 'returned'
+	| 'approved';
+
+export type ReviewDecisionKind = 'approved' | 'changes_requested' | 'returned';
+
+export interface ReviewDecision {
+	id: number;
+	reviewer_user_id: number;
+	reviewer_display_name: string;
+	decision: ReviewDecisionKind;
+	comment: string;
+	decided_at: number;
+}
+
+export interface ReviewQueueRow {
+	record_id: number;
+	trainee_user_id: number;
+	trainee_display_name: string;
+	owner_display_name: string;
+	program_name: string;
+	version_number: number;
+	submitted_at: number;
+	eligible: boolean;
+}
 
 export interface ContributorEvent {
 	id: number;
@@ -754,6 +781,8 @@ export interface DraftView {
 	events: ContributorEvent[];
 	snapshots: SnapshotMeta[];
 	eligible_recipients: EligibleRecipient[];
+	decisions: ReviewDecision[];
+	viewer_may_review: boolean;
 	created_at: number;
 	revision: number;
 	form: {
@@ -806,6 +835,21 @@ export function submitDraft(draftId: number, revision: number): Promise<void> {
 		method: 'POST',
 		body: JSON.stringify({ revision })
 	});
+}
+
+export function reviewDraft(
+	draftId: number,
+	decision: ReviewDecisionKind,
+	comment?: string
+): Promise<void> {
+	return request(`/api/drafts/${draftId}/review`, {
+		method: 'POST',
+		body: JSON.stringify({ decision, comment })
+	});
+}
+
+export function reviewQueue(): Promise<{ drafts: ReviewQueueRow[] }> {
+	return request('/api/reviews/queue');
 }
 
 /** A structurally valid empty draft for starting a program from scratch. */

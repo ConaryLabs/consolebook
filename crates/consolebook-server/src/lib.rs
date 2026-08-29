@@ -10,6 +10,7 @@ pub mod capabilities;
 pub mod data_dir;
 pub mod doctor;
 pub mod draft_content;
+pub mod draft_review;
 pub mod drafts_http;
 pub mod enrollments;
 pub mod evaluation_drafts;

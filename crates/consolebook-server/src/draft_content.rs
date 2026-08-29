@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqliteConnection, SqlitePool};
 use time::OffsetDateTime;
 
-use crate::evaluation_drafts::{self, DraftRefusal, DraftStatus};
+use crate::evaluation_drafts::{self, DraftRefusal};
 use crate::storage;
 
 /// One rating in a save or read: the pinned form competency, the value
@@ -278,8 +278,11 @@ pub async fn save(
     // reads the committed state, so a racing contributor's save resolves
     // as the typed stale refusal, never a failed snapshot.
     let mut tx = storage::write_tx(pool).await.context("starting save")?;
-    if evaluation_drafts::status_of(&mut tx, record_id).await? == DraftStatus::Submitted {
-        return Ok(Err(DraftRefusal::DraftSubmitted));
+    if let Some(refusal) = evaluation_drafts::status_of(&mut tx, record_id)
+        .await?
+        .frozen_refusal()
+    {
+        return storage::refuse(tx, refusal).await;
     }
     let current: i64 = sqlx::query_scalar("SELECT revision FROM evaluation_record WHERE id = ?1")
         .bind(record_id)
@@ -287,14 +290,14 @@ pub async fn save(
         .await
         .context("reading revision")?;
     if revision != current {
-        return Ok(Err(DraftRefusal::StaleSave));
+        return storage::refuse(tx, DraftRefusal::StaleSave).await;
     }
 
     // Validate against the pinned vocabulary before touching the copy.
     let mut seen_competencies: Vec<i64> = Vec::new();
     for rating in &input.ratings {
         if seen_competencies.contains(&rating.form_competency_id) {
-            return Ok(Err(DraftRefusal::DuplicateEntry));
+            return storage::refuse(tx, DraftRefusal::DuplicateEntry).await;
         }
         seen_competencies.push(rating.form_competency_id);
         let Some(scale) = sqlx::query(
@@ -311,22 +314,22 @@ pub async fn save(
         .await
         .context("checking form competency")?
         else {
-            return Ok(Err(DraftRefusal::NoSuchFormCompetency));
+            return storage::refuse(tx, DraftRefusal::NoSuchFormCompetency).await;
         };
         let kind: String = scale.get("kind");
         match (kind.as_str(), rating.value) {
             ("narrative_only", Some(_)) => {
-                return Ok(Err(DraftRefusal::ValueNotAllowed));
+                return storage::refuse(tx, DraftRefusal::ValueNotAllowed).await;
             }
             ("narrative_only", None) | ("pass_fail", Some(0 | 1)) => {}
             ("anchored_numeric", Some(value)) => {
                 let min: i64 = scale.get("min_value");
                 let max: i64 = scale.get("max_value");
                 if value < min || value > max {
-                    return Ok(Err(DraftRefusal::ValueOutOfRange));
+                    return storage::refuse(tx, DraftRefusal::ValueOutOfRange).await;
                 }
             }
-            _ => return Ok(Err(DraftRefusal::ValueOutOfRange)),
+            _ => return storage::refuse(tx, DraftRefusal::ValueOutOfRange).await,
         }
         for modifier_id in &rating.modifier_ids {
             let found: Option<i64> = sqlx::query_scalar(
@@ -338,14 +341,14 @@ pub async fn save(
             .await
             .context("checking modifier")?;
             if found.is_none() {
-                return Ok(Err(DraftRefusal::NoSuchModifier));
+                return storage::refuse(tx, DraftRefusal::NoSuchModifier).await;
             }
         }
     }
     let mut seen_narratives: Vec<i64> = Vec::new();
     for narrative in &input.narratives {
         if seen_narratives.contains(&narrative.form_narrative_id) {
-            return Ok(Err(DraftRefusal::DuplicateEntry));
+            return storage::refuse(tx, DraftRefusal::DuplicateEntry).await;
         }
         seen_narratives.push(narrative.form_narrative_id);
         let found: Option<i64> = sqlx::query_scalar(
@@ -359,7 +362,7 @@ pub async fn save(
         .await
         .context("checking form narrative")?;
         if found.is_none() {
-            return Ok(Err(DraftRefusal::NoSuchFormNarrative));
+            return storage::refuse(tx, DraftRefusal::NoSuchFormNarrative).await;
         }
     }
 
