@@ -158,7 +158,17 @@ test('record, close, and read sessions with local time semantics', async ({ page
 	await sessionsPanel.getByRole('button', { name: 'Complete', exact: true }).click();
 	await expect(sessionsPanel.getByText('completed', { exact: true })).toBeVisible();
 
-	// The trainer signs in and finds the session on their own list.
+	// Seed a second, open session so the trainer can work it from home.
+	await page.request.post(`${BASE}/api/enrollments/${enrollment.id}/sessions`, {
+		data: {
+			business_date: '2026-06-03',
+			timezone: 'America/Chicago',
+			local_start: '2026-06-03T07:00',
+			trainer_user_ids: [trainer.id]
+		}
+	});
+
+	// The trainer signs in and finds the sessions on their own list.
 	await page.getByRole('link', { name: 'Home' }).click();
 	await page.getByRole('button', { name: 'Sign out' }).click();
 	await page.goto(`${BASE}/reset`);
@@ -173,4 +183,10 @@ test('record, close, and read sessions with local time semantics', async ({ page
 	await expect(page.getByRole('heading', { name: 'My sessions' })).toBeVisible();
 	await expect(page.getByRole('cell', { name: 'Taylor Trainee' }).first()).toBeVisible();
 	await expect(page.getByText('2026-06-02 07:00 – 2026-06-02 15:00')).toBeVisible();
+
+	// Membership authorizes the close right here: the trainer completes
+	// their open session from their own list.
+	await page.getByLabel('Local end').fill('2026-06-03T15:00');
+	await page.getByRole('button', { name: 'Complete', exact: true }).click();
+	await expect(page.getByText('2026-06-03 07:00 – 2026-06-03 15:00')).toBeVisible();
 });

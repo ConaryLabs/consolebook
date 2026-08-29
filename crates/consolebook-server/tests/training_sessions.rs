@@ -395,6 +395,7 @@ async fn local_times_store_verbatim_and_resolve_per_adr_0009() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn overlap_is_refused_per_trainee_and_cancel_releases_the_interval() {
     let fx = Fixture::new().await;
     let (program_id, v1) = fx.publish(None, &phased_content()).await;
@@ -452,9 +453,11 @@ async fn overlap_is_refused_per_trainee_and_cancel_releases_the_interval() {
         .expect("enrolled");
     let raw = sqlx::query(
         "INSERT INTO training_session
-             (enrollment_id, business_date, timezone, local_start, local_end,
-              utc_start, utc_end, phase_id, disposition, created_at, created_by)
-         VALUES (?1, '2026-06-02', 'America/Chicago', '2026-06-02T15:00', NULL,
+             (enrollment_id, program_version_id, business_date, timezone,
+              local_start, local_end, utc_start, utc_end, phase_id, disposition,
+              created_at, created_by)
+         VALUES (?1, (SELECT program_version_id FROM enrollment WHERE id = ?1),
+                 '2026-06-02', 'America/Chicago', '2026-06-02T15:00', NULL,
                  ?2, NULL, NULL, NULL, ?3, NULL)",
     )
     .bind(second_enrollment)
@@ -490,10 +493,11 @@ async fn overlap_is_refused_per_trainee_and_cancel_releases_the_interval() {
     // End-before-start is refused raw as well (invariant 6).
     let raw = sqlx::query(
         "INSERT INTO training_session
-             (enrollment_id, business_date, timezone, local_start, local_end,
-              utc_start, utc_end, phase_id, disposition, created_at, created_by,
-              closed_at, closed_by)
-         VALUES (?1, '2026-06-03', 'America/Chicago', '2026-06-03T07:00',
+             (enrollment_id, program_version_id, business_date, timezone,
+              local_start, local_end, utc_start, utc_end, phase_id, disposition,
+              created_at, created_by, closed_at, closed_by)
+         VALUES (?1, (SELECT program_version_id FROM enrollment WHERE id = ?1),
+                 '2026-06-03', 'America/Chicago', '2026-06-03T07:00',
                  '2026-06-03T06:00', ?2, ?3, NULL, 'completed', ?2, NULL, ?2, NULL)",
     )
     .bind(second_enrollment)
@@ -765,9 +769,11 @@ async fn session_gates_membership_and_close_rules() {
     assert_eq!(refused, Err(SessionRefusal::NoSuchPhase));
     let raw = sqlx::query(
         "INSERT INTO training_session
-             (enrollment_id, business_date, timezone, local_start, local_end,
-              utc_start, utc_end, phase_id, disposition, created_at, created_by)
-         VALUES (?1, '2026-06-04', 'America/Chicago', '2026-06-04T07:00', NULL,
+             (enrollment_id, program_version_id, business_date, timezone,
+              local_start, local_end, utc_start, utc_end, phase_id, disposition,
+              created_at, created_by)
+         VALUES (?1, (SELECT program_version_id FROM enrollment WHERE id = ?1),
+                 '2026-06-04', 'America/Chicago', '2026-06-04T07:00', NULL,
                  ?2, NULL, ?3, NULL, ?2, NULL)",
     )
     .bind(enrollment_id)
@@ -776,7 +782,10 @@ async fn session_gates_membership_and_close_rules() {
     .execute(&fx.pool)
     .await;
     let err = raw.expect_err("must be refused").to_string();
-    assert!(err.contains("pinned version"), "foreign phase: {err}");
+    assert!(
+        err.contains("FOREIGN KEY"),
+        "invariant 5 is a composite foreign key against the stamp: {err}"
+    );
 
     // Sessions are created on active enrollments only.
     lifecycle::record_enrollment_event(
@@ -920,6 +929,20 @@ async fn sessions_api_round_trip() {
     .await
     .expect("count");
     assert_eq!(audited, 1);
+    // Initial members are access grants too: each one is audited, so a
+    // later removal never outlives the record of the grant.
+    let granted: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_event
+         WHERE kind = 'session_trainer_added' AND actor_user_id = ?1
+           AND subject_user_id = ?2 AND subject_kind = 'session' AND subject_id = ?3",
+    )
+    .bind(fx.admin_id)
+    .bind(jordan_id)
+    .bind(session_id)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("count");
+    assert_eq!(granted, 1, "the initial trainer's grant is audited");
 }
 
 #[tokio::test]
@@ -1017,10 +1040,26 @@ async fn blank_ends_normalize_and_historic_phases_survive_edits() {
     .await
     .expect("call")
     .expect("an unchanged historic phase survives the edit");
-    // An actual phase change validates against the current pin: a new-pin
-    // phase is accepted, and moving back to the old-version phase is not.
-    let two_v2 = fx.phase_id(v2, "Phase Two").await;
+    // An actual phase change validates against the session's own stamped
+    // version: another phase of that version is accepted, a phase of the
+    // enrollment's newer pin is not.
+    let two_v1 = fx.phase_id(v1, "Phase Two").await;
     training_sessions::update_open(
+        &fx.pool,
+        fx.admin_id,
+        session_id,
+        &SessionUpdate {
+            business_date: "2026-06-02".to_owned(),
+            timezone: "America/Chicago".to_owned(),
+            local_start: "2026-06-02T06:30".to_owned(),
+            phase_id: Some(two_v1),
+        },
+    )
+    .await
+    .expect("call")
+    .expect("another stamped-version phase is accepted");
+    let two_v2 = fx.phase_id(v2, "Phase Two").await;
+    let refused = training_sessions::update_open(
         &fx.pool,
         fx.admin_id,
         session_id,
@@ -1032,20 +1071,49 @@ async fn blank_ends_normalize_and_historic_phases_survive_edits() {
         },
     )
     .await
-    .expect("call")
-    .expect("a current-pin phase is accepted");
-    let refused = training_sessions::update_open(
-        &fx.pool,
-        fx.admin_id,
-        session_id,
-        &SessionUpdate {
-            business_date: "2026-06-02".to_owned(),
-            timezone: "America/Chicago".to_owned(),
-            local_start: "2026-06-02T06:30".to_owned(),
-            phase_id: Some(one_v1),
-        },
-    )
-    .await
     .expect("call");
     assert_eq!(refused, Err(SessionRefusal::NoSuchPhase));
+
+    // The session presents the version it was recorded under, not the
+    // enrollment's newer pin.
+    let detail = training_sessions::get(&fx.pool, fx.admin_id, session_id)
+        .await
+        .expect("call")
+        .expect("read");
+    assert_eq!(
+        detail.version_number, 1,
+        "sessions present their stamped version"
+    );
+    assert_eq!(detail.session.phase_name.as_deref(), Some("Phase Two"));
+
+    // The stamp never moves, and a raw insert cannot stamp a version the
+    // enrollment does not currently pin.
+    let raw = sqlx::query("UPDATE training_session SET program_version_id = ?1 WHERE id = ?2")
+        .bind(v2)
+        .bind(session_id)
+        .execute(&fx.pool)
+        .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(err.contains("recorded under"), "stamp is immutable: {err}");
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let raw = sqlx::query(
+        "INSERT INTO training_session
+             (enrollment_id, program_version_id, business_date, timezone,
+              local_start, local_end, utc_start, utc_end, phase_id, disposition,
+              created_at, created_by, closed_at, closed_by)
+         VALUES (?1, ?2, '2026-06-01', 'America/Chicago', '2026-06-01T07:00',
+                 '2026-06-01T12:00', ?3, ?4, NULL, 'completed', ?5, NULL, ?5, NULL)",
+    )
+    .bind(enrollment_id)
+    .bind(v1)
+    .bind(instant("2026-06-01T07:00:00-05:00"))
+    .bind(instant("2026-06-01T12:00:00-05:00"))
+    .bind(now)
+    .execute(&fx.pool)
+    .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(
+        err.contains("stamps the enrollment"),
+        "stamp equals the pin at creation: {err}"
+    );
 }

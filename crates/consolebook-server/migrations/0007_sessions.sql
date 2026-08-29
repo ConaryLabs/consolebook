@@ -13,21 +13,27 @@
 -- open session is unbounded, contiguous sessions are legal, and a
 -- cancelled session does not occupy its interval; and no uniqueness
 -- assumes one session per trainee and calendar date (8) — deliberately no
--- such constraint exists. Session phases belong to the enrollment's
--- currently pinned version (invariant 5).
+-- such constraint exists. Each session stamps the enrollment's pin at
+-- creation and keeps it, so its program and phase context stay historic
+-- across version changes; invariant 5 is a composite foreign key against
+-- that stamp.
 --
 -- Instants are UTC unix seconds (INTEGER).
 
 CREATE TABLE training_session (
     id INTEGER PRIMARY KEY,
     enrollment_id INTEGER NOT NULL REFERENCES enrollment (id),
+    -- The pin at creation, stamped so the session's program and phase
+    -- context stay what they historically were: a later enrollment
+    -- version change never rewrites what a session presented.
+    program_version_id INTEGER NOT NULL REFERENCES program_version (id),
     business_date TEXT NOT NULL CHECK (length(business_date) > 0),
     timezone TEXT NOT NULL CHECK (length(timezone) > 0),
     local_start TEXT NOT NULL CHECK (length(local_start) > 0),
     local_end TEXT,
     utc_start INTEGER NOT NULL,
     utc_end INTEGER,
-    phase_id INTEGER REFERENCES phase (id),
+    phase_id INTEGER,
     -- Open until closed with a disposition: completed and interrupted
     -- carry an end instant; a cancelled session never happened and
     -- carries none.
@@ -36,6 +42,10 @@ CREATE TABLE training_session (
     created_by INTEGER REFERENCES user (id),
     closed_at INTEGER,
     closed_by INTEGER REFERENCES user (id),
+    -- Domain invariant 5 as a real foreign key: the phase belongs to the
+    -- session's stamped version.
+    FOREIGN KEY (phase_id, program_version_id)
+        REFERENCES phase (id, program_version_id),
     CHECK (utc_end IS NULL OR utc_end >= utc_start),
     CHECK ((local_end IS NULL) = (utc_end IS NULL)),
     CHECK ((closed_at IS NULL) = (disposition IS NULL)),
@@ -57,6 +67,22 @@ BEFORE UPDATE OF enrollment_id ON training_session
 WHEN OLD.enrollment_id != NEW.enrollment_id
 BEGIN
     SELECT RAISE(ABORT, 'a session belongs to its enrollment');
+END;
+
+-- The stamp is the enrollment's pin at creation, and it never moves.
+CREATE TRIGGER training_session_stamps_current_pin
+BEFORE INSERT ON training_session
+WHEN NEW.program_version_id
+    != (SELECT program_version_id FROM enrollment WHERE id = NEW.enrollment_id)
+BEGIN
+    SELECT RAISE(ABORT, 'a session stamps the enrollment''s pinned version at creation');
+END;
+
+CREATE TRIGGER training_session_keeps_its_version
+BEFORE UPDATE OF program_version_id ON training_session
+WHEN OLD.program_version_id != NEW.program_version_id
+BEGIN
+    SELECT RAISE(ABORT, 'a session keeps the version it was recorded under');
 END;
 
 -- Invariant 7: active intervals for one trainee cannot overlap, across
@@ -95,28 +121,6 @@ WHEN (NEW.disposition IS NULL OR NEW.disposition != 'cancelled')
     )
 BEGIN
     SELECT RAISE(ABORT, 'active training intervals for one trainee cannot overlap');
-END;
-
--- Invariant 5 for sessions: a phase reference belongs to the enrollment's
--- currently pinned version. Sessions recorded under an earlier pin keep
--- their phases; only setting a phase is checked.
-CREATE TRIGGER training_session_phase_pins_version_on_insert
-BEFORE INSERT ON training_session
-WHEN NEW.phase_id IS NOT NULL
-    AND (SELECT program_version_id FROM phase WHERE id = NEW.phase_id)
-        != (SELECT program_version_id FROM enrollment WHERE id = NEW.enrollment_id)
-BEGIN
-    SELECT RAISE(ABORT, 'session phases reference the enrollment''s pinned version');
-END;
-
-CREATE TRIGGER training_session_phase_pins_version_on_update
-BEFORE UPDATE OF phase_id ON training_session
-WHEN NEW.phase_id IS NOT NULL
-    AND NEW.phase_id IS NOT OLD.phase_id
-    AND (SELECT program_version_id FROM phase WHERE id = NEW.phase_id)
-        != (SELECT program_version_id FROM enrollment WHERE id = NEW.enrollment_id)
-BEGIN
-    SELECT RAISE(ABORT, 'session phases reference the enrollment''s pinned version');
 END;
 
 -- One or more trainers per session (docs/domain-model.md TrainingSession).

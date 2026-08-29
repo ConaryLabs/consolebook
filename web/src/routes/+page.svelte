@@ -2,6 +2,7 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import {
 		ApiError,
+		closeSession,
 		createUser,
 		getHealth,
 		getNotices,
@@ -15,7 +16,8 @@
 		type Health,
 		type MySession,
 		type Notice,
-		type Role
+		type Role,
+		type SessionDisposition
 	} from '$lib/api';
 	import { instant } from '$lib/format';
 	import type { ShellData } from './+layout';
@@ -78,6 +80,28 @@
 		await logout();
 		await invalidateAll();
 		await goto('/login');
+	}
+
+	// Session members work their sessions from here even without a durable
+	// assignment: membership is the grant.
+	let sessionEnd: Record<number, string> = $state({});
+	let sessionError = $state('');
+	async function closeMine(session: MySession, disposition: SessionDisposition) {
+		sessionError = '';
+		busy = true;
+		try {
+			await closeSession(
+				session.session_id,
+				disposition,
+				disposition === 'cancelled' ? undefined : sessionEnd[session.session_id]
+			);
+			sessions = (await mySessions()).sessions;
+		} catch (err) {
+			sessionError =
+				err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
 	}
 
 	async function issueCode(event: SubmitEvent) {
@@ -219,6 +243,7 @@
 						<th>Trainee</th>
 						<th>Program</th>
 						<th>Status</th>
+						<th></th>
 					</tr>
 				</thead>
 				<tbody>
@@ -234,10 +259,48 @@
 							<td>{session.trainee_display_name}</td>
 							<td>{session.program_name} — v{session.version_number}</td>
 							<td>{session.disposition ?? 'open'}</td>
+							<td>
+								{#if session.disposition === null}
+									<div class="sessionbar">
+										<input
+											aria-label="Local end"
+											type="datetime-local"
+											bind:value={sessionEnd[session.session_id]}
+										/>
+										<button
+											type="button"
+											class="small"
+											disabled={busy || !sessionEnd[session.session_id]}
+											onclick={() => closeMine(session, 'completed')}
+										>
+											Complete
+										</button>
+										<button
+											type="button"
+											class="secondary small"
+											disabled={busy || !sessionEnd[session.session_id]}
+											onclick={() => closeMine(session, 'interrupted')}
+										>
+											Interrupt
+										</button>
+										<button
+											type="button"
+											class="secondary small"
+											disabled={busy}
+											onclick={() => closeMine(session, 'cancelled')}
+										>
+											Cancel session
+										</button>
+									</div>
+								{/if}
+							</td>
 						</tr>
 					{/each}
 				</tbody>
 			</table>
+		{/if}
+		{#if sessionError}
+			<p class="error" role="alert">{sessionError}</p>
 		{/if}
 	</section>
 {/if}
@@ -354,5 +417,15 @@
 	button.small {
 		padding: 0.2rem 0.6rem;
 		font-size: 0.82rem;
+	}
+	.sessionbar {
+		display: flex;
+		gap: 0.35rem;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.sessionbar input {
+		margin: 0;
+		width: auto;
 	}
 </style>

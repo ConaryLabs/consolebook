@@ -397,17 +397,21 @@ pub async fn create(
     if status != EnrollmentStatus::Active {
         return Ok(Err(SessionRefusal::EnrollmentInactive));
     }
-    if let Some(phase_id) = input.phase_id {
-        let in_version: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM phase
-             WHERE id = ?1 AND program_version_id
-                 = (SELECT program_version_id FROM enrollment WHERE id = ?2)",
-        )
-        .bind(phase_id)
+    // The session stamps the pin at creation (migration 0007), so its
+    // program and phase context stay historic across version changes.
+    let pinned: i64 = sqlx::query_scalar("SELECT program_version_id FROM enrollment WHERE id = ?1")
         .bind(enrollment_id)
-        .fetch_optional(&mut *tx)
+        .fetch_one(&mut *tx)
         .await
-        .context("checking session phase")?;
+        .context("reading enrollment pin")?;
+    if let Some(phase_id) = input.phase_id {
+        let in_version: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM phase WHERE id = ?1 AND program_version_id = ?2")
+                .bind(phase_id)
+                .bind(pinned)
+                .fetch_optional(&mut *tx)
+                .await
+                .context("checking session phase")?;
         if in_version.is_none() {
             return Ok(Err(SessionRefusal::NoSuchPhase));
         }
@@ -427,10 +431,10 @@ pub async fn create(
     };
     let result = sqlx::query(
         "INSERT INTO training_session
-             (enrollment_id, business_date, timezone, local_start, local_end,
-              utc_start, utc_end, phase_id, disposition,
+             (enrollment_id, program_version_id, business_date, timezone,
+              local_start, local_end, utc_start, utc_end, phase_id, disposition,
               created_at, created_by, closed_at, closed_by)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+         VALUES (?1, ?14, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
     )
     .bind(enrollment_id)
     .bind(&times.business_date)
@@ -445,6 +449,7 @@ pub async fn create(
     .bind(actor_user_id)
     .bind(closed_at)
     .bind(closed_by)
+    .bind(pinned)
     .execute(&mut *tx)
     .await
     .context("creating session")?;
@@ -461,6 +466,16 @@ pub async fn create(
         .execute(&mut *tx)
         .await
         .context("adding session trainer")?;
+        // Every access grant is audited, initial members included, so a
+        // later removal never outlives the record of the grant.
+        audit::record_for_subject(
+            &mut *tx,
+            EventKind::SessionTrainerAdded,
+            Some(actor_user_id),
+            Some(*trainer),
+            Subject::Session(session_id),
+        )
+        .await?;
     }
     let trainee: i64 = sqlx::query_scalar("SELECT user_id FROM enrollment WHERE id = ?1")
         .bind(enrollment_id)
@@ -526,9 +541,9 @@ pub async fn update_open(
         return Ok(Err(SessionRefusal::SessionClosed));
     }
     let enrollment_id: i64 = row.get("enrollment_id");
-    // A session recorded under an earlier pin keeps its phase (migration
-    // 0007); only an actual phase change validates against the current
-    // pin, mirroring the database trigger.
+    // A session's phase context comes from the version it was recorded
+    // under (its stamp, migration 0007), so a phase change validates
+    // against that version — never the enrollment's possibly newer pin.
     let stored_phase: Option<i64> = row.get("phase_id");
     if let Some(phase_id) = update.phase_id
         && Some(phase_id) != stored_phase
@@ -536,10 +551,10 @@ pub async fn update_open(
         let in_version: Option<i64> = sqlx::query_scalar(
             "SELECT 1 FROM phase
              WHERE id = ?1 AND program_version_id
-                 = (SELECT program_version_id FROM enrollment WHERE id = ?2)",
+                 = (SELECT program_version_id FROM training_session WHERE id = ?2)",
         )
         .bind(phase_id)
-        .bind(enrollment_id)
+        .bind(session_id)
         .fetch_optional(&mut *tx)
         .await
         .context("checking session phase")?;
@@ -915,7 +930,7 @@ pub async fn get(
          LEFT JOIN phase p ON p.id = s.phase_id
          JOIN enrollment e ON e.id = s.enrollment_id
          JOIN user u ON u.id = e.user_id
-         JOIN program_version pv ON pv.id = e.program_version_id
+         JOIN program_version pv ON pv.id = s.program_version_id
          WHERE s.id = ?1",
     )
     .bind(session_id)
@@ -961,7 +976,7 @@ pub async fn list_mine(
          LEFT JOIN phase p ON p.id = s.phase_id
          JOIN enrollment e ON e.id = s.enrollment_id
          JOIN user u ON u.id = e.user_id
-         JOIN program_version pv ON pv.id = e.program_version_id
+         JOIN program_version pv ON pv.id = s.program_version_id
          WHERE st.trainer_user_id = ?1
          ORDER BY (s.disposition IS NULL) DESC, s.utc_start DESC, s.id DESC",
     )
