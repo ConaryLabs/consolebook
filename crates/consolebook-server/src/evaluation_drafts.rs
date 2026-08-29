@@ -23,6 +23,7 @@ use crate::capabilities::{self, Capability};
 use crate::draft_content;
 use crate::lifecycle;
 use crate::notices::{self, NoticeKind};
+use crate::storage;
 
 /// Why a draft operation was refused.
 #[derive(Debug, PartialEq, Eq)]
@@ -263,7 +264,6 @@ pub async fn create(
         return Ok(Err(DraftRefusal::NoSuchSession));
     };
     let enrollment_id: i64 = session.get("enrollment_id");
-    let version_id: i64 = session.get("program_version_id");
     let disposition: Option<String> = session.get("disposition");
     if disposition.as_deref() == Some("cancelled") {
         return Ok(Err(DraftRefusal::SessionCancelled));
@@ -273,7 +273,27 @@ pub async fn create(
         return Ok(Err(DraftRefusal::CapabilityRequired));
     }
 
-    let mut tx = pool.begin().await.context("starting draft")?;
+    // A write transaction from the start: the rereads below see the
+    // committed state, so a racing cancel or a second create resolves as
+    // its typed refusal, never a stale read.
+    let mut tx = storage::write_tx(pool).await.context("starting draft")?;
+    let Some(session) = sqlx::query(
+        "SELECT enrollment_id, program_version_id, disposition
+         FROM training_session WHERE id = ?1",
+    )
+    .bind(session_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .context("rereading session")?
+    else {
+        return Ok(Err(DraftRefusal::NoSuchSession));
+    };
+    let enrollment_id: i64 = session.get("enrollment_id");
+    let version_id: i64 = session.get("program_version_id");
+    let disposition: Option<String> = session.get("disposition");
+    if disposition.as_deref() == Some("cancelled") {
+        return Ok(Err(DraftRefusal::SessionCancelled));
+    }
     // v1 policy, not schema: one daily draft per training session.
     let existing: Option<i64> = sqlx::query_scalar(
         "SELECT evaluation_record_id FROM evaluation_session WHERE training_session_id = ?1",
@@ -434,7 +454,7 @@ pub async fn transfer(
         return Ok(Err(DraftRefusal::NotEligible));
     }
 
-    let mut tx = pool.begin().await.context("starting transfer")?;
+    let mut tx = storage::write_tx(pool).await.context("starting transfer")?;
     if status_of(&mut tx, record_id).await? == DraftStatus::Submitted {
         return Ok(Err(DraftRefusal::DraftSubmitted));
     }
@@ -519,7 +539,9 @@ pub async fn submit(
         return Ok(Err(DraftRefusal::CapabilityRequired));
     }
 
-    let mut tx = pool.begin().await.context("starting submission")?;
+    let mut tx = storage::write_tx(pool)
+        .await
+        .context("starting submission")?;
     if status_of(&mut tx, record_id).await? == DraftStatus::Submitted {
         return Ok(Err(DraftRefusal::DraftSubmitted));
     }

@@ -603,19 +603,74 @@ async fn create_gates_policy_and_form_resolution() {
     assert_eq!(refused, Err(DraftRefusal::CapabilityRequired));
 
     // The coverage join agrees at the database: a record cannot cover a
-    // session of another enrollment or version.
+    // session of another enrollment or version (the doubled program's
+    // open session stands in as the foreign one).
     let raw = sqlx::query(
         "INSERT INTO evaluation_session (evaluation_record_id, training_session_id)
          VALUES (?1, ?2)",
     )
     .bind(record_id)
-    .bind(bare_session)
+    .bind(doubled_session)
     .execute(&fx.pool)
     .await;
     let err = raw.expect_err("must be refused").to_string();
     assert!(
         err.contains("its own enrollment and version"),
         "join: {err}"
+    );
+
+    // And the database refuses coverage of a cancelled session even when
+    // enrollment and version agree — the backstop under the typed
+    // refusal.
+    training_sessions::close(
+        &fx.pool,
+        s.jordan_id,
+        s.session_id,
+        training_sessions::Disposition::Completed,
+        Some("2026-06-02T15:00"),
+    )
+    .await
+    .expect("call")
+    .expect("closed");
+    let second = training_sessions::create(
+        &fx.pool,
+        s.jordan_id,
+        s.enrollment_id,
+        &SessionInput {
+            business_date: "2026-06-03".to_owned(),
+            timezone: "America/Chicago".to_owned(),
+            local_start: "2026-06-03T07:00".to_owned(),
+            local_end: None,
+            disposition: None,
+            phase_id: None,
+            trainer_user_ids: Vec::new(),
+        },
+    )
+    .await
+    .expect("call")
+    .expect("created");
+    training_sessions::close(
+        &fx.pool,
+        s.jordan_id,
+        second,
+        training_sessions::Disposition::Cancelled,
+        None,
+    )
+    .await
+    .expect("call")
+    .expect("cancelled");
+    let raw = sqlx::query(
+        "INSERT INTO evaluation_session (evaluation_record_id, training_session_id)
+         VALUES (?1, ?2)",
+    )
+    .bind(record_id)
+    .bind(second)
+    .execute(&fx.pool)
+    .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(
+        err.contains("takes no evaluation"),
+        "cancelled coverage: {err}"
     );
 }
 

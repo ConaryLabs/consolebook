@@ -96,6 +96,17 @@ BEGIN
     SELECT RAISE(ABORT, 'coverage changes are inserts and deletes, never edits');
 END;
 
+-- A cancelled session never happened, so it takes no coverage. The
+-- service refuses first with its typed contract; this holds under races
+-- and raw writes.
+CREATE TRIGGER evaluation_session_covers_live_sessions
+BEFORE INSERT ON evaluation_session
+WHEN (SELECT disposition FROM training_session
+      WHERE id = NEW.training_session_id) = 'cancelled'
+BEGIN
+    SELECT RAISE(ABORT, 'a cancelled session takes no evaluation');
+END;
+
 -- Metadata-only attribution (docs/domain-model.md ContributorEvent): who
 -- touched the draft and how, never the content itself. The closed kind
 -- set covers the whole workflow; review_decided is written by the review

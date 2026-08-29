@@ -16,6 +16,7 @@ use sqlx::{Row, SqliteConnection, SqlitePool};
 use time::OffsetDateTime;
 
 use crate::evaluation_drafts::{self, DraftRefusal, DraftStatus};
+use crate::storage;
 
 /// One rating in a save or read: the pinned form competency, the value
 /// under its scale kind, and the applied modifiers.
@@ -273,7 +274,10 @@ pub async fn save(
         return Ok(Err(DraftRefusal::CapabilityRequired));
     }
 
-    let mut tx = pool.begin().await.context("starting save")?;
+    // A write transaction from the start: the revision comparison below
+    // reads the committed state, so a racing contributor's save resolves
+    // as the typed stale refusal, never a failed snapshot.
+    let mut tx = storage::write_tx(pool).await.context("starting save")?;
     if evaluation_drafts::status_of(&mut tx, record_id).await? == DraftStatus::Submitted {
         return Ok(Err(DraftRefusal::DraftSubmitted));
     }

@@ -216,6 +216,10 @@ test('draft, collaborate, transfer, and submit a daily evaluation', async ({ pag
 	await expect(
 		page.getByLabel('Rate Emergency Call Interrogation').locator('option[value="2"]')
 	).toHaveCount(1);
+	// The pinned rubric is one click away: anchor definitions render in
+	// the scale guide.
+	await page.locator('details.anchors summary').first().click();
+	await expect(page.getByText('To the invented standard.')).toBeVisible();
 	await expect(page.getByLabel('Most acceptable performance.')).toHaveValue(
 		'Ran the invented structure fire cleanly.'
 	);

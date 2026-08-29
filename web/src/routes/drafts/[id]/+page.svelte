@@ -389,7 +389,25 @@
 								{/if}
 								<p class="quiet small-note">{competency.description}</p>
 							</td>
-							<td>{competency.scale_name}</td>
+							<td>
+								{competency.scale_name}
+								{#if competency.anchors.length > 0}
+									<details class="anchors">
+										<summary>Scale guide</summary>
+										<ul>
+											{#each competency.anchors as anchor (anchor.value)}
+												<li>
+													<strong>
+														{competency.scale_kind === 'pass_fail'
+															? anchor.label
+															: anchorLabel(competency, anchor.value)}
+													</strong>: {anchor.definition}
+												</li>
+											{/each}
+										</ul>
+									</details>
+								{/if}
+							</td>
 							<td>
 								{#if competency.scale_kind === 'narrative_only'}
 									<span class="quiet-inline">narrative</span>
@@ -585,6 +603,18 @@
 	.small-note {
 		margin: 0.15rem 0 0;
 		font-size: 0.85rem;
+	}
+	details.anchors {
+		margin-top: 0.25rem;
+		font-size: 0.85rem;
+	}
+	details.anchors summary {
+		cursor: pointer;
+		color: #5b6672;
+	}
+	details.anchors ul {
+		margin: 0.25rem 0 0;
+		padding-left: 1.1rem;
 	}
 	.modifier {
 		display: inline-flex;
