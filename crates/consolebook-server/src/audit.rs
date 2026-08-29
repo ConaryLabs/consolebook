@@ -35,6 +35,11 @@ pub enum EventKind {
     PhaseEventRecorded,
     AssignmentCreated,
     AssignmentEnded,
+    SessionCreated,
+    SessionUpdated,
+    SessionClosed,
+    SessionTrainerAdded,
+    SessionTrainerRemoved,
 }
 
 impl EventKind {
@@ -64,6 +69,11 @@ impl EventKind {
             Self::PhaseEventRecorded => "phase_event_recorded",
             Self::AssignmentCreated => "assignment_created",
             Self::AssignmentEnded => "assignment_ended",
+            Self::SessionCreated => "session_created",
+            Self::SessionUpdated => "session_updated",
+            Self::SessionClosed => "session_closed",
+            Self::SessionTrainerAdded => "session_trainer_added",
+            Self::SessionTrainerRemoved => "session_trainer_removed",
         }
     }
 }
@@ -77,6 +87,7 @@ pub enum Subject {
     ProgramVersion(i64),
     Enrollment(i64),
     Assignment(i64),
+    Session(i64),
 }
 
 impl Subject {
@@ -87,6 +98,7 @@ impl Subject {
             Self::ProgramVersion(_) => "program_version",
             Self::Enrollment(_) => "enrollment",
             Self::Assignment(_) => "assignment",
+            Self::Session(_) => "session",
         }
     }
 
@@ -96,7 +108,8 @@ impl Subject {
             Self::Program(id)
             | Self::ProgramVersion(id)
             | Self::Enrollment(id)
-            | Self::Assignment(id) => id,
+            | Self::Assignment(id)
+            | Self::Session(id) => id,
         }
     }
 }

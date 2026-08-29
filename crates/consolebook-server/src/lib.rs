@@ -24,6 +24,7 @@ pub mod sessions;
 pub mod setup;
 pub mod storage;
 pub mod training_http;
+pub mod training_sessions;
 pub mod users;
 pub mod web_assets;
 

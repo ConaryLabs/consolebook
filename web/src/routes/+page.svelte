@@ -9,9 +9,11 @@
 		logout,
 		markNoticeRead,
 		myAssignments,
+		mySessions,
 		type AssignedTrainee,
 		type CreatedUser,
 		type Health,
+		type MySession,
 		type Notice,
 		type Role
 	} from '$lib/api';
@@ -29,10 +31,14 @@
 	let canViewAssigned = $derived(
 		data.session?.capabilities.includes('view_assigned_records') ?? false
 	);
+	let canAuthor = $derived(
+		data.session?.capabilities.includes('author_evaluation') ?? false
+	);
 
 	let health: Health | null = $state(null);
 	let notices: Notice[] = $state([]);
 	let assigned: AssignedTrainee[] = $state([]);
+	let sessions: MySession[] = $state([]);
 	$effect(() => {
 		getHealth().then(
 			(h) => (health = h),
@@ -46,6 +52,12 @@
 			myAssignments().then(
 				(body) => (assigned = body.assignments),
 				() => (assigned = [])
+			);
+		}
+		if (canAuthor) {
+			mySessions().then(
+				(body) => (sessions = body.sessions),
+				() => (sessions = [])
 			);
 		}
 	});
@@ -185,6 +197,43 @@
 							</td>
 							<td>{row.program_name} — v{row.version_number}</td>
 							<td>{instant(row.assigned_at)}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		{/if}
+	</section>
+{/if}
+
+{#if canAuthor}
+	<section class="card">
+		<h2>My sessions</h2>
+		{#if sessions.length === 0}
+			<p class="quiet">No sessions yet.</p>
+		{:else}
+			<table class="grid">
+				<thead>
+					<tr>
+						<th>Date</th>
+						<th>Local time</th>
+						<th>Trainee</th>
+						<th>Program</th>
+						<th>Status</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each sessions as session (session.session_id)}
+						<tr>
+							<td>{session.business_date}</td>
+							<td>
+								{session.local_start.replace('T', ' ')}
+								{#if session.local_end}
+									– {session.local_end.replace('T', ' ')}
+								{/if}
+							</td>
+							<td>{session.trainee_display_name}</td>
+							<td>{session.program_name} — v{session.version_number}</td>
+							<td>{session.disposition ?? 'open'}</td>
 						</tr>
 					{/each}
 				</tbody>
