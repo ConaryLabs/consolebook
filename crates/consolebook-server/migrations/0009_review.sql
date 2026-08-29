@@ -26,8 +26,13 @@ CREATE TABLE review_decision (
     ),
     comment TEXT NOT NULL,
     decided_at INTEGER NOT NULL,
-    -- A change request explains itself (ADR 0008).
-    CHECK (decision != 'changes_requested' OR length(comment) > 0)
+    -- A change request explains itself (ADR 0008): blank-equivalent
+    -- comments are refused after trimming ASCII whitespace, mirroring
+    -- the service's (Unicode) trim.
+    CHECK (
+        decision != 'changes_requested'
+        OR length(trim(comment, ' ' || char(9, 10, 13))) > 0
+    )
 ) STRICT;
 
 CREATE INDEX review_decision_record
@@ -55,6 +60,20 @@ WHEN (SELECT kind FROM contributor_event
       ORDER BY id DESC LIMIT 1) IS NOT 'submitted_for_review'
 BEGIN
     SELECT RAISE(ABORT, 'reviews decide submitted drafts');
+END;
+
+-- The decision and the workflow transition are one atomic write: the
+-- paired review_decided event is generated here, never left to the
+-- writer, so a decision can never land while the record still reads as
+-- submitted — and a second decision on the same submission meets
+-- 'reviews decide submitted drafts' above.
+CREATE TRIGGER review_decision_advances_workflow
+AFTER INSERT ON review_decision
+BEGIN
+    INSERT INTO contributor_event
+        (evaluation_record_id, kind, actor_user_id, to_user_id, recorded_at)
+    VALUES (NEW.evaluation_record_id, 'review_decided',
+            NEW.reviewer_user_id, NULL, NEW.decided_at);
 END;
 
 -- Self-review is refused (ADR 0008): the current owner, an author or

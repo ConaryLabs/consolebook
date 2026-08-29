@@ -935,3 +935,116 @@ async fn review_queue_and_api_round_trip() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["drafts"].as_array().expect("rows").len(), 0);
 }
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn raw_decisions_advance_the_workflow() {
+    let fx = Fixture::new().await;
+    let s = seed(&fx).await;
+    let record_id = evaluation_drafts::create(&fx.pool, s.jordan_id, s.session_id, None)
+        .await
+        .expect("call")
+        .expect("created");
+    evaluation_drafts::submit(&fx.pool, s.jordan_id, record_id, 0)
+        .await
+        .expect("call")
+        .expect("submitted");
+
+    // The comment rule holds against raw writes: ASCII-whitespace
+    // padding is not an explanation.
+    let raw = sqlx::query(
+        "INSERT INTO review_decision
+             (evaluation_record_id, reviewer_user_id, decision, comment, decided_at)
+         VALUES (?1, ?2, 'changes_requested', '  \t ', 1)",
+    )
+    .bind(record_id)
+    .bind(s.casey_id)
+    .execute(&fx.pool)
+    .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(
+        err.contains("CHECK constraint failed"),
+        "blank comment: {err}"
+    );
+
+    // A raw decision is one atomic write: the database itself appends
+    // the paired review_decided event...
+    sqlx::query(
+        "INSERT INTO review_decision
+             (evaluation_record_id, reviewer_user_id, decision, comment, decided_at)
+         VALUES (?1, ?2, 'returned', 'Returned for another invented pass.', 2)",
+    )
+    .bind(record_id)
+    .bind(s.casey_id)
+    .execute(&fx.pool)
+    .await
+    .expect("raw return");
+    let events: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT kind, actor_user_id FROM contributor_event
+         WHERE evaluation_record_id = ?1 ORDER BY id",
+    )
+    .bind(record_id)
+    .fetch_all(&fx.pool)
+    .await
+    .expect("events");
+    assert_eq!(
+        events,
+        vec![
+            ("created".to_owned(), s.jordan_id),
+            ("submitted_for_review".to_owned(), s.jordan_id),
+            ("review_decided".to_owned(), s.casey_id),
+        ]
+    );
+    let workspace = evaluation_drafts::workspace(&fx.pool, s.casey_id, record_id)
+        .await
+        .expect("call")
+        .expect("read");
+    assert_eq!(workspace.detail.status, DraftStatus::Returned);
+
+    // ...so a second decision on the same submission meets the
+    // submitted gate instead of stacking silently.
+    let raw = sqlx::query(
+        "INSERT INTO review_decision
+             (evaluation_record_id, reviewer_user_id, decision, comment, decided_at)
+         VALUES (?1, ?2, 'approved', '', 3)",
+    )
+    .bind(record_id)
+    .bind(s.casey_id)
+    .execute(&fx.pool)
+    .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(err.contains("decide submitted drafts"), "double: {err}");
+
+    // The service path appends nothing extra: after a resubmission and
+    // a service approval, the stream carries exactly one event per
+    // decision.
+    evaluation_drafts::submit(&fx.pool, s.jordan_id, record_id, 0)
+        .await
+        .expect("call")
+        .expect("resubmitted");
+    draft_review::decide(
+        &fx.pool,
+        s.casey_id,
+        record_id,
+        ReviewDecisionKind::Approved,
+        None,
+    )
+    .await
+    .expect("call")
+    .expect("decided");
+    let decided: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM contributor_event
+         WHERE evaluation_record_id = ?1 AND kind = 'review_decided'",
+    )
+    .bind(record_id)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("count");
+    assert_eq!(decided, 2);
+    let workspace = evaluation_drafts::workspace(&fx.pool, s.casey_id, record_id)
+        .await
+        .expect("call")
+        .expect("read");
+    assert_eq!(workspace.detail.status, DraftStatus::Approved);
+    assert_eq!(workspace.detail.decisions.len(), 2);
+}

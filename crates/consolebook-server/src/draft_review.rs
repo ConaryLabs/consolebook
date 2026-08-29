@@ -121,15 +121,9 @@ pub async fn decide(
         .await
         .context("taking return snapshot")?;
     }
-    evaluation_drafts::append_event(
-        &mut tx,
-        record_id,
-        "review_decided",
-        actor_user_id,
-        None,
-        now,
-    )
-    .await?;
+    // The paired review_decided event is appended by the database
+    // itself (migration 0009's review_decision_advances_workflow), so
+    // raw writes advance the workflow exactly as this path does.
     let owner: i64 =
         sqlx::query_scalar("SELECT owner_user_id FROM evaluation_record WHERE id = ?1")
             .bind(record_id)
