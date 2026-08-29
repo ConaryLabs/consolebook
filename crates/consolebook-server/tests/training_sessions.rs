@@ -771,6 +771,19 @@ async fn session_gates_membership_and_close_rules() {
     .await
     .expect("call");
     assert_eq!(refused, Err(SessionRefusal::SessionClosed));
+    // The database freezes closed rows too: settled history cannot be
+    // rewritten in place by raw maintenance SQL — corrections are
+    // successor records, arriving with the correction machinery.
+    let raw = sqlx::query("UPDATE training_session SET local_start = ?1 WHERE id = ?2")
+        .bind("2026-06-02T05:00")
+        .bind(session_id)
+        .execute(&fx.pool)
+        .await;
+    let err = raw.expect_err("must be refused").to_string();
+    assert!(
+        err.contains("never changes"),
+        "closed session frozen: {err}"
+    );
 
     // Session phases pin the enrollment's version, at the service and raw.
     let (_, foreign_version) = {

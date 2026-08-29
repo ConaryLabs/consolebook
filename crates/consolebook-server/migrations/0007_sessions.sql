@@ -85,6 +85,18 @@ BEGIN
     SELECT RAISE(ABORT, 'a session keeps the version it was recorded under');
 END;
 
+-- A closed session is settled history: its disposition ended or released
+-- the interval, and its content is what later records present through.
+-- Corrections are successor versions or amendments (PRINCIPLES.md),
+-- never in-place edits, so every update to a closed row is refused. The
+-- close itself still lands: OLD.disposition is null while it runs.
+CREATE TRIGGER training_session_closed_never_changes
+BEFORE UPDATE ON training_session
+WHEN OLD.disposition IS NOT NULL
+BEGIN
+    SELECT RAISE(ABORT, 'a closed session never changes; corrections are successor records');
+END;
+
 -- Invariant 7: active intervals for one trainee cannot overlap, across
 -- every enrollment of that trainee. An open session is unbounded on the
 -- right; interval ends are exclusive, so contiguous sessions (handoffs,
