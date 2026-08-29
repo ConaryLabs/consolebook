@@ -801,8 +801,11 @@ export function transferDraft(draftId: number, toUserId: number): Promise<void> 
 	});
 }
 
-export function submitDraft(draftId: number): Promise<void> {
-	return request(`/api/drafts/${draftId}/submit`, { method: 'POST' });
+export function submitDraft(draftId: number, revision: number): Promise<void> {
+	return request(`/api/drafts/${draftId}/submit`, {
+		method: 'POST',
+		body: JSON.stringify({ revision })
+	});
 }
 
 /** A structurally valid empty draft for starting a program from scratch. */

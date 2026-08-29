@@ -438,6 +438,21 @@ pub async fn transfer(
     if status_of(&mut tx, record_id).await? == DraftStatus::Submitted {
         return Ok(Err(DraftRefusal::DraftSubmitted));
     }
+    // Ownership is rechecked inside the transaction: a raced transfer
+    // must never let a former owner exercise authority they no longer
+    // hold.
+    let owner_now: i64 =
+        sqlx::query_scalar("SELECT owner_user_id FROM evaluation_record WHERE id = ?1")
+            .bind(record_id)
+            .fetch_one(&mut *tx)
+            .await
+            .context("rechecking owner")?;
+    if actor_user_id != owner_now && !coordinator {
+        return Ok(Err(DraftRefusal::CapabilityRequired));
+    }
+    if to_user_id == owner_now {
+        return Ok(Err(DraftRefusal::AlreadyOwner));
+    }
     let now = OffsetDateTime::now_utc().unix_timestamp();
     append_event(
         &mut tx,
@@ -484,11 +499,14 @@ pub async fn transfer(
 
 /// Submits the draft for review: snapshots the full content — anchoring
 /// the review to what was reviewed — and appends the event that freezes
-/// the working copy.
+/// the working copy. The submission carries the revision the submitter
+/// viewed, so content another contributor saved meanwhile is never
+/// frozen sight unseen.
 pub async fn submit(
     pool: &SqlitePool,
     actor_user_id: i64,
     record_id: i64,
+    expected_revision: i64,
 ) -> Result<std::result::Result<(), DraftRefusal>> {
     let mut conn = pool.acquire().await.context("acquiring connection")?;
     let Some(record) = load_record(&mut conn, record_id).await? else {
@@ -504,6 +522,22 @@ pub async fn submit(
     let mut tx = pool.begin().await.context("starting submission")?;
     if status_of(&mut tx, record_id).await? == DraftStatus::Submitted {
         return Ok(Err(DraftRefusal::DraftSubmitted));
+    }
+    // Ownership and revision are rechecked inside the transaction: a
+    // raced transfer or a concurrent save means the submitter is no
+    // longer freezing what they viewed.
+    let row = sqlx::query("SELECT owner_user_id, revision FROM evaluation_record WHERE id = ?1")
+        .bind(record_id)
+        .fetch_one(&mut *tx)
+        .await
+        .context("rechecking record")?;
+    let owner_now: i64 = row.get("owner_user_id");
+    if actor_user_id != owner_now && !coordinator {
+        return Ok(Err(DraftRefusal::CapabilityRequired));
+    }
+    let revision_now: i64 = row.get("revision");
+    if expected_revision != revision_now {
+        return Ok(Err(DraftRefusal::StaleSave));
     }
     let content = draft_content::content_json(&mut tx, record_id).await?;
     let now = OffsetDateTime::now_utc().unix_timestamp();

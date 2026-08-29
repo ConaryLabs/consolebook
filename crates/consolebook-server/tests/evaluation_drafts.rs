@@ -972,12 +972,17 @@ async fn submission_snapshots_and_freezes() {
     .expect("call")
     .expect("saved");
 
-    // Only the owner or a coordinator submits.
-    let refused = evaluation_drafts::submit(&fx.pool, s.taylor_id, record_id)
+    // Only the owner or a coordinator submits, and only the revision
+    // they viewed — a concurrent save is never frozen sight unseen.
+    let refused = evaluation_drafts::submit(&fx.pool, s.taylor_id, record_id, 1)
         .await
         .expect("call");
     assert_eq!(refused, Err(DraftRefusal::CapabilityRequired));
-    evaluation_drafts::submit(&fx.pool, s.jordan_id, record_id)
+    let refused = evaluation_drafts::submit(&fx.pool, s.jordan_id, record_id, 0)
+        .await
+        .expect("call");
+    assert_eq!(refused, Err(DraftRefusal::StaleSave));
+    evaluation_drafts::submit(&fx.pool, s.jordan_id, record_id, 1)
         .await
         .expect("call")
         .expect("submitted");
@@ -999,7 +1004,7 @@ async fn submission_snapshots_and_freezes() {
     );
 
     // Submitted means frozen: at the service and at the database.
-    let refused = evaluation_drafts::submit(&fx.pool, s.jordan_id, record_id)
+    let refused = evaluation_drafts::submit(&fx.pool, s.jordan_id, record_id, 1)
         .await
         .expect("call");
     assert_eq!(refused, Err(DraftRefusal::DraftSubmitted));
@@ -1233,7 +1238,7 @@ async fn drafts_api_round_trip() {
         "POST",
         &format!("/api/drafts/{draft_id}/submit"),
         Some(&rowan),
-        Some(serde_json::json!({})),
+        Some(serde_json::json!({ "revision": 1 })),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "submit: {body}");

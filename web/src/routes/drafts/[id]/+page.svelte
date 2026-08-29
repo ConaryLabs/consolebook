@@ -127,13 +127,26 @@
 		saveTimer = setTimeout(() => void saveNow(), 600);
 	}
 
+	// Saves are serialized into one chain: a new edit while a request is
+	// in flight marks the chain dirty, and the chain re-sends the latest
+	// state with the revision the previous save returned — overlapping
+	// requests never race each other into a false conflict.
+	let dirtyAgain = false;
+
 	function saveNow(): Promise<void> {
 		saveTimer = null;
+		if (inFlight !== null) {
+			dirtyAgain = true;
+			return inFlight;
+		}
 		saveState = 'saving';
 		const run = (async () => {
 			try {
-				const saved = await saveDraftContent(draftId, revision, buildContent());
-				revision = saved.revision;
+				do {
+					dirtyAgain = false;
+					const saved = await saveDraftContent(draftId, revision, buildContent());
+					revision = saved.revision;
+				} while (dirtyAgain);
 				saveState = 'saved';
 				await refreshMeta();
 			} catch (err) {
@@ -149,6 +162,8 @@
 				}
 				saveState = 'failed';
 				error = err instanceof ApiError ? err.message : 'the server could not be reached';
+			} finally {
+				inFlight = null;
 			}
 		})();
 		inFlight = run;
@@ -217,9 +232,17 @@
 				staleReloaded = false;
 				return;
 			}
-			await submitDraft(draftId);
+			await submitDraft(draftId, revision);
 			await load();
 		} catch (err) {
+			if (err instanceof ApiError && err.code === 'stale_save') {
+				// The draft moved on since this page last saw it; show the
+				// winning copy instead of freezing it sight unseen.
+				await load();
+				error =
+					'Another contributor saved first; review the reloaded draft before submitting.';
+				return;
+			}
 			error = err instanceof ApiError ? err.message : 'the server could not be reached';
 		} finally {
 			busy = false;
@@ -248,11 +271,28 @@
 		return anchor ? `${value} — ${anchor.label}` : String(value);
 	}
 
+	// A select enumerates the scale only while that stays usable; a wider
+	// configured span gets a bounded numeric input instead of thousands
+	// of options.
+	const RANGE_SELECT_LIMIT = 24;
+
+	function wideScale(competency: SkeletonCompetency): boolean {
+		return (
+			competency.min_value !== null &&
+			competency.max_value !== null &&
+			competency.max_value - competency.min_value > RANGE_SELECT_LIMIT
+		);
+	}
+
 	// Every value the pinned scale accepts, not just the anchored ones —
 	// anchors may be sparse (say, 1, 4, and 7 of a 1–7 scale) and label
 	// the values they define.
 	function numericValues(competency: SkeletonCompetency): number[] {
-		if (competency.min_value === null || competency.max_value === null) {
+		if (
+			competency.min_value === null ||
+			competency.max_value === null ||
+			wideScale(competency)
+		) {
 			return competency.anchors.map((anchor) => anchor.value);
 		}
 		const range: number[] = [];
@@ -365,6 +405,16 @@
 											<option value={anchor.value}>{anchor.label}</option>
 										{/each}
 									</select>
+								{:else if wideScale(competency)}
+									<input
+										aria-label={`Rate ${competency.name}`}
+										type="number"
+										min={competency.min_value}
+										max={competency.max_value}
+										disabled={!editable}
+										bind:value={values[competency.form_competency_id]}
+										oninput={scheduleSave}
+									/>
 								{:else}
 									<select
 										aria-label={`Rate ${competency.name}`}

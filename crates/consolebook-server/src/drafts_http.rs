@@ -258,12 +258,19 @@ async fn transfer_draft(
     }
 }
 
+#[derive(Deserialize)]
+struct SubmitRequest {
+    /// The revision the submitter viewed.
+    revision: i64,
+}
+
 async fn submit_draft(
     State(state): State<AppState>,
     current: CurrentUser,
     Path(record_id): Path<i64>,
+    Json(req): Json<SubmitRequest>,
 ) -> Result<Response, ApiError> {
-    match evaluation_drafts::submit(&state.pool, current.user.id, record_id).await? {
+    match evaluation_drafts::submit(&state.pool, current.user.id, record_id, req.revision).await? {
         Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
         Err(refusal) => Err(draft_refusal(&refusal)),
     }
