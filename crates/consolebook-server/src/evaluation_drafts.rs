@@ -377,13 +377,13 @@ pub async fn create(
     .await
     .context("rereading session")?
     else {
-        return Ok(Err(DraftRefusal::NoSuchSession));
+        return storage::refuse(tx, DraftRefusal::NoSuchSession).await;
     };
     let enrollment_id: i64 = session.get("enrollment_id");
     let version_id: i64 = session.get("program_version_id");
     let disposition: Option<String> = session.get("disposition");
     if disposition.as_deref() == Some("cancelled") {
-        return Ok(Err(DraftRefusal::SessionCancelled));
+        return storage::refuse(tx, DraftRefusal::SessionCancelled).await;
     }
     // v1 policy, not schema: one daily draft per training session.
     let existing: Option<i64> = sqlx::query_scalar(
@@ -394,11 +394,11 @@ pub async fn create(
     .await
     .context("checking existing draft")?;
     if existing.is_some() {
-        return Ok(Err(DraftRefusal::DraftAlreadyExists));
+        return storage::refuse(tx, DraftRefusal::DraftAlreadyExists).await;
     }
     let form_id = match resolve_form(&mut tx, version_id, form_id).await? {
         Ok(form_id) => form_id,
-        Err(refusal) => return Ok(Err(refusal)),
+        Err(refusal) => return storage::refuse(tx, refusal).await,
     };
 
     let now = OffsetDateTime::now_utc().unix_timestamp();
@@ -547,7 +547,7 @@ pub async fn transfer(
 
     let mut tx = storage::write_tx(pool).await.context("starting transfer")?;
     if let Some(refusal) = status_of(&mut tx, record_id).await?.frozen_refusal() {
-        return Ok(Err(refusal));
+        return storage::refuse(tx, refusal).await;
     }
     // Ownership is rechecked inside the transaction: a raced transfer
     // must never let a former owner exercise authority they no longer
@@ -559,10 +559,10 @@ pub async fn transfer(
             .await
             .context("rechecking owner")?;
     if actor_user_id != owner_now && !coordinator {
-        return Ok(Err(DraftRefusal::CapabilityRequired));
+        return storage::refuse(tx, DraftRefusal::CapabilityRequired).await;
     }
     if to_user_id == owner_now {
-        return Ok(Err(DraftRefusal::AlreadyOwner));
+        return storage::refuse(tx, DraftRefusal::AlreadyOwner).await;
     }
     let now = OffsetDateTime::now_utc().unix_timestamp();
     append_event(
@@ -634,7 +634,7 @@ pub async fn submit(
         .await
         .context("starting submission")?;
     if let Some(refusal) = status_of(&mut tx, record_id).await?.frozen_refusal() {
-        return Ok(Err(refusal));
+        return storage::refuse(tx, refusal).await;
     }
     // Ownership and revision are rechecked inside the transaction: a
     // raced transfer or a concurrent save means the submitter is no
@@ -646,11 +646,11 @@ pub async fn submit(
         .context("rechecking record")?;
     let owner_now: i64 = row.get("owner_user_id");
     if actor_user_id != owner_now && !coordinator {
-        return Ok(Err(DraftRefusal::CapabilityRequired));
+        return storage::refuse(tx, DraftRefusal::CapabilityRequired).await;
     }
     let revision_now: i64 = row.get("revision");
     if expected_revision != revision_now {
-        return Ok(Err(DraftRefusal::StaleSave));
+        return storage::refuse(tx, DraftRefusal::StaleSave).await;
     }
     let content = draft_content::content_json(&mut tx, record_id).await?;
     let now = OffsetDateTime::now_utc().unix_timestamp();

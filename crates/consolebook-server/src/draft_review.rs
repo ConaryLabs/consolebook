@@ -85,10 +85,10 @@ pub async fn decide(
 
     let mut tx = storage::write_tx(pool).await.context("starting review")?;
     if evaluation_drafts::status_of(&mut tx, record_id).await? != DraftStatus::Submitted {
-        return Ok(Err(DraftRefusal::NotSubmitted));
+        return storage::refuse(tx, DraftRefusal::NotSubmitted).await;
     }
     if evaluation_drafts::is_contributor(&mut tx, record_id, actor_user_id).await? {
-        return Ok(Err(DraftRefusal::SelfReview));
+        return storage::refuse(tx, DraftRefusal::SelfReview).await;
     }
     let now = OffsetDateTime::now_utc().unix_timestamp();
     sqlx::query(

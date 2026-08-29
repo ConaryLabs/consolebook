@@ -20,12 +20,14 @@ use consolebook_server::{
     assignments, data_dir::DataDir, enrollments, session_membership, setup, storage, users,
 };
 use http_body_util::BodyExt;
+use sqlx::ConnectOptions;
 use tower::ServiceExt;
 
 const PASSWORD: &str = "invented-passphrase-1";
 
 struct Fixture {
     _tmp: tempfile::TempDir,
+    db_path: std::path::PathBuf,
     pool: sqlx::SqlitePool,
     admin_id: i64,
 }
@@ -35,7 +37,8 @@ impl Fixture {
         let tmp = tempfile::tempdir().expect("create temp dir");
         let data_dir = DataDir::new(tmp.path().join("data"));
         data_dir.ensure_layout().expect("create layout");
-        let pool = storage::open(&data_dir.database()).await.expect("open");
+        let db_path = data_dir.database();
+        let pool = storage::open(&db_path).await.expect("open");
         let code = setup::issue_setup_code(&pool)
             .await
             .expect("issue")
@@ -54,6 +57,7 @@ impl Fixture {
         .expect("accepted");
         Self {
             _tmp: tmp,
+            db_path,
             pool,
             admin_id,
         }
@@ -1346,4 +1350,39 @@ async fn drafts_api_round_trip() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "submitted");
     assert_eq!(body["snapshots"].as_array().expect("rows").len(), 1);
+}
+
+#[tokio::test]
+async fn refusal_releases_the_write_lock() {
+    let fx = Fixture::new().await;
+    let s = seed(&fx).await;
+    evaluation_drafts::create(&fx.pool, s.jordan_id, s.session_id, None)
+        .await
+        .expect("call")
+        .expect("created");
+    let refused = evaluation_drafts::create(&fx.pool, fx.admin_id, s.session_id, None)
+        .await
+        .expect("call");
+    assert_eq!(refused, Err(DraftRefusal::DraftAlreadyExists));
+
+    // A probe connection that is not allowed to wait at all: it takes the
+    // write lock only if the refusal above rolled its transaction back
+    // before returning. A refusal that merely drops its transaction leaves
+    // the lock to a background rollback, and a deferred writer that meets
+    // the leftover lock fails immediately — SQLite does not consult the
+    // busy timeout when promoting an open read transaction to a write.
+    let mut probe = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&fx.db_path)
+        .busy_timeout(std::time::Duration::ZERO)
+        .connect()
+        .await
+        .expect("probe connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut probe)
+        .await
+        .expect("write lock free after refusal");
+    sqlx::query("ROLLBACK")
+        .execute(&mut probe)
+        .await
+        .expect("probe rollback");
 }
