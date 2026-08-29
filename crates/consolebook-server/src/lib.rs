@@ -20,10 +20,13 @@ pub mod restore;
 pub mod scheduler;
 pub mod secrets;
 pub mod serve_lock;
+pub mod session_membership;
+pub mod session_time;
 pub mod sessions;
 pub mod setup;
 pub mod storage;
 pub mod training_http;
+pub mod training_sessions;
 pub mod users;
 pub mod web_assets;
 

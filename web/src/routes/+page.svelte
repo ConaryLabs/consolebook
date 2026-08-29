@@ -2,6 +2,7 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import {
 		ApiError,
+		closeSession,
 		createUser,
 		getHealth,
 		getNotices,
@@ -9,11 +10,14 @@
 		logout,
 		markNoticeRead,
 		myAssignments,
+		mySessions,
 		type AssignedTrainee,
 		type CreatedUser,
 		type Health,
+		type MySession,
 		type Notice,
-		type Role
+		type Role,
+		type SessionDisposition
 	} from '$lib/api';
 	import { instant } from '$lib/format';
 	import type { ShellData } from './+layout';
@@ -29,10 +33,14 @@
 	let canViewAssigned = $derived(
 		data.session?.capabilities.includes('view_assigned_records') ?? false
 	);
+	let canAuthor = $derived(
+		data.session?.capabilities.includes('author_evaluation') ?? false
+	);
 
 	let health: Health | null = $state(null);
 	let notices: Notice[] = $state([]);
 	let assigned: AssignedTrainee[] = $state([]);
+	let sessions: MySession[] = $state([]);
 	$effect(() => {
 		getHealth().then(
 			(h) => (health = h),
@@ -46,6 +54,12 @@
 			myAssignments().then(
 				(body) => (assigned = body.assignments),
 				() => (assigned = [])
+			);
+		}
+		if (canAuthor) {
+			mySessions().then(
+				(body) => (sessions = body.sessions),
+				() => (sessions = [])
 			);
 		}
 	});
@@ -66,6 +80,28 @@
 		await logout();
 		await invalidateAll();
 		await goto('/login');
+	}
+
+	// Session members work their sessions from here even without a durable
+	// assignment: membership is the grant.
+	let sessionEnd: Record<number, string> = $state({});
+	let sessionError = $state('');
+	async function closeMine(session: MySession, disposition: SessionDisposition) {
+		sessionError = '';
+		busy = true;
+		try {
+			await closeSession(
+				session.session_id,
+				disposition,
+				disposition === 'cancelled' ? undefined : sessionEnd[session.session_id]
+			);
+			sessions = (await mySessions()).sessions;
+		} catch (err) {
+			sessionError =
+				err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
 	}
 
 	async function issueCode(event: SubmitEvent) {
@@ -193,6 +229,82 @@
 	</section>
 {/if}
 
+{#if canAuthor}
+	<section class="card">
+		<h2>My sessions</h2>
+		{#if sessions.length === 0}
+			<p class="quiet">No sessions yet.</p>
+		{:else}
+			<table class="grid">
+				<thead>
+					<tr>
+						<th>Date</th>
+						<th>Local time</th>
+						<th>Trainee</th>
+						<th>Program</th>
+						<th>Status</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each sessions as session (session.session_id)}
+						<tr>
+							<td>{session.business_date}</td>
+							<td>
+								{session.local_start.replace('T', ' ')}
+								{#if session.local_end}
+									– {session.local_end.replace('T', ' ')}
+								{/if}
+							</td>
+							<td>{session.trainee_display_name}</td>
+							<td>{session.program_name} — v{session.version_number}</td>
+							<td>{session.disposition ?? 'open'}</td>
+							<td>
+								{#if session.disposition === null}
+									<div class="sessionbar">
+										<input
+											aria-label="Local end"
+											type="datetime-local"
+											bind:value={sessionEnd[session.session_id]}
+										/>
+										<button
+											type="button"
+											class="small"
+											disabled={busy || !sessionEnd[session.session_id]}
+											onclick={() => closeMine(session, 'completed')}
+										>
+											Complete
+										</button>
+										<button
+											type="button"
+											class="secondary small"
+											disabled={busy || !sessionEnd[session.session_id]}
+											onclick={() => closeMine(session, 'interrupted')}
+										>
+											Interrupt
+										</button>
+										<button
+											type="button"
+											class="secondary small"
+											disabled={busy}
+											onclick={() => closeMine(session, 'cancelled')}
+										>
+											Cancel session
+										</button>
+									</div>
+								{/if}
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		{/if}
+		{#if sessionError}
+			<p class="error" role="alert">{sessionError}</p>
+		{/if}
+	</section>
+{/if}
+
 {#if canManageUsers}
 	<section class="card">
 		<h2>Create a user</h2>
@@ -305,5 +417,15 @@
 	button.small {
 		padding: 0.2rem 0.6rem;
 		font-size: 0.82rem;
+	}
+	.sessionbar {
+		display: flex;
+		gap: 0.35rem;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.sessionbar input {
+		margin: 0;
+		width: auto;
 	}
 </style>

@@ -2,17 +2,25 @@
 	import { page } from '$app/state';
 	import {
 		ApiError,
+		addSessionTrainer,
+		closeSession,
 		createAssignment,
+		createSession,
 		endAssignment,
 		getEnrollment,
 		getProgramVersions,
+		listSessions,
 		listUsers,
 		recordEnrollmentEvent,
 		recordPhaseEvent,
+		removeSessionTrainer,
+		updateSession,
 		type EnrollmentDetail,
 		type EnrollmentEventKind,
 		type PhaseEventKind,
 		type PhaseRef,
+		type SessionDisposition,
+		type TrainingSession,
 		type UserSummary,
 		type VersionSummary
 	} from '$lib/api';
@@ -21,8 +29,12 @@
 
 	let { data }: { data: ShellData } = $props();
 	let enrollmentId = $derived(Number(page.params.id));
+	let myUserId = $derived(data.session?.user.id ?? 0);
 	let canAssign = $derived(
 		data.session?.capabilities.includes('assign_training') ?? false
+	);
+	let canAuthor = $derived(
+		data.session?.capabilities.includes('author_evaluation') ?? false
 	);
 
 	let detail: EnrollmentDetail | null = $state(null);
@@ -143,6 +155,158 @@
 			await reload();
 		} catch (err) {
 			lifecycleError = actionFailed(err);
+		} finally {
+			busy = false;
+		}
+	}
+
+	// ---------------------------------------------------------- sessions
+	let sessions: TrainingSession[] = $state([]);
+	let sessionError = $state('');
+	let amAssigned = $derived.by(() => {
+		const current = detail;
+		return (
+			current !== null &&
+			current.assignments.some(
+				(a) => a.ended_at === null && a.trainer_user_id === myUserId
+			)
+		);
+	});
+	// Recording a session takes assign_training, or authoring plus an
+	// active assignment; working one takes coordination or membership.
+	let canRecord = $derived(canAssign || (canAuthor && amAssigned));
+
+	async function loadSessions() {
+		try {
+			sessions = (await listSessions(enrollmentId)).sessions;
+		} catch {
+			sessions = [];
+		}
+	}
+
+	$effect(() => {
+		if (detail !== null) {
+			void loadSessions();
+		}
+	});
+
+	function canWork(session: TrainingSession): boolean {
+		return canAssign || session.trainers.some((t) => t.user_id === myUserId);
+	}
+
+	let newDate = $state('');
+	let newTz = $state(Intl.DateTimeFormat().resolvedOptions().timeZone);
+	let newStart = $state('');
+	let newEnd = $state('');
+	let newDisposition: 'completed' | 'interrupted' = $state('completed');
+	let newPhaseId = $state(0);
+	let newTrainerId = $state(0);
+	let sessionTrainerChoices = $derived(
+		roster.filter((person) => person.capabilities.includes('author_evaluation'))
+	);
+
+	async function recordSession(event: SubmitEvent) {
+		event.preventDefault();
+		sessionError = '';
+		busy = true;
+		try {
+			await createSession(enrollmentId, {
+				business_date: newDate,
+				timezone: newTz,
+				local_start: newStart,
+				...(newEnd === ''
+					? {}
+					: { local_end: newEnd, disposition: newDisposition as SessionDisposition }),
+				...(newPhaseId === 0 ? {} : { phase_id: newPhaseId }),
+				trainer_user_ids: newTrainerId === 0 ? [] : [newTrainerId]
+			});
+			newDate = '';
+			newStart = '';
+			newEnd = '';
+			newDisposition = 'completed';
+			newPhaseId = 0;
+			newTrainerId = 0;
+			await loadSessions();
+		} catch (err) {
+			sessionError = actionFailed(err);
+		} finally {
+			busy = false;
+		}
+	}
+
+	let closeEnd: Record<number, string> = $state({});
+	async function closeOne(session: TrainingSession, disposition: SessionDisposition) {
+		sessionError = '';
+		busy = true;
+		try {
+			await closeSession(
+				session.id,
+				disposition,
+				disposition === 'cancelled' ? undefined : closeEnd[session.id]
+			);
+			await loadSessions();
+		} catch (err) {
+			sessionError = actionFailed(err);
+		} finally {
+			busy = false;
+		}
+	}
+
+	let editingId: number | null = $state(null);
+	let editDate = $state('');
+	let editTz = $state('');
+	let editStart = $state('');
+	function startEdit(session: TrainingSession) {
+		editingId = session.id;
+		editDate = session.business_date;
+		editTz = session.timezone;
+		editStart = session.local_start;
+	}
+	async function saveEdit(session: TrainingSession) {
+		sessionError = '';
+		busy = true;
+		try {
+			await updateSession(session.id, {
+				business_date: editDate,
+				timezone: editTz,
+				local_start: editStart,
+				...(session.phase_id === null ? {} : { phase_id: session.phase_id })
+			});
+			editingId = null;
+			await loadSessions();
+		} catch (err) {
+			sessionError = actionFailed(err);
+		} finally {
+			busy = false;
+		}
+	}
+
+	let memberChoice: Record<number, number> = $state({});
+	function addableTrainers(session: TrainingSession): UserSummary[] {
+		return sessionTrainerChoices.filter(
+			(person) => !session.trainers.some((t) => t.user_id === person.id)
+		);
+	}
+	async function addMember(session: TrainingSession) {
+		sessionError = '';
+		busy = true;
+		try {
+			await addSessionTrainer(session.id, memberChoice[session.id]);
+			await loadSessions();
+		} catch (err) {
+			sessionError = actionFailed(err);
+		} finally {
+			busy = false;
+		}
+	}
+	async function removeMember(session: TrainingSession, userId: number) {
+		sessionError = '';
+		busy = true;
+		try {
+			await removeSessionTrainer(session.id, userId);
+			await loadSessions();
+		} catch (err) {
+			sessionError = actionFailed(err);
 		} finally {
 			busy = false;
 		}
@@ -285,6 +449,222 @@
 		{/if}
 		{#if assignError}
 			<p class="error" role="alert">{assignError}</p>
+		{/if}
+	</section>
+
+	<section class="panel">
+		<h2>Training sessions</h2>
+		{#if sessions.length === 0}
+			<p class="quiet">No sessions recorded.</p>
+		{:else}
+			<table class="grid">
+				<thead>
+					<tr>
+						<th>Date</th>
+						<th>Local time</th>
+						<th>Phase</th>
+						<th>Trainers</th>
+						<th>Status</th>
+						{#if canRecord}
+							<th></th>
+						{/if}
+					</tr>
+				</thead>
+				<tbody>
+					{#each sessions as session (session.id)}
+						<tr>
+							<td>{session.business_date}</td>
+							<td>
+								{session.local_start.replace('T', ' ')}
+								{#if session.local_end}
+									– {session.local_end.replace('T', ' ')}
+								{/if}
+								<span class="quiet-inline">({session.timezone})</span>
+							</td>
+							<td>{session.phase_name ?? '—'}</td>
+							<td>
+								{#each session.trainers as trainer (trainer.user_id)}
+									<span class="trainer">
+										{trainer.display_name}
+										{#if canAssign && session.trainers.length > 1}
+											<button
+												type="button"
+												class="secondary small"
+												aria-label={`Remove ${trainer.display_name}`}
+												disabled={busy}
+												onclick={() => removeMember(session, trainer.user_id)}
+											>
+												✕
+											</button>
+										{/if}
+									</span>
+								{/each}
+								{#if canAssign && addableTrainers(session).length > 0}
+									<span class="row add-member">
+										<select
+											aria-label="Trainer to add"
+											bind:value={memberChoice[session.id]}
+										>
+											{#each addableTrainers(session) as person (person.id)}
+												<option value={person.id}>{person.display_name}</option>
+											{/each}
+										</select>
+										<button
+											type="button"
+											class="secondary small"
+											disabled={busy || !memberChoice[session.id]}
+											onclick={() => addMember(session)}
+										>
+											Add
+										</button>
+									</span>
+								{/if}
+							</td>
+							<td>
+								{#if session.disposition === null}
+									<span class="pill draft">Open</span>
+								{:else}
+									{session.disposition}
+								{/if}
+							</td>
+							{#if canRecord}
+								<td>
+									{#if session.disposition === null && canWork(session)}
+										{#if editingId === session.id}
+											<div class="sessionbar">
+												<input
+													aria-label="Edit business date"
+													type="date"
+													bind:value={editDate}
+												/>
+												<input aria-label="Edit timezone" bind:value={editTz} />
+												<input
+													aria-label="Edit local start"
+													type="datetime-local"
+													bind:value={editStart}
+												/>
+												<button
+													type="button"
+													class="small"
+													disabled={busy}
+													onclick={() => saveEdit(session)}
+												>
+													Save
+												</button>
+												<button
+													type="button"
+													class="secondary small"
+													onclick={() => (editingId = null)}
+												>
+													Stop editing
+												</button>
+											</div>
+										{:else}
+											<div class="sessionbar">
+												<input
+													aria-label="Local end"
+													type="datetime-local"
+													bind:value={closeEnd[session.id]}
+												/>
+												<button
+													type="button"
+													class="small"
+													disabled={busy || !closeEnd[session.id]}
+													onclick={() => closeOne(session, 'completed')}
+												>
+													Complete
+												</button>
+												<button
+													type="button"
+													class="secondary small"
+													disabled={busy || !closeEnd[session.id]}
+													onclick={() => closeOne(session, 'interrupted')}
+												>
+													Interrupt
+												</button>
+												<button
+													type="button"
+													class="secondary small"
+													disabled={busy}
+													onclick={() => closeOne(session, 'cancelled')}
+												>
+													Cancel session
+												</button>
+												<button
+													type="button"
+													class="secondary small"
+													onclick={() => startEdit(session)}
+												>
+													Edit
+												</button>
+											</div>
+										{/if}
+									{/if}
+								</td>
+							{/if}
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		{/if}
+		{#if canRecord && detail.status === 'active'}
+			<form class="session-form" onsubmit={recordSession}>
+				<div class="row">
+					<label class="inline" for="session-date">Business date</label>
+					<input id="session-date" type="date" required bind:value={newDate} />
+					<label class="inline" for="session-tz">Timezone</label>
+					<input id="session-tz" required bind:value={newTz} />
+				</div>
+				<div class="row">
+					<label class="inline" for="session-start">Local start</label>
+					<input
+						id="session-start"
+						type="datetime-local"
+						required
+						bind:value={newStart}
+					/>
+					<label class="inline" for="session-end">Local end (retroactive)</label>
+					<input id="session-end" type="datetime-local" bind:value={newEnd} />
+				</div>
+				<div class="row">
+					{#if newEnd !== ''}
+						<label class="inline" for="session-disposition">Disposition</label>
+						<select id="session-disposition" bind:value={newDisposition}>
+							<option value="completed">Completed</option>
+							<option value="interrupted">Interrupted</option>
+						</select>
+					{/if}
+					{#if detail.phases.length > 0}
+						<label class="inline" for="session-phase">Phase</label>
+						<select id="session-phase" bind:value={newPhaseId}>
+							<option value={0}>None</option>
+							{#each detail.phases as phase (phase.id)}
+								<option value={phase.id}>{phase.name}</option>
+							{/each}
+						</select>
+					{/if}
+					{#if canAssign}
+						<label class="inline" for="session-trainer">Trainer</label>
+						<select id="session-trainer" bind:value={newTrainerId}>
+							<option value={0} disabled={!canAuthor}>
+								{canAuthor ? 'Myself' : 'Choose a trainer…'}
+							</option>
+							{#each sessionTrainerChoices as person (person.id)}
+								<option value={person.id}>{person.display_name}</option>
+							{/each}
+						</select>
+					{/if}
+				</div>
+				<button
+					type="submit"
+					disabled={busy || (canAssign && !canAuthor && newTrainerId === 0)}
+				>
+					Record session
+				</button>
+			</form>
+		{/if}
+		{#if sessionError}
+			<p class="error" role="alert">{sessionError}</p>
 		{/if}
 	</section>
 
@@ -523,5 +903,31 @@
 	.lifecycle-actions {
 		margin-top: 1rem;
 		max-width: 34rem;
+	}
+	.session-form {
+		margin-top: 1rem;
+	}
+	.session-form .row {
+		margin-bottom: 1rem;
+		flex-wrap: wrap;
+	}
+	.sessionbar {
+		display: flex;
+		gap: 0.35rem;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.sessionbar input {
+		margin: 0;
+		width: auto;
+	}
+	.trainer {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		margin-right: 0.5rem;
+	}
+	.add-member select {
+		width: auto;
 	}
 </style>
