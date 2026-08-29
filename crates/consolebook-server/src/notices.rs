@@ -17,6 +17,7 @@ use crate::capabilities::Capability;
 pub enum NoticeKind {
     BackupFailed,
     AssignmentCreated,
+    DraftOwnershipReceived,
 }
 
 impl NoticeKind {
@@ -25,6 +26,7 @@ impl NoticeKind {
         match self {
             Self::BackupFailed => "backup_failed",
             Self::AssignmentCreated => "assignment_created",
+            Self::DraftOwnershipReceived => "draft_ownership_received",
         }
     }
 }

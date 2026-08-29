@@ -3,6 +3,7 @@
 	import {
 		ApiError,
 		closeSession,
+		createDraft,
 		createUser,
 		getHealth,
 		getNotices,
@@ -96,6 +97,20 @@
 				disposition === 'cancelled' ? undefined : sessionEnd[session.session_id]
 			);
 			sessions = (await mySessions()).sessions;
+		} catch (err) {
+			sessionError =
+				err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function startDraft(session: MySession) {
+		sessionError = '';
+		busy = true;
+		try {
+			const created = await createDraft(session.session_id);
+			await goto(`/drafts/${created.id}`);
 		} catch (err) {
 			sessionError =
 				err instanceof ApiError ? err.message : 'the server could not be reached';
@@ -243,6 +258,7 @@
 						<th>Trainee</th>
 						<th>Program</th>
 						<th>Status</th>
+						<th>Draft</th>
 						<th></th>
 					</tr>
 				</thead>
@@ -259,6 +275,22 @@
 							<td>{session.trainee_display_name}</td>
 							<td>{session.program_name} — v{session.version_number}</td>
 							<td>{session.disposition ?? 'open'}</td>
+							<td>
+								{#if session.draft_id !== null}
+									<a href={`/drafts/${session.draft_id}`}>Open draft</a>
+								{:else if session.disposition !== 'cancelled'}
+									<button
+										type="button"
+										class="secondary small"
+										disabled={busy}
+										onclick={() => startDraft(session)}
+									>
+										Start draft
+									</button>
+								{:else}
+									<span class="quiet-inline">—</span>
+								{/if}
+							</td>
 							<td>
 								{#if session.disposition === null}
 									<div class="sessionbar">

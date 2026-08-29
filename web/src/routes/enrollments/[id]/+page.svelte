@@ -1,10 +1,12 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import {
 		ApiError,
 		addSessionTrainer,
 		closeSession,
 		createAssignment,
+		createDraft,
 		createSession,
 		endAssignment,
 		getEnrollment,
@@ -192,6 +194,19 @@
 
 	function canWork(session: TrainingSession): boolean {
 		return canAssign || session.trainers.some((t) => t.user_id === myUserId);
+	}
+
+	async function startDraft(session: TrainingSession) {
+		busy = true;
+		error = '';
+		try {
+			const created = await createDraft(session.id);
+			await goto(`/drafts/${created.id}`);
+		} catch (err) {
+			error = actionFailed(err);
+		} finally {
+			busy = false;
+		}
 	}
 
 	let newDate = $state('');
@@ -465,6 +480,7 @@
 						<th>Phase</th>
 						<th>Trainers</th>
 						<th>Status</th>
+						<th>Draft</th>
 						{#if canRecord}
 							<th></th>
 						{/if}
@@ -525,6 +541,22 @@
 									<span class="pill draft">Open</span>
 								{:else}
 									{session.disposition}
+								{/if}
+							</td>
+							<td>
+								{#if session.draft_id !== null}
+									<a href={`/drafts/${session.draft_id}`}>Open draft</a>
+								{:else if session.disposition !== 'cancelled' && (canRecord || canWork(session))}
+									<button
+										type="button"
+										class="secondary small"
+										disabled={busy}
+										onclick={() => startDraft(session)}
+									>
+										Start draft
+									</button>
+								{:else}
+									<span class="quiet-inline">—</span>
 								{/if}
 							</td>
 							{#if canRecord}

@@ -137,6 +137,8 @@ pub struct SessionRow {
     pub created_by: Option<i64>,
     pub closed_at: Option<i64>,
     pub closed_by: Option<i64>,
+    /// The session's daily draft, once one exists (slice 3).
+    pub draft_id: Option<i64>,
     pub trainers: Vec<SessionTrainerRow>,
 }
 
@@ -170,6 +172,8 @@ pub struct MySession {
     pub trainee_display_name: String,
     pub program_name: String,
     pub version_number: i64,
+    /// The session's daily draft, once one exists (slice 3).
+    pub draft_id: Option<i64>,
 }
 
 // ---------------------------------------------------------------- gates
@@ -542,9 +546,16 @@ fn session_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionRow {
         created_by: row.get("created_by"),
         closed_at: row.get("closed_at"),
         closed_by: row.get("closed_by"),
+        draft_id: row.get("draft_id"),
         trainers: Vec::new(),
     }
 }
+
+/// The session's daily draft as a scalar subselect — fan-out safe even
+/// though the coverage schema is many-to-many.
+const DRAFT_ID_SELECT: &str = "(SELECT es.evaluation_record_id FROM evaluation_session es
+          WHERE es.training_session_id = s.id
+          ORDER BY es.evaluation_record_id LIMIT 1) AS draft_id";
 
 /// The enrollment's sessions, newest first, gated like the enrollment
 /// detail (capability plus assignment scope).
@@ -565,15 +576,16 @@ pub async fn list_for_enrollment(
     if exists.is_none() {
         return Ok(Err(SessionRefusal::NoSuchEnrollment));
     }
-    let rows = sqlx::query(
+    let rows = sqlx::query(&format!(
         "SELECT s.id, s.enrollment_id, s.business_date, s.timezone, s.local_start,
                 s.local_end, s.utc_start, s.utc_end, s.phase_id, p.name AS phase_name,
-                s.disposition, s.created_at, s.created_by, s.closed_at, s.closed_by
+                s.disposition, s.created_at, s.created_by, s.closed_at, s.closed_by,
+                {DRAFT_ID_SELECT}
          FROM training_session s
          LEFT JOIN phase p ON p.id = s.phase_id
          WHERE s.enrollment_id = ?1
          ORDER BY s.utc_start DESC, s.id DESC",
-    )
+    ))
     .bind(enrollment_id)
     .fetch_all(&mut *conn)
     .await
@@ -611,20 +623,21 @@ pub async fn get(
         return Ok(Err(SessionRefusal::CapabilityRequired));
     }
     let mut conn = pool.acquire().await.context("acquiring connection")?;
-    let Some(row) = sqlx::query(
+    let Some(row) = sqlx::query(&format!(
         "SELECT s.id, s.enrollment_id, s.business_date, s.timezone, s.local_start,
                 s.local_end, s.utc_start, s.utc_end, s.phase_id, p.name AS phase_name,
                 s.disposition, s.created_at, s.created_by, s.closed_at, s.closed_by,
                 e.user_id AS trainee_user_id, u.username AS trainee_username,
                 u.display_name AS trainee_display_name,
-                pv.program_id, pv.name AS program_name, pv.version_number
+                pv.program_id, pv.name AS program_name, pv.version_number,
+                {DRAFT_ID_SELECT}
          FROM training_session s
          LEFT JOIN phase p ON p.id = s.phase_id
          JOIN enrollment e ON e.id = s.enrollment_id
          JOIN user u ON u.id = e.user_id
          JOIN program_version pv ON pv.id = s.program_version_id
          WHERE s.id = ?1",
-    )
+    ))
     .bind(session_id)
     .fetch_optional(&mut *conn)
     .await
@@ -656,13 +669,14 @@ pub async fn list_mine(
     if !capabilities::user_has(pool, actor_user_id, Capability::AuthorEvaluation).await? {
         return Ok(Err(SessionRefusal::CapabilityRequired));
     }
-    let rows = sqlx::query(
+    let rows = sqlx::query(&format!(
         "SELECT s.id AS session_id, s.enrollment_id, s.business_date, s.timezone,
                 s.local_start, s.local_end, s.utc_start, s.disposition,
                 p.name AS phase_name,
                 e.user_id AS trainee_user_id, u.username AS trainee_username,
                 u.display_name AS trainee_display_name,
-                pv.name AS program_name, pv.version_number
+                pv.name AS program_name, pv.version_number,
+                {DRAFT_ID_SELECT}
          FROM session_trainer st
          JOIN training_session s ON s.id = st.session_id
          LEFT JOIN phase p ON p.id = s.phase_id
@@ -671,7 +685,7 @@ pub async fn list_mine(
          JOIN program_version pv ON pv.id = s.program_version_id
          WHERE st.trainer_user_id = ?1
          ORDER BY (s.disposition IS NULL) DESC, s.utc_start DESC, s.id DESC",
-    )
+    ))
     .bind(actor_user_id)
     .fetch_all(pool)
     .await
@@ -693,6 +707,7 @@ pub async fn list_mine(
             trainee_display_name: row.get("trainee_display_name"),
             program_name: row.get("program_name"),
             version_number: row.get("version_number"),
+            draft_id: row.get("draft_id"),
         })
         .collect()))
 }
