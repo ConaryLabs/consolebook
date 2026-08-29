@@ -447,6 +447,11 @@ fn session_refusal(refusal: &SessionRefusal) -> ApiError {
             "no_trainers",
             "a training session needs at least one trainer",
         ),
+        SessionRefusal::SessionDocumented => ApiError::new(
+            StatusCode::CONFLICT,
+            "session_documented",
+            "a documented session cannot be cancelled; interrupt or complete it",
+        ),
     }
 }
 

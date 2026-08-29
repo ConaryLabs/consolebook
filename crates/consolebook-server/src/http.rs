@@ -54,6 +54,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/notices/{id}/read", post(mark_notice_read))
         .merge(crate::programs_http::routes())
         .merge(crate::training_http::routes())
+        .merge(crate::drafts_http::routes())
         .fallback(crate::web_assets::serve)
         .with_state(state)
 }

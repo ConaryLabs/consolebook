@@ -40,6 +40,9 @@ pub enum EventKind {
     SessionClosed,
     SessionTrainerAdded,
     SessionTrainerRemoved,
+    DraftCreated,
+    DraftOwnershipTransferred,
+    DraftSubmitted,
 }
 
 impl EventKind {
@@ -74,6 +77,9 @@ impl EventKind {
             Self::SessionClosed => "session_closed",
             Self::SessionTrainerAdded => "session_trainer_added",
             Self::SessionTrainerRemoved => "session_trainer_removed",
+            Self::DraftCreated => "draft_created",
+            Self::DraftOwnershipTransferred => "draft_ownership_transferred",
+            Self::DraftSubmitted => "draft_submitted",
         }
     }
 }
@@ -88,6 +94,7 @@ pub enum Subject {
     Enrollment(i64),
     Assignment(i64),
     Session(i64),
+    Record(i64),
 }
 
 impl Subject {
@@ -99,6 +106,7 @@ impl Subject {
             Self::Enrollment(_) => "enrollment",
             Self::Assignment(_) => "assignment",
             Self::Session(_) => "session",
+            Self::Record(_) => "record",
         }
     }
 
@@ -109,7 +117,8 @@ impl Subject {
             | Self::ProgramVersion(id)
             | Self::Enrollment(id)
             | Self::Assignment(id)
-            | Self::Session(id) => id,
+            | Self::Session(id)
+            | Self::Record(id) => id,
         }
     }
 }

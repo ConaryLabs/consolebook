@@ -3,7 +3,9 @@
 	import {
 		ApiError,
 		closeSession,
+		createDraft,
 		createUser,
+		dailyForms,
 		getHealth,
 		getNotices,
 		issueResetCode,
@@ -96,6 +98,34 @@
 				disposition === 'cancelled' ? undefined : sessionEnd[session.session_id]
 			);
 			sessions = (await mySessions()).sessions;
+		} catch (err) {
+			sessionError =
+				err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
+
+	// A version may pin several daily forms; the picker appears exactly
+	// when the choice is real.
+	let draftForms: Record<number, { id: number; name: string }[]> = $state({});
+	let draftFormChoice: Record<number, number> = $state({});
+
+	async function startDraft(session: MySession, formId?: number) {
+		sessionError = '';
+		busy = true;
+		try {
+			if (formId === undefined) {
+				const { forms } = await dailyForms(session.session_id);
+				if (forms.length > 1) {
+					draftForms[session.session_id] = forms;
+					draftFormChoice[session.session_id] = forms[0].id;
+					return;
+				}
+				formId = forms[0]?.id;
+			}
+			const created = await createDraft(session.session_id, formId);
+			await goto(`/drafts/${created.id}`);
 		} catch (err) {
 			sessionError =
 				err instanceof ApiError ? err.message : 'the server could not be reached';
@@ -243,6 +273,7 @@
 						<th>Trainee</th>
 						<th>Program</th>
 						<th>Status</th>
+						<th>Draft</th>
 						<th></th>
 					</tr>
 				</thead>
@@ -259,6 +290,44 @@
 							<td>{session.trainee_display_name}</td>
 							<td>{session.program_name} — v{session.version_number}</td>
 							<td>{session.disposition ?? 'open'}</td>
+							<td>
+								{#if session.draft_id !== null}
+									<a href={`/drafts/${session.draft_id}`}>Open draft</a>
+								{:else if session.disposition !== 'cancelled'}
+									{#if draftForms[session.session_id]}
+										<span class="sessionbar">
+											<select
+												aria-label="Daily form"
+												bind:value={draftFormChoice[session.session_id]}
+											>
+												{#each draftForms[session.session_id] as form (form.id)}
+													<option value={form.id}>{form.name}</option>
+												{/each}
+											</select>
+											<button
+												type="button"
+												class="secondary small"
+												disabled={busy}
+												onclick={() =>
+													startDraft(session, draftFormChoice[session.session_id])}
+											>
+												Create
+											</button>
+										</span>
+									{:else}
+										<button
+											type="button"
+											class="secondary small"
+											disabled={busy}
+											onclick={() => startDraft(session)}
+										>
+											Start draft
+										</button>
+									{/if}
+								{:else}
+									<span class="quiet-inline">—</span>
+								{/if}
+							</td>
 							<td>
 								{#if session.disposition === null}
 									<div class="sessionbar">
@@ -283,14 +352,16 @@
 										>
 											Interrupt
 										</button>
-										<button
-											type="button"
-											class="secondary small"
-											disabled={busy}
-											onclick={() => closeMine(session, 'cancelled')}
-										>
-											Cancel session
-										</button>
+										{#if session.draft_id === null}
+											<button
+												type="button"
+												class="secondary small"
+												disabled={busy}
+												onclick={() => closeMine(session, 'cancelled')}
+											>
+												Cancel session
+											</button>
+										{/if}
 									</div>
 								{/if}
 							</td>

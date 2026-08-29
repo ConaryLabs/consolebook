@@ -21,6 +21,16 @@ use uuid::Uuid;
 /// Busy timeout applied to every connection.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Begins an immediate (write) transaction: the write lock is taken up
+/// front, so a check-then-write path validates against the committed
+/// state and a concurrent writer waits out the busy timeout instead of
+/// failing its read snapshot mid-transaction — typed refusals stay typed
+/// under concurrency. New write paths use this; #27 tracks retrofitting
+/// the earlier deferred ones.
+pub async fn write_tx(pool: &SqlitePool) -> sqlx::Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
+    pool.begin_with("BEGIN IMMEDIATE").await
+}
+
 /// Embedded, application-owned migrations.
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
