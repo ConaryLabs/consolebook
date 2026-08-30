@@ -1,52 +1,70 @@
-# ADR 0010: Database backstops hold history; services own authorization
+# ADR 0010: Database backstops hold data invariants; services own authorization
 
 - **Status:** Accepted
 - **Date:** 2026-08-29
 
 ## Context
 
-Milestones 3's draft and review schema carries database backstops that
+Milestone 3's draft and review schema carries database backstops that
 hold under raw SQL writes: append-only streams, the derived frozen
-state and its guards, event/decision/snapshot pairing, and the
-self-review refusal. During review of #31, two proposals would have
-extended those backstops beyond that line: checking `capability_grant`
-inside the decision-insert triggers so an unqualified user cannot
-insert a review decision raw, and validating snapshot content against
-the working copy so a raw change request cannot carry a fabricated
-anchor. Both were declined on the threads; this record makes the
-boundary durable so it does not get re-litigated one table at a time.
+state and its guards, event/decision/snapshot pairing, the session
+overlap and agreement invariants, and the self-review refusal. During
+review of #31, two proposals would have extended those backstops
+further: checking `capability_grant` inside the decision-insert
+triggers so an unqualified user cannot insert a review decision raw,
+and validating snapshot content against the working copy so a raw
+change request cannot carry a fabricated anchor. Both were declined on
+the threads; this record makes the boundary durable so it does not get
+re-litigated one table at a time.
 
 ## Decision
 
-- Database backstops enforce properties of **immutable record
-  history** — facts derivable from append-only streams and rows the
-  same schema forbids rewriting. The self-review trigger is the model:
-  a raw writer cannot legally satisfy it, because appending events
-  only ever makes a user more of a contributor.
+- Database backstops enforce the record system's **data invariants** —
+  properties stated over the schema's own rows. That includes both
+  append-only history (events, decisions, snapshots, audit) and the
+  declared domain invariants over operational state that
+  `docs/domain-model.md` assigns to the database, such as session
+  overlap (invariant 7) and evaluation-session agreement. The
+  self-review refusal is the model for eligibility held by history: a
+  raw writer cannot legally satisfy it, because appending events only
+  ever makes a user more of a contributor.
 - **Authorization is the domain services' typed contract.**
   Capabilities are checked, refused typed, and audited in the service
-  layer, and nowhere else. Triggers do not read `capability_grant`.
-- **Content semantics are the domain services' contract.** The schema
-  holds structure, ordering, pairing, and immutability of content
-  rows; it does not attest that content is truthful or current.
-- Milestone 4's finalization is where content becomes provable:
-  canonical bytes and stored hashes (`docs/records-integrity.md`) bind
-  finalized versions at a layer a verifier can actually check, which
-  is the honest answer to the snapshot-content proposal (#32,
-  decision 1).
+  layer, and nowhere else. Triggers do not read `capability_grant`:
+  whether an actor was allowed is not a data invariant of the record
+  rows, and grant rows are mutable reference data a direct writer
+  controls.
+- **Content truthfulness is not provable at any local layer against a
+  direct writer.** The schema holds structure, ordering, pairing, and
+  immutability of content rows; the services validate content against
+  the pinned vocabulary. Neither can attest that stored content
+  matches what a person actually saw or wrote.
+- Milestone 4's canonical bytes and stored hashes
+  (`docs/records-integrity.md`; #32, decision 1) make finalized
+  versions reproducible and their byte/hash consistency verifiable —
+  and, as records-integrity.md itself states, database-local hashes
+  prove internal consistency only: a writer with direct database
+  access can fabricate bytes and recompute their hashes. Stronger
+  binding waits on that document's future signed mode. The
+  snapshot-content proposal is therefore declined as unprovable at
+  this trust level, not relocated to finalization.
 
 ## Consequences
 
 ### Positive
 
-- one authority per rule: a capability rename or grant-model change
-  touches the service and its tests, never a migration;
+- one authority per authorization rule: a capability rename or
+  grant-model change touches the service, its tests, and the explicit
+  data migration that rewrites persisted grant strings
+  (`capability_grant` stores names; bundles apply once, per
+  `capabilities.rs`) — never trigger logic scattered across tables;
 - backstop triggers stay provable — each enforces a property a test
   can force raw and a reviewer can reason about without simulating the
   service; and
 - review discussions have a stated line: a proposed trigger is asked
-  "is this derivable from immutable history?" before it is asked
-  "is it possible?".
+  "does this hold a data invariant of the record system's own rows,
+  or does it re-check who was allowed or attest that content is
+  truthful?" before it is asked "is it possible?".
 
 ### Costs
 
@@ -70,7 +88,10 @@ boundary durable so it does not get re-litigated one table at a time.
   the working copy in SQL to compare — a second owner of the snapshot
   format — and still proves nothing, because a writer who can
   fabricate the snapshot can fabricate the draft rows it snapshots.
-  Content binding belongs to finalization hashes.
+  No local mechanism closes that; finalization hashes add
+  reproducibility and consistency checking, and binding against a
+  hostile local writer waits on the signed mode
+  `docs/records-integrity.md` sketches.
 - **Refusing "raw" writes as such:** SQLite triggers cannot
   distinguish the service's statements from any other connection's;
   there is no expressible predicate.
