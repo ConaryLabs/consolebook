@@ -84,14 +84,23 @@ re-litigated one table at a time.
   `capability_grant` itself and a schema-owned grant model — a
   deliberate redesign that would get its own ADR, not a per-table
   patch.
-- **Validating snapshot content in triggers:** requires serializing
-  the working copy in SQL to compare — a second owner of the snapshot
-  format — and still proves nothing, because a writer who can
-  fabricate the snapshot can fabricate the draft rows it snapshots.
-  No local mechanism closes that; finalization hashes add
-  reproducibility and consistency checking, and binding against a
-  hostile local writer waits on the signed mode
-  `docs/records-integrity.md` sketches.
+- **Validating snapshot content in triggers:** while a draft is
+  frozen its content rows cannot change, so a decision-time comparison
+  of the return snapshot against the frozen rows is expressible and
+  would hold a real, narrow property — snapshot-to-row consistency at
+  that instant, never what any person saw. It is declined as a poor
+  trade, not as impossible: the comparison reimplements the snapshot
+  format in SQL, a second owner that must track every format change,
+  and it guards one snapshot kind while the submission snapshot has
+  no pairing at all and a consistent wholesale fabrication stays open
+  at the same trust level. ADR 0008's anchor is guaranteed where it
+  is produced — the service writes snapshot and decision in one
+  transaction from the frozen rows — and the defensible-record anchor
+  is Milestone 4's canonical bytes and hashes, with binding against a
+  hostile local writer waiting on the signed mode
+  `docs/records-integrity.md` sketches. An owner who weighs this
+  trade differently reopens it by ADR, with the comparison scoped to
+  every snapshot kind at once.
 - **Refusing "raw" writes as such:** SQLite triggers cannot
   distinguish the service's statements from any other connection's;
   there is no expressible predicate.
