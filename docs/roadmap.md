@@ -2,6 +2,14 @@
 
 The roadmap is ordered by risk. Dates come later; fake schedules are how software projects begin lying to themselves.
 
+**Current position:** Milestones 1 through 3 are complete (Milestone 3
+closed with #22). Milestone 0 is complete except one deliverable
+deliberately still open: the canonical-record-bytes specification,
+which `docs/records-integrity.md` holds as a design target and which
+must be settled before the first record is produced — Milestone 4's
+first design decision (#32). Milestone 4 — defensible records — is
+next; its design record is #32.
+
 ## Milestone 0 — Foundation
 
 - establish principles and architecture decisions;
