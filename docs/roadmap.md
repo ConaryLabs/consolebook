@@ -2,6 +2,10 @@
 
 The roadmap is ordered by risk. Dates come later; fake schedules are how software projects begin lying to themselves.
 
+**Current position:** Milestones 0 through 3 are complete (Milestone 3
+closed with #22). Milestone 4 — defensible records — is next; its
+design record is #32.
+
 ## Milestone 0 — Foundation
 
 - establish principles and architecture decisions;
