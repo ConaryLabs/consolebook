@@ -10,6 +10,9 @@
 		finalizedVersionAt,
 		getAcknowledgment,
 		getDraft,
+		linkableDailies,
+		addSummaryLink,
+		removeSummaryLink,
 		reviewDraft,
 		saveDraftContent,
 		submitDraft,
@@ -25,6 +28,7 @@
 		type FinalizedView,
 		type ReviewDecisionKind,
 		type SkeletonCompetency,
+		type SummaryLink,
 		type TraineeAckKind,
 		type Verification,
 		type VersionHistoryRow
@@ -74,6 +78,10 @@
 	let verification: Verification | null = $state(null);
 	let ack: Acknowledgment | null = $state(null);
 	let versions: VersionHistoryRow[] = $state([]);
+	// The link picker for weekly summaries: the enrollment's finalized
+	// dailies not yet linked.
+	let linkable: SummaryLink[] = $state([]);
+	let linkChoice: number | '' = $state('');
 
 	async function load() {
 		try {
@@ -94,6 +102,14 @@
 				verification = null;
 				ack = null;
 				versions = [];
+			}
+			if (
+				fetched.record_type === 'weekly_summary' &&
+				fetched.status !== 'finalized'
+			) {
+				linkable = (await linkableDailies(draftId)).dailies;
+			} else {
+				linkable = [];
 			}
 			view = fetched;
 			const nextValues: Record<number, number | null> = {};
@@ -480,6 +496,70 @@
 		}
 	}
 
+	// Link edits ride the same optimistic token as content saves; the
+	// returned revision keeps in-flight autosaves honest.
+	async function addLink() {
+		const current = view;
+		if (current === null || linkChoice === '') {
+			return;
+		}
+		busy = true;
+		error = '';
+		try {
+			await flushSaves();
+			const saved = await addSummaryLink(draftId, Number(linkChoice), revision);
+			revision = saved.revision;
+			const picked = linkable.find((row) => row.daily_version_id === linkChoice);
+			if (picked) {
+				current.summary_links = [...current.summary_links, picked];
+				linkable = linkable.filter((row) => row.daily_version_id !== linkChoice);
+			}
+			linkChoice = '';
+		} catch (err) {
+			if (err instanceof ApiError && err.code === 'stale_save') {
+				await load();
+				error = 'Another contributor saved first; the draft reloaded.';
+				return;
+			}
+			error = err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function removeLink(link: SummaryLink) {
+		const current = view;
+		if (current === null) {
+			return;
+		}
+		busy = true;
+		error = '';
+		try {
+			await flushSaves();
+			const saved = await removeSummaryLink(draftId, link.daily_version_id, revision);
+			revision = saved.revision;
+			current.summary_links = current.summary_links.filter(
+				(row) => row.daily_version_id !== link.daily_version_id
+			);
+			linkable = [...linkable, link];
+		} catch (err) {
+			if (err instanceof ApiError && err.code === 'stale_save') {
+				await load();
+				error = 'Another contributor saved first; the draft reloaded.';
+				return;
+			}
+			error = err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
+
+	function linkLabel(link: SummaryLink): string {
+		const date = link.business_date ?? 'undated';
+		const form = link.form_name ?? 'Daily report';
+		return `${date} — ${form} (v${link.version_number})`;
+	}
+
 	function ackLine(recorded: Acknowledgment): string {
 		switch (recorded.kind) {
 			case 'acknowledged':
@@ -796,6 +876,21 @@
 					<p class="sealed-text">{narrative.text ?? ''}</p>
 				</div>
 			{/each}
+			{#if sealed.envelope.daily_reports && sealed.envelope.daily_reports.length > 0}
+				<h3>Covered daily reports</h3>
+				<ul class="links">
+					{#each sealed.envelope.daily_reports as covered (covered.record_id + '-' + covered.version_number)}
+						<li>
+							<a href={`/drafts/${covered.record_id}?version=${covered.version_number}`}>
+								Record {covered.record_id} — version {covered.version_number}
+							</a>
+							<p class="quiet small-note">
+								Content hash: <code>{covered.content_hash}</code>
+							</p>
+						</li>
+					{/each}
+				</ul>
+			{/if}
 			<h3>Integrity</h3>
 			<p class="quiet small-note">Content hash: <code>{sealed.meta.content_hash}</code></p>
 			<p class="quiet small-note">Chain hash: <code>{sealed.meta.chain_hash}</code></p>
@@ -954,6 +1049,61 @@
 				</button>
 			</section>
 		{/if}
+	{/if}
+
+	{#if view.status !== 'finalized' && view.record_type === 'weekly_summary'}
+		<section class="panel">
+			<h2>Covered daily reports</h2>
+			<p class="quiet">
+				A summary links the exact finalized daily versions it covers; a
+				later amendment of a daily never rewrites what this summary
+				summarized.
+			</p>
+			{#if view.summary_links.length === 0}
+				<p class="quiet">No daily reports linked yet.</p>
+			{:else}
+				<ul class="links">
+					{#each view.summary_links as link (link.daily_version_id)}
+						<li>
+							{linkLabel(link)}
+							<span class="quiet-inline">
+								finalized {instant(link.finalized_at)}
+							</span>
+							{#if editable}
+								<button
+									type="button"
+									class="secondary small"
+									disabled={busy}
+									onclick={() => removeLink(link)}
+								>
+									Remove
+								</button>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			{/if}
+			{#if editable && linkable.length > 0}
+				<div class="row route">
+					<select aria-label="Link a daily report" bind:value={linkChoice}>
+						<option value="">Link a finalized daily report…</option>
+						{#each linkable as candidate (candidate.daily_version_id)}
+							<option value={candidate.daily_version_id}>
+								{linkLabel(candidate)}
+							</option>
+						{/each}
+					</select>
+					<button
+						type="button"
+						class="secondary"
+						disabled={busy || linkChoice === ''}
+						onclick={addLink}
+					>
+						Add link
+					</button>
+				</div>
+			{/if}
+		</section>
 	{/if}
 
 	{#if view.status !== 'finalized'}
@@ -1265,6 +1415,18 @@
 		padding: 0.45rem 0.6rem;
 		border-bottom: 1px solid #e4e9ee;
 		vertical-align: top;
+	}
+	ul.links {
+		list-style: none;
+		margin: 0 0 0.75rem;
+		padding: 0;
+	}
+	ul.links li {
+		border-top: 1px solid light-dark(#e3e6eb, #2a303b);
+		padding: 0.4rem 0;
+	}
+	ul.links li:first-child {
+		border-top: 0;
 	}
 	.version-row {
 		border-top: 1px solid light-dark(#e3e6eb, #2a303b);

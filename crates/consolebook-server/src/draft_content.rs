@@ -458,12 +458,23 @@ pub async fn save(
         .await
         .context("bumping revision")?;
 
-    // One contributed event per working stretch: consecutive saves by
-    // the same contributor coalesce (ADR 0008) — within one workflow
-    // cycle. An open amendment starts a new cycle at its reopening
-    // mark, so the correction's first save is attributed there rather
-    // than coalescing into a stretch the sealed version already owns.
-    let event_mark = crate::amendments::open_scope(&mut tx, record_id)
+    attribute_contribution(&mut tx, record_id, actor_user_id).await?;
+    tx.commit().await.context("committing save")?;
+    Ok(Ok(next_revision))
+}
+
+/// One contributed event per working stretch: consecutive edits by the
+/// same contributor coalesce (ADR 0008) — within one workflow cycle. An
+/// open amendment starts a new cycle at its reopening mark, so a
+/// correction's first edit is attributed there rather than coalescing
+/// into a stretch the sealed version already owns. Shared by content
+/// saves and summary-link edits.
+pub(crate) async fn attribute_contribution(
+    tx: &mut SqliteConnection,
+    record_id: i64,
+    actor_user_id: i64,
+) -> Result<()> {
+    let event_mark = crate::amendments::open_scope(&mut *tx, record_id)
         .await?
         .map_or(0, |scope| scope.opened_after_event_id);
     let latest = sqlx::query(
@@ -483,7 +494,7 @@ pub async fn save(
     if !coalesce {
         let now = OffsetDateTime::now_utc().unix_timestamp();
         evaluation_drafts::append_event(
-            &mut tx,
+            &mut *tx,
             record_id,
             "contributed",
             actor_user_id,
@@ -492,6 +503,5 @@ pub async fn save(
         )
         .await?;
     }
-    tx.commit().await.context("committing save")?;
-    Ok(Ok(next_revision))
+    Ok(())
 }

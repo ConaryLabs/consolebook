@@ -17,8 +17,14 @@
 		recordEnrollmentEvent,
 		recordPhaseEvent,
 		removeSessionTrainer,
+		recordSignoff,
+		signoffMatrix,
+		createWeeklySummary,
+		summaryForms,
 		updateSession,
 		type EnrollmentDetail,
+		type SignoffKind,
+		type SignoffTask,
 		type EnrollmentEventKind,
 		type PhaseEventKind,
 		type PhaseRef,
@@ -77,6 +83,86 @@
 
 	function actionFailed(err: unknown): string {
 		return err instanceof ApiError ? err.message : 'the server could not be reached';
+	}
+
+	// Weekly summaries: an ordinary record on this enrollment whose copy
+	// links the exact finalized daily versions it covers (ADR 0013).
+	let summaryError = $state('');
+	let summaryFormChoices: { id: number; name: string }[] | null = $state(null);
+	let summaryFormChoice: number | '' = $state('');
+
+	async function startSummary(formId?: number) {
+		summaryError = '';
+		busy = true;
+		try {
+			if (formId === undefined) {
+				const { forms } = await summaryForms(enrollmentId);
+				if (forms.length > 1) {
+					summaryFormChoices = forms;
+					summaryFormChoice = forms[0].id;
+					return;
+				}
+				formId = forms[0]?.id;
+			}
+			const created = await createWeeklySummary(enrollmentId, formId);
+			await goto(`/drafts/${created.id}`);
+		} catch (err) {
+			summaryError = actionFailed(err);
+		} finally {
+			busy = false;
+		}
+	}
+
+	// Task signoffs: versioned per task; overrides carry a reason.
+	let signoffs: SignoffTask[] = $state([]);
+	let signoffError = $state('');
+	let overrideReason: Record<number, string> = $state({});
+
+	async function reloadSignoffs() {
+		try {
+			signoffs = (await signoffMatrix(enrollmentId)).tasks;
+		} catch {
+			signoffs = [];
+		}
+	}
+
+	$effect(() => {
+		const current = detail;
+		if (current !== null) {
+			void reloadSignoffs();
+		}
+	});
+
+	async function sign(task: SignoffTask, kind: SignoffKind) {
+		signoffError = '';
+		busy = true;
+		try {
+			await recordSignoff(
+				enrollmentId,
+				task.task_id,
+				kind,
+				task.history > 0 ? overrideReason[task.task_id] : undefined
+			);
+			overrideReason[task.task_id] = '';
+			await reloadSignoffs();
+		} catch (err) {
+			signoffError = actionFailed(err);
+		} finally {
+			busy = false;
+		}
+	}
+
+	function signoffLabel(task: SignoffTask): string {
+		switch (task.kind) {
+			case 'observed':
+				return 'Observed';
+			case 'demonstrated':
+				return 'Demonstrated';
+			case 'revoked':
+				return 'Revoked';
+			case null:
+				return '—';
+		}
 	}
 
 	function kindLabel(kind: string): string {
@@ -739,6 +825,136 @@
 		{/if}
 	</section>
 
+	{#if canAssign || canAuthor}
+		<section class="panel">
+			<h2>Weekly summaries</h2>
+			<p class="quiet">
+				A weekly summary is its own record: it carries authored narrative
+				and links to the exact finalized daily reports it covers.
+			</p>
+			{#if summaryFormChoices !== null}
+				<div class="row">
+					<select aria-label="Weekly summary form" bind:value={summaryFormChoice}>
+						{#each summaryFormChoices as form (form.id)}
+							<option value={form.id}>{form.name}</option>
+						{/each}
+					</select>
+					<button
+						type="button"
+						class="secondary"
+						disabled={busy || summaryFormChoice === ''}
+						onclick={() => startSummary(Number(summaryFormChoice))}
+					>
+						Create
+					</button>
+				</div>
+			{:else}
+				<button
+					type="button"
+					class="secondary"
+					disabled={busy}
+					onclick={() => startSummary()}
+				>
+					Start weekly summary
+				</button>
+			{/if}
+			{#if summaryError}
+				<p class="error" role="alert">{summaryError}</p>
+			{/if}
+		</section>
+
+		<section class="panel">
+			<h2>Task signoffs</h2>
+			<p class="quiet">
+				A signoff records that a configured task was observed or
+				demonstrated. Changing recorded state is an override: it takes
+				review authority and a reason, and the history stays.
+			</p>
+			{#if signoffs.length === 0}
+				<p class="quiet">The pinned version defines no tasks.</p>
+			{:else}
+				<table class="grid">
+					<thead>
+						<tr>
+							<th>Task</th>
+							<th>State</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each signoffs as task (task.task_id)}
+							<tr>
+								<td>
+									<strong>{task.competency_name}</strong>
+									<p class="quiet signoff-prompt">{task.prompt}</p>
+								</td>
+								<td>
+									{signoffLabel(task)}
+									{#if task.signed_by_display_name}
+										<p class="quiet signoff-prompt">
+											by {task.signed_by_display_name}
+											{#if task.signed_at}
+												{instant(task.signed_at)}
+											{/if}
+											{#if task.reason}
+												— {task.reason}
+											{/if}
+										</p>
+									{/if}
+								</td>
+								<td>
+									<div class="row signoff-row">
+										{#if task.history > 0}
+											<input
+												aria-label={`Override reason for ${task.prompt}`}
+												placeholder="Override reason"
+												bind:value={overrideReason[task.task_id]}
+											/>
+										{/if}
+										<button
+											type="button"
+											class="secondary small"
+											disabled={busy ||
+												(task.history > 0 &&
+													!(overrideReason[task.task_id] ?? '').trim())}
+											onclick={() => sign(task, 'observed')}
+										>
+											Observed
+										</button>
+										<button
+											type="button"
+											class="secondary small"
+											disabled={busy ||
+												(task.history > 0 &&
+													!(overrideReason[task.task_id] ?? '').trim())}
+											onclick={() => sign(task, 'demonstrated')}
+										>
+											Demonstrated
+										</button>
+										{#if task.kind !== null && task.kind !== 'revoked'}
+											<button
+												type="button"
+												class="secondary small"
+												disabled={busy ||
+													!(overrideReason[task.task_id] ?? '').trim()}
+												onclick={() => sign(task, 'revoked')}
+											>
+												Revoke
+											</button>
+										{/if}
+									</div>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{/if}
+			{#if signoffError}
+				<p class="error" role="alert">{signoffError}</p>
+			{/if}
+		</section>
+	{/if}
+
 	<section class="panel">
 		<h2>Phase history</h2>
 		{#if detail.phases.length === 0}
@@ -1000,5 +1216,15 @@
 	}
 	.add-member select {
 		width: auto;
+	}
+	.signoff-prompt {
+		margin: 0.15rem 0 0;
+		font-size: 0.85rem;
+	}
+	.signoff-row {
+		flex-wrap: wrap;
+	}
+	.signoff-row input {
+		width: 12rem;
 	}
 </style>

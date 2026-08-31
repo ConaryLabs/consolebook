@@ -18,6 +18,7 @@ use crate::capabilities::{self, Capability};
 use crate::http::{ApiError, AppState, CurrentUser};
 use crate::lifecycle::{self, EnrollmentEventKind, LifecycleRefusal, PhaseEventKind};
 use crate::session_membership;
+use crate::task_signoffs::{self, SignoffKind, SignoffRefusal};
 use crate::training_sessions::{self, Disposition, SessionInput, SessionRefusal, SessionUpdate};
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -40,6 +41,10 @@ pub(crate) fn routes() -> Router<AppState> {
         )
         .route("/api/sessions/{id}", get(get_session).put(update_session))
         .route("/api/sessions/{id}/close", post(close_session))
+        .route(
+            "/api/enrollments/{id}/signoffs",
+            get(signoff_matrix).post(record_signoff),
+        )
         .route("/api/sessions/{id}/trainers", post(add_session_trainer))
         .route(
             "/api/sessions/{id}/trainers/{user_id}",
@@ -588,5 +593,82 @@ async fn my_sessions(
     match training_sessions::list_mine(&state.pool, current.user.id).await? {
         Ok(sessions) => Ok(Json(MySessionsBody { sessions })),
         Err(refusal) => Err(session_refusal(&refusal)),
+    }
+}
+
+// ------------------------------------------------------- task signoffs
+
+fn signoff_refusal(refusal: SignoffRefusal) -> ApiError {
+    match refusal {
+        SignoffRefusal::NoSuchEnrollment => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "no_such_enrollment",
+            "no such enrollment",
+        ),
+        SignoffRefusal::NoSuchTask => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "no_such_task",
+            "the task is not in the enrollment's pinned vocabulary",
+        ),
+        SignoffRefusal::CapabilityRequired => ApiError::new(
+            StatusCode::FORBIDDEN,
+            "capability_required",
+            "this action is not available to this account",
+        ),
+        SignoffRefusal::ReasonRequired => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "reason_required",
+            "a signoff override records its reason",
+        ),
+        SignoffRefusal::NothingToRevoke => ApiError::new(
+            StatusCode::CONFLICT,
+            "nothing_to_revoke",
+            "a revocation supersedes a signoff",
+        ),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SignoffRequest {
+    task_id: i64,
+    kind: SignoffKind,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+async fn record_signoff(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(enrollment_id): Path<i64>,
+    Json(req): Json<SignoffRequest>,
+) -> Result<Response, ApiError> {
+    match task_signoffs::record(
+        &state.pool,
+        current.user.id,
+        enrollment_id,
+        req.task_id,
+        req.kind,
+        req.reason.as_deref().unwrap_or_default(),
+    )
+    .await?
+    {
+        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(refusal) => Err(signoff_refusal(refusal)),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct SignoffMatrixBody {
+    tasks: Vec<task_signoffs::MatrixRow>,
+}
+
+async fn signoff_matrix(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(enrollment_id): Path<i64>,
+) -> Result<Response, ApiError> {
+    match task_signoffs::matrix(&state.pool, current.user.id, enrollment_id).await? {
+        Ok(tasks) => Ok(Json(SignoffMatrixBody { tasks }).into_response()),
+        Err(refusal) => Err(signoff_refusal(refusal)),
     }
 }
