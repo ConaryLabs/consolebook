@@ -738,9 +738,13 @@ pub async fn workspace(
         return Ok(Err(DraftRefusal::NoSuchRecord));
     };
     drop(conn);
-    if !crate::draft_access::may_read(pool, actor_user_id, &record).await? {
+    let Some(grant) = crate::draft_access::read_grant(pool, actor_user_id, &record).await? else {
         return Ok(Err(DraftRefusal::CapabilityRequired));
-    }
+    };
+    // An own-record reader is authorized for the finalized record, not
+    // the workflow: what exists solely for the workflow (the transfer
+    // picker's roster, snapshot bookkeeping) is redacted below.
+    let workflow_reader = grant == crate::draft_access::ReadGrant::Workflow;
     let reviewer_capability =
         capabilities::user_has(pool, actor_user_id, Capability::ReviewEvaluation).await?;
     let mut conn = pool.begin().await.context("starting workspace read")?;
@@ -814,52 +818,62 @@ pub async fn workspace(
         recorded_at: row.get("recorded_at"),
     })
     .collect();
-    let snapshots = sqlx::query(
-        "SELECT id, reason, taken_at, taken_by FROM draft_snapshot
-         WHERE evaluation_record_id = ?1 ORDER BY id",
-    )
-    .bind(record_id)
-    .fetch_all(&mut *conn)
-    .await
-    .context("listing snapshots")?
-    .iter()
-    .map(|row| SnapshotMeta {
-        id: row.get("id"),
-        reason: row.get("reason"),
-        taken_at: row.get("taken_at"),
-        taken_by: row.get("taken_by"),
-    })
-    .collect();
+    let snapshots = if workflow_reader {
+        sqlx::query(
+            "SELECT id, reason, taken_at, taken_by FROM draft_snapshot
+             WHERE evaluation_record_id = ?1 ORDER BY id",
+        )
+        .bind(record_id)
+        .fetch_all(&mut *conn)
+        .await
+        .context("listing snapshots")?
+        .iter()
+        .map(|row| SnapshotMeta {
+            id: row.get("id"),
+            reason: row.get("reason"),
+            taken_at: row.get("taken_at"),
+            taken_by: row.get("taken_by"),
+        })
+        .collect()
+    } else {
+        Vec::new()
+    };
     // The transfer picker: authors within the record's scope, minus the
-    // current owner.
-    let eligible_recipients = sqlx::query(
-        "SELECT DISTINCT u.id, u.display_name
-         FROM user u
-         JOIN capability_grant cg ON cg.user_id = u.id AND cg.capability = ?3
-         WHERE u.id != ?2
-           AND u.id IN (
-               SELECT ta.trainer_user_id FROM training_assignment ta
-               JOIN evaluation_record r ON r.enrollment_id = ta.enrollment_id
-               WHERE r.id = ?1 AND ta.ended_at IS NULL
-               UNION
-               SELECT st.trainer_user_id FROM session_trainer st
-               JOIN evaluation_session es ON es.training_session_id = st.session_id
-               WHERE es.evaluation_record_id = ?1
-           )
-         ORDER BY u.display_name COLLATE NOCASE",
-    )
-    .bind(record_id)
-    .bind(record.owner_user_id)
-    .bind(Capability::AuthorEvaluation.as_str())
-    .fetch_all(&mut *conn)
-    .await
-    .context("listing eligible recipients")?
-    .iter()
-    .map(|row| EligibleRecipient {
-        user_id: row.get("id"),
-        display_name: row.get("display_name"),
-    })
-    .collect();
+    // current owner. Workflow readers only — the roster of possible
+    // recipients names staff who may never touch this record, which is
+    // not an own-record reader's to see.
+    let eligible_recipients = if workflow_reader {
+        sqlx::query(
+            "SELECT DISTINCT u.id, u.display_name
+             FROM user u
+             JOIN capability_grant cg ON cg.user_id = u.id AND cg.capability = ?3
+             WHERE u.id != ?2
+               AND u.id IN (
+                   SELECT ta.trainer_user_id FROM training_assignment ta
+                   JOIN evaluation_record r ON r.enrollment_id = ta.enrollment_id
+                   WHERE r.id = ?1 AND ta.ended_at IS NULL
+                   UNION
+                   SELECT st.trainer_user_id FROM session_trainer st
+                   JOIN evaluation_session es ON es.training_session_id = st.session_id
+                   WHERE es.evaluation_record_id = ?1
+               )
+             ORDER BY u.display_name COLLATE NOCASE",
+        )
+        .bind(record_id)
+        .bind(record.owner_user_id)
+        .bind(Capability::AuthorEvaluation.as_str())
+        .fetch_all(&mut *conn)
+        .await
+        .context("listing eligible recipients")?
+        .iter()
+        .map(|row| EligibleRecipient {
+            user_id: row.get("id"),
+            display_name: row.get("display_name"),
+        })
+        .collect()
+    } else {
+        Vec::new()
+    };
     let decisions = sqlx::query(
         "SELECT rd.id, rd.reviewer_user_id, u.display_name AS reviewer_display_name,
                 rd.decision, rd.comment, rd.decided_at

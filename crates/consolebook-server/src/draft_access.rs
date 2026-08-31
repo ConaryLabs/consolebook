@@ -86,21 +86,50 @@ pub(crate) async fn may_contribute(
     )
 }
 
-/// Whether the actor may read this draft: contributors, everyone the
-/// enrollment history is open to, the trainee themselves once the
-/// record is finalized (`view_own_records`; drafts in progress about
-/// them are not theirs to see), and — once the record has been
-/// submitted at least once — evaluation reviewers.
-pub(crate) async fn may_read(
+/// The basis on which a reader is admitted to a record. The workflow
+/// bases see the working copy; the own-record basis sees the finalized
+/// record only — the workspace redacts what exists solely for the
+/// workflow (transfer recipients, snapshot bookkeeping), which is not
+/// the trainee's to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReadGrant {
+    /// A contributor, someone the enrollment history is open to, or a
+    /// reviewer of a record that has been submitted.
+    Workflow,
+    /// The trainee themselves, on their own finalized record
+    /// (`view_own_records`); drafts in progress about them are not
+    /// theirs to see.
+    OwnRecord,
+}
+
+/// How the actor may read this draft, if at all: contributors, everyone
+/// the enrollment history is open to, and — once the record has been
+/// submitted at least once — evaluation reviewers read as workflow
+/// participants; the trainee reads their own record once finalized.
+pub(crate) async fn read_grant(
     pool: &SqlitePool,
     actor_user_id: i64,
     record: &RecordRow,
-) -> Result<bool> {
+) -> Result<Option<ReadGrant>> {
     if may_contribute(pool, actor_user_id, record).await? {
-        return Ok(true);
+        return Ok(Some(ReadGrant::Workflow));
     }
     if lifecycle::may_read(pool, actor_user_id, record.enrollment_id).await? {
-        return Ok(true);
+        return Ok(Some(ReadGrant::Workflow));
+    }
+    if capabilities::user_has(pool, actor_user_id, Capability::ReviewEvaluation).await? {
+        let submitted: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM contributor_event
+             WHERE evaluation_record_id = ?1 AND kind = 'submitted_for_review'
+             LIMIT 1",
+        )
+        .bind(record.id)
+        .fetch_optional(pool)
+        .await
+        .context("checking submission history")?;
+        if submitted.is_some() {
+            return Ok(Some(ReadGrant::Workflow));
+        }
     }
     if capabilities::user_has(pool, actor_user_id, Capability::ViewOwnRecords).await? {
         let own_finalized: Option<i64> = sqlx::query_scalar(
@@ -116,22 +145,19 @@ pub(crate) async fn may_read(
         .await
         .context("checking own finalized record")?;
         if own_finalized.is_some() {
-            return Ok(true);
+            return Ok(Some(ReadGrant::OwnRecord));
         }
     }
-    if capabilities::user_has(pool, actor_user_id, Capability::ReviewEvaluation).await? {
-        let submitted: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM contributor_event
-             WHERE evaluation_record_id = ?1 AND kind = 'submitted_for_review'
-             LIMIT 1",
-        )
-        .bind(record.id)
-        .fetch_optional(pool)
-        .await
-        .context("checking submission history")?;
-        return Ok(submitted.is_some());
-    }
-    Ok(false)
+    Ok(None)
+}
+
+/// Whether the actor may read this draft on any basis.
+pub(crate) async fn may_read(
+    pool: &SqlitePool,
+    actor_user_id: i64,
+    record: &RecordRow,
+) -> Result<bool> {
+    Ok(read_grant(pool, actor_user_id, record).await?.is_some())
 }
 
 /// Whether the actor may start (or offer to start) the session's draft:

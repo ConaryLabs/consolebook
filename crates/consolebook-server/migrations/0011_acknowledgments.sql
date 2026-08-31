@@ -28,6 +28,13 @@ CREATE TABLE acknowledgment (
     -- the same characters the service's trim removes).
     response TEXT NOT NULL,
     recorded_by INTEGER NOT NULL REFERENCES user (id),
+    -- Presentation-name snapshots: a permanent act displays who spoke
+    -- as they were named at the act. Later profile renames must not
+    -- rewrite history; ids preserve identity, snapshots preserve what
+    -- the record said.
+    user_display_name TEXT NOT NULL CHECK (length(user_display_name) > 0),
+    recorded_by_display_name TEXT NOT NULL
+        CHECK (length(recorded_by_display_name) > 0),
     recorded_at INTEGER NOT NULL,
     -- One acknowledgment per version per person; a successor version
     -- (slice 3) requires a new acknowledgment because it is a new row

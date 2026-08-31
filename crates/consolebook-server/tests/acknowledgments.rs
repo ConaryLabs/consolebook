@@ -370,6 +370,28 @@ async fn trainee_reads_and_acknowledges_own_finalized_record() {
         .expect("readable");
     assert!(unacked.is_none());
 
+    // The trainee reads the finalized record, not the workflow: the
+    // transfer roster and snapshot bookkeeping are redacted on the
+    // own-record basis, while a workflow reader keeps them.
+    let rowan_id = fx
+        .user_with_role("rowan.ack", "Rowan Trainer", RoleBundle::Trainer)
+        .await;
+    assignments::create(&fx.pool, fx.admin_id, s.enrollment_id, rowan_id)
+        .await
+        .expect("call")
+        .expect("assigned");
+    let mine = evaluation_drafts::workspace(&fx.pool, s.taylor_id, s.record_id)
+        .await
+        .expect("call")
+        .expect("readable");
+    assert!(mine.detail.eligible_recipients.is_empty());
+    assert!(mine.detail.snapshots.is_empty());
+    let theirs = evaluation_drafts::workspace(&fx.pool, s.casey_id, s.record_id)
+        .await
+        .expect("call")
+        .expect("readable");
+    assert_eq!(theirs.detail.eligible_recipients.len(), 1);
+
     // The timeline is gated on its capability; other roles hold their
     // own read paths, not this one.
     let refused = acknowledgments::own_records(&fx.pool, s.jordan_id)
@@ -387,8 +409,10 @@ async fn trainee_reads_and_acknowledges_own_finalized_record() {
             .expect("version id");
     let raw = sqlx::query(
         "INSERT INTO acknowledgment
-             (evaluation_version_id, user_id, kind, response, recorded_by, recorded_at)
-         VALUES (?1, ?2, 'acknowledged', 'smuggled text', ?2, 1)",
+             (evaluation_version_id, user_id, kind, response, recorded_by,
+              user_display_name, recorded_by_display_name, recorded_at)
+         VALUES (?1, ?2, 'acknowledged', 'smuggled text', ?2,
+                 'Taylor Trainee', 'Taylor Trainee', 1)",
     )
     .bind(version_id)
     .bind(s.taylor_id)
@@ -397,8 +421,10 @@ async fn trainee_reads_and_acknowledges_own_finalized_record() {
     assert!(raw.is_err(), "a plain acknowledgment carries no text");
     let raw = sqlx::query(
         "INSERT INTO acknowledgment
-             (evaluation_version_id, user_id, kind, response, recorded_by, recorded_at)
-         VALUES (?1, ?2, 'refused', char(9, 10, 32, 160, 8199, 12288), ?2, 1)",
+             (evaluation_version_id, user_id, kind, response, recorded_by,
+              user_display_name, recorded_by_display_name, recorded_at)
+         VALUES (?1, ?2, 'refused', char(9, 10, 32, 160, 8199, 12288), ?2,
+                 'Taylor Trainee', 'Taylor Trainee', 1)",
     )
     .bind(version_id)
     .bind(s.taylor_id)
@@ -407,8 +433,10 @@ async fn trainee_reads_and_acknowledges_own_finalized_record() {
     assert!(raw.is_err(), "a refusal explains itself past blank text");
     let raw = sqlx::query(
         "INSERT INTO acknowledgment
-             (evaluation_version_id, user_id, kind, response, recorded_by, recorded_at)
-         VALUES (?1, ?2, 'refused', 'forged by another hand', ?3, 1)",
+             (evaluation_version_id, user_id, kind, response, recorded_by,
+              user_display_name, recorded_by_display_name, recorded_at)
+         VALUES (?1, ?2, 'refused', 'forged by another hand', ?3,
+                 'Taylor Trainee', 'Casey Coordinator', 1)",
     )
     .bind(version_id)
     .bind(s.taylor_id)
@@ -418,8 +446,10 @@ async fn trainee_reads_and_acknowledges_own_finalized_record() {
     assert!(raw.is_err(), "trainee kinds are recorded by the trainee");
     let raw = sqlx::query(
         "INSERT INTO acknowledgment
-             (evaluation_version_id, user_id, kind, response, recorded_by, recorded_at)
-         VALUES (?1, ?2, 'acknowledged', '', ?2, 1)",
+             (evaluation_version_id, user_id, kind, response, recorded_by,
+              user_display_name, recorded_by_display_name, recorded_at)
+         VALUES (?1, ?2, 'acknowledged', '', ?2,
+                 'Jordan Trainer', 'Jordan Trainer', 1)",
     )
     .bind(version_id)
     .bind(s.jordan_id)
@@ -642,6 +672,21 @@ async fn refusal_escalates_to_review_holders() {
     assert_eq!(ack.response, "I dispute the invented ratings.");
     assert_eq!(ack.recorded_by, s.taylor_id);
 
+    // The permanent act displays the identity recorded at the act: a
+    // later profile rename never rewrites it.
+    sqlx::query("UPDATE user SET display_name = 'Taylor Renamed' WHERE id = ?1")
+        .bind(s.taylor_id)
+        .execute(&fx.pool)
+        .await
+        .expect("rename");
+    let ack = acknowledgments::acknowledgment_of(&fx.pool, s.casey_id, s.record_id)
+        .await
+        .expect("call")
+        .expect("readable")
+        .expect("recorded");
+    assert_eq!(ack.user_display_name, "Taylor Trainee");
+    assert_eq!(ack.recorded_by_display_name, "Taylor Trainee");
+
     // The refusal is the trainee's one binding to this version; an
     // attestation over it is refused.
     let refused = acknowledgments::attest(
@@ -805,7 +850,7 @@ async fn acknowledgment_api_round_trip() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     // The trainee reads their finalized record but not the open draft.
-    let (status, _) = request(
+    let (status, body) = request(
         fx.app(),
         "GET",
         &format!("/api/drafts/{}", s.record_id),
@@ -814,6 +859,9 @@ async fn acknowledgment_api_round_trip() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    // Workflow-only fields are redacted for the own-record reader.
+    assert_eq!(body["eligible_recipients"], serde_json::json!([]));
+    assert_eq!(body["snapshots"], serde_json::json!([]));
     let (status, _) = request(
         fx.app(),
         "GET",

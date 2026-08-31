@@ -185,15 +185,24 @@ pub async fn acknowledge(
         return storage::refuse(tx, AckRefusal::AlreadyAcknowledged).await;
     }
     let now = OffsetDateTime::now_utc().unix_timestamp();
+    // The permanent act snapshots the speaker's presentation name as of
+    // the act; a later profile rename never rewrites it.
+    let trainee_name: String = sqlx::query_scalar("SELECT display_name FROM user WHERE id = ?1")
+        .bind(actor_user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .context("reading trainee name")?;
     sqlx::query(
         "INSERT INTO acknowledgment
-             (evaluation_version_id, user_id, kind, response, recorded_by, recorded_at)
-         VALUES (?1, ?2, ?3, ?4, ?2, ?5)",
+             (evaluation_version_id, user_id, kind, response, recorded_by,
+              user_display_name, recorded_by_display_name, recorded_at)
+         VALUES (?1, ?2, ?3, ?4, ?2, ?5, ?5, ?6)",
     )
     .bind(version.version_id)
     .bind(actor_user_id)
     .bind(kind.as_str())
     .bind(response)
+    .bind(&trainee_name)
     .bind(now)
     .execute(&mut *tx)
     .await
@@ -209,11 +218,6 @@ pub async fn acknowledge(
     // Responses and refusals are persisted notices, never dependent on
     // someone reopening the record (docs/architecture.md Notifications).
     // Messages name the person, never record content.
-    let trainee_name: String = sqlx::query_scalar("SELECT display_name FROM user WHERE id = ?1")
-        .bind(actor_user_id)
-        .fetch_one(&mut *tx)
-        .await
-        .context("reading trainee name")?;
     match kind {
         TraineeAckKind::Acknowledged => {}
         // The response reaches the record's owner, who acts on trainee
@@ -296,16 +300,34 @@ pub async fn attest(
         return storage::refuse(tx, AckRefusal::AlreadyAcknowledged).await;
     }
     let now = OffsetDateTime::now_utc().unix_timestamp();
+    // Both identities snapshot their presentation names as of the act;
+    // a later profile rename never rewrites the permanent attestation.
+    let (trainee_name, attester_name): (String, String) = {
+        let trainee: String = sqlx::query_scalar("SELECT display_name FROM user WHERE id = ?1")
+            .bind(version.trainee_user_id)
+            .fetch_one(&mut *tx)
+            .await
+            .context("reading trainee name")?;
+        let attester: String = sqlx::query_scalar("SELECT display_name FROM user WHERE id = ?1")
+            .bind(actor_user_id)
+            .fetch_one(&mut *tx)
+            .await
+            .context("reading attester name")?;
+        (trainee, attester)
+    };
     sqlx::query(
         "INSERT INTO acknowledgment
-             (evaluation_version_id, user_id, kind, response, recorded_by, recorded_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (evaluation_version_id, user_id, kind, response, recorded_by,
+              user_display_name, recorded_by_display_name, recorded_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )
     .bind(version.version_id)
     .bind(version.trainee_user_id)
     .bind(kind.as_str())
     .bind(reason)
     .bind(actor_user_id)
+    .bind(&trainee_name)
+    .bind(&attester_name)
     .bind(now)
     .execute(&mut *tx)
     .await
@@ -354,14 +376,13 @@ pub async fn acknowledgment_of(
     // Start from the latest version, not from the acknowledgment: a
     // successor version (slice 3) requires its own acknowledgment, so
     // an unacknowledged latest version answers `None` rather than
-    // presenting a predecessor's act as current.
+    // presenting a predecessor's act as current. Names come from the
+    // stored snapshots, never a live join a rename could rewrite.
     let row = sqlx::query(
         "SELECT a.kind, a.response, a.recorded_by, a.recorded_at,
-                su.display_name AS subject_name, ru.display_name AS recorder_name
+                a.user_display_name, a.recorded_by_display_name
          FROM evaluation_version v
          LEFT JOIN acknowledgment a ON a.evaluation_version_id = v.id
-         LEFT JOIN user su ON su.id = a.user_id
-         LEFT JOIN user ru ON ru.id = a.recorded_by
          WHERE v.evaluation_record_id = ?1
          ORDER BY v.version_number DESC LIMIT 1",
     )
@@ -373,9 +394,9 @@ pub async fn acknowledgment_of(
         row.get::<Option<String>, _>("kind").map(|kind| AckView {
             kind,
             response: row.get("response"),
-            user_display_name: row.get("subject_name"),
+            user_display_name: row.get("user_display_name"),
             recorded_by: row.get("recorded_by"),
-            recorded_by_display_name: row.get("recorder_name"),
+            recorded_by_display_name: row.get("recorded_by_display_name"),
             recorded_at: row.get("recorded_at"),
         })
     })))
