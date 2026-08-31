@@ -459,12 +459,20 @@ pub async fn save(
         .context("bumping revision")?;
 
     // One contributed event per working stretch: consecutive saves by
-    // the same contributor coalesce (ADR 0008).
+    // the same contributor coalesce (ADR 0008) — within one workflow
+    // cycle. An open amendment starts a new cycle at its reopening
+    // mark, so the correction's first save is attributed there rather
+    // than coalescing into a stretch the sealed version already owns.
+    let event_mark = crate::amendments::open_scope(&mut tx, record_id)
+        .await?
+        .map_or(0, |scope| scope.opened_after_event_id);
     let latest = sqlx::query(
         "SELECT kind, actor_user_id FROM contributor_event
-         WHERE evaluation_record_id = ?1 ORDER BY id DESC LIMIT 1",
+         WHERE evaluation_record_id = ?1 AND id > ?2
+         ORDER BY id DESC LIMIT 1",
     )
     .bind(record_id)
+    .bind(event_mark)
     .fetch_optional(&mut *tx)
     .await
     .context("reading latest contributor event")?;

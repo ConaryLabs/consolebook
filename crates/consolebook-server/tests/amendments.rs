@@ -339,7 +339,36 @@ async fn amendment_produces_a_chained_successor() {
         .await
         .expect("call");
     assert_eq!(refused, Err(AmendRefusal::NotFinalized));
-    finalization::finalize(&fx.pool, s.casey_id, s.record_id, 0)
+    // Version 1 carries jordan's authored content, so the amendment
+    // cycle below starts from a stretch this same contributor owns.
+    let seeded_workspace = evaluation_drafts::workspace(&fx.pool, s.jordan_id, s.record_id)
+        .await
+        .expect("call")
+        .expect("readable");
+    let eci = seeded_workspace.form.competencies[0].form_competency_id;
+    let most = seeded_workspace.form.narratives[0].form_narrative_id;
+    let revision = draft_content::save(
+        &fx.pool,
+        s.jordan_id,
+        s.record_id,
+        0,
+        &DraftContent {
+            ratings: vec![RatingEntry {
+                form_competency_id: eci,
+                value: Some(3),
+                not_observed: false,
+                modifier_ids: Vec::new(),
+            }],
+            narratives: vec![NarrativeEntry {
+                form_narrative_id: most,
+                text: "The invented initial entry.".to_owned(),
+            }],
+        },
+    )
+    .await
+    .expect("call")
+    .expect("saved");
+    finalization::finalize(&fx.pool, s.casey_id, s.record_id, revision)
         .await
         .expect("call")
         .expect("sealed");
@@ -423,8 +452,6 @@ async fn amendment_produces_a_chained_successor() {
             .reason,
         "The invented rating was entered one point low."
     );
-    let eci = workspace.form.competencies[0].form_competency_id;
-    let most = workspace.form.narratives[0].form_narrative_id;
     let revision = draft_content::save(
         &fx.pool,
         s.jordan_id,
@@ -447,6 +474,19 @@ async fn amendment_produces_a_chained_successor() {
     .expect("call")
     .expect("saved");
 
+    // The correction's first save is attributed within its own cycle:
+    // it never coalesces into a stretch the sealed version already
+    // owns, even for the same contributor (ADR 0012).
+    let contributed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM contributor_event
+         WHERE evaluation_record_id = ?1 AND kind = 'contributed'",
+    )
+    .bind(s.record_id)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("count");
+    assert_eq!(contributed, 2, "one contributed event per cycle stretch");
+
     // The in-progress correction is not the trainee's to see: their
     // own-record read presents the sealed self — finalized status, no
     // working copy, no reopened-cycle events, no amendment internals.
@@ -457,11 +497,13 @@ async fn amendment_produces_a_chained_successor() {
     assert_eq!(mine.detail.status, DraftStatus::Finalized);
     assert!(mine.content.ratings.is_empty() && mine.content.narratives.is_empty());
     assert!(mine.detail.open_amendment.is_none());
-    assert!(
+    assert_eq!(
         mine.detail
             .events
             .iter()
-            .all(|event| event.kind != "contributed"),
+            .filter(|event| event.kind == "contributed")
+            .count(),
+        1,
         "the reopened cycle's events stay out of the own-record read"
     );
 
