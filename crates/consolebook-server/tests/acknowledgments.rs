@@ -362,6 +362,13 @@ async fn trainee_reads_and_acknowledges_own_finalized_record() {
     assert_eq!(timeline[0].form_name, "Daily Observation Report");
     assert_eq!(timeline[0].business_date.as_deref(), Some("2026-06-02"));
     assert_eq!(timeline[0].acknowledgment_kind, None);
+    // An unacknowledged latest version answers None — never a
+    // predecessor's act presented as current.
+    let unacked = acknowledgments::acknowledgment_of(&fx.pool, s.casey_id, s.record_id)
+        .await
+        .expect("call")
+        .expect("readable");
+    assert!(unacked.is_none());
 
     // The timeline is gated on its capability; other roles hold their
     // own read paths, not this one.
@@ -550,10 +557,16 @@ async fn refusal_escalates_to_review_holders() {
     .expect("call")
     .expect("refusal recorded");
 
-    // Every review_evaluation holder is told; nobody else is.
+    // Every review_evaluation holder is told; nobody else is, and a
+    // refusal is not a response.
     assert_eq!(
         fx.notice_count(s.casey_id, "acknowledgment_refused").await,
         1
+    );
+    assert_eq!(
+        fx.notice_count(s.jordan_id, "acknowledgment_response")
+            .await,
+        0
     );
     assert_eq!(
         fx.notice_count(fx.admin_id, "acknowledgment_refused").await,
@@ -789,6 +802,13 @@ async fn acknowledgment_api_round_trip() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
+    // The response is a persisted notice to the record's owner
+    // (docs/architecture.md Notifications).
+    assert_eq!(
+        fx.notice_count(s.jordan_id, "acknowledgment_response")
+            .await,
+        1
+    );
 
     let (status, body) = request(
         fx.app(),

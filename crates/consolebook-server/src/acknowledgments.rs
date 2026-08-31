@@ -137,8 +137,10 @@ async fn already_acknowledged(
 }
 
 /// Records the trainee's own acknowledgment of their finalized record:
-/// plain receipt, receipt with a response, or refusal. A refusal is
-/// escalated to every `review_evaluation` holder, who can attest it.
+/// plain receipt, receipt with a response, or refusal. A response is a
+/// persisted notice to the record's owner; a refusal is escalated to
+/// every `review_evaluation` holder, who can attest it.
+#[allow(clippy::too_many_lines)]
 pub async fn acknowledge(
     pool: &SqlitePool,
     actor_user_id: i64,
@@ -204,29 +206,52 @@ pub async fn acknowledge(
         Subject::Record(record_id),
     )
     .await?;
-    if kind == TraineeAckKind::Refused {
-        // The refusal reaches everyone who can attest it; the message
-        // names the person, never record content.
-        let trainee_name: String =
-            sqlx::query_scalar("SELECT display_name FROM user WHERE id = ?1")
-                .bind(actor_user_id)
-                .fetch_one(&mut *tx)
-                .await
-                .context("reading trainee name")?;
-        sqlx::query(
-            "INSERT INTO notice (user_id, kind, message, created_at)
-             SELECT cg.user_id, ?1, ?2, ?3 FROM capability_grant cg
-             WHERE cg.capability = ?4",
-        )
-        .bind(NoticeKind::AcknowledgmentRefused.as_str())
-        .bind(format!(
-            "{trainee_name} refused to acknowledge a finalized evaluation record."
-        ))
-        .bind(now)
-        .bind(Capability::ReviewEvaluation.as_str())
-        .execute(&mut *tx)
+    // Responses and refusals are persisted notices, never dependent on
+    // someone reopening the record (docs/architecture.md Notifications).
+    // Messages name the person, never record content.
+    let trainee_name: String = sqlx::query_scalar("SELECT display_name FROM user WHERE id = ?1")
+        .bind(actor_user_id)
+        .fetch_one(&mut *tx)
         .await
-        .context("escalating refusal")?;
+        .context("reading trainee name")?;
+    match kind {
+        TraineeAckKind::Acknowledged => {}
+        // The response reaches the record's owner, who acts on trainee
+        // feedback about their evaluation.
+        TraineeAckKind::AcknowledgedWithResponse => {
+            let owner: i64 =
+                sqlx::query_scalar("SELECT owner_user_id FROM evaluation_record WHERE id = ?1")
+                    .bind(record_id)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .context("reading owner")?;
+            notices::notify_user(
+                &mut *tx,
+                owner,
+                NoticeKind::AcknowledgmentResponse,
+                &format!(
+                    "{trainee_name} acknowledged a finalized evaluation record with a response."
+                ),
+            )
+            .await?;
+        }
+        // The refusal reaches everyone who can attest it.
+        TraineeAckKind::Refused => {
+            sqlx::query(
+                "INSERT INTO notice (user_id, kind, message, created_at)
+                 SELECT cg.user_id, ?1, ?2, ?3 FROM capability_grant cg
+                 WHERE cg.capability = ?4",
+            )
+            .bind(NoticeKind::AcknowledgmentRefused.as_str())
+            .bind(format!(
+                "{trainee_name} refused to acknowledge a finalized evaluation record."
+            ))
+            .bind(now)
+            .bind(Capability::ReviewEvaluation.as_str())
+            .execute(&mut *tx)
+            .await
+            .context("escalating refusal")?;
+        }
     }
     tx.commit().await.context("committing acknowledgment")?;
     Ok(Ok(()))
@@ -326,13 +351,17 @@ pub async fn acknowledgment_of(
     if !evaluation_drafts::may_read(pool, actor_user_id, &record).await? {
         return Ok(Err(AckRefusal::CapabilityRequired));
     }
+    // Start from the latest version, not from the acknowledgment: a
+    // successor version (slice 3) requires its own acknowledgment, so
+    // an unacknowledged latest version answers `None` rather than
+    // presenting a predecessor's act as current.
     let row = sqlx::query(
         "SELECT a.kind, a.response, a.recorded_by, a.recorded_at,
                 su.display_name AS subject_name, ru.display_name AS recorder_name
-         FROM acknowledgment a
-         JOIN evaluation_version v ON v.id = a.evaluation_version_id
-         JOIN user su ON su.id = a.user_id
-         JOIN user ru ON ru.id = a.recorded_by
+         FROM evaluation_version v
+         LEFT JOIN acknowledgment a ON a.evaluation_version_id = v.id
+         LEFT JOIN user su ON su.id = a.user_id
+         LEFT JOIN user ru ON ru.id = a.recorded_by
          WHERE v.evaluation_record_id = ?1
          ORDER BY v.version_number DESC LIMIT 1",
     )
@@ -340,13 +369,15 @@ pub async fn acknowledgment_of(
     .fetch_optional(pool)
     .await
     .context("reading acknowledgment")?;
-    Ok(Ok(row.map(|row| AckView {
-        kind: row.get("kind"),
-        response: row.get("response"),
-        user_display_name: row.get("subject_name"),
-        recorded_by: row.get("recorded_by"),
-        recorded_by_display_name: row.get("recorder_name"),
-        recorded_at: row.get("recorded_at"),
+    Ok(Ok(row.and_then(|row| {
+        row.get::<Option<String>, _>("kind").map(|kind| AckView {
+            kind,
+            response: row.get("response"),
+            user_display_name: row.get("subject_name"),
+            recorded_by: row.get("recorded_by"),
+            recorded_by_display_name: row.get("recorder_name"),
+            recorded_at: row.get("recorded_at"),
+        })
     })))
 }
 
