@@ -366,4 +366,76 @@ test('draft, collaborate, transfer, and submit a daily evaluation', async ({ pag
 	await expect(page.getByRole('button', { name: 'Record acknowledgment' })).toHaveCount(0);
 	await page.getByRole('link', { name: 'My records' }).click();
 	await expect(page.getByText('Acknowledged with response')).toBeVisible();
+
+	// A correction is an amendment, never an edit: the coordinator
+	// reopens the sealed record with a reason...
+	await page.getByRole('link', { name: 'Home' }).click();
+	await page.getByRole('button', { name: 'Sign out' }).click();
+	await page.getByLabel('Username').fill('casey.coord');
+	await page.getByLabel('Password').fill(CASEY_PASSWORD);
+	await page.getByRole('button', { name: 'Sign in' }).click();
+	await expect(page.getByRole('heading', { name: 'Installation status' })).toBeVisible();
+	await page.goto(draftUrl);
+	await expect(page.getByRole('heading', { name: 'Amend' })).toBeVisible();
+	await page
+		.getByLabel('Reason')
+		.fill('The invented callback timing was recorded one hour early.');
+	await page.getByRole('button', { name: 'Open amendment' }).click();
+	await expect(page.getByText('Amendment in progress —')).toBeVisible();
+	await expect(page.getByText('Draft', { exact: true })).toBeVisible();
+
+	// ...the owner corrects the reopened copy and resubmits...
+	await page.getByRole('link', { name: 'Home' }).click();
+	await page.getByRole('button', { name: 'Sign out' }).click();
+	await page.getByLabel('Username').fill('rowan.trainer');
+	await page.getByLabel('Password').fill(ROWAN_PASSWORD);
+	await page.getByRole('button', { name: 'Sign in' }).click();
+	await expect(page.getByRole('heading', { name: 'Installation status' })).toBeVisible();
+	await page.goto(draftUrl);
+	await page
+		.getByLabel('Least acceptable performance.')
+		.fill('Amended: callback 555-0100 (invented) at the corrected hour.');
+	await expect(page.getByText('Saved', { exact: true })).toBeVisible();
+	await page.getByRole('button', { name: 'Submit for review' }).click();
+	await expect(page.getByText('Submitted for review', { exact: true })).toBeVisible();
+
+	// ...the reviewer approves and seals version 2, chained to the
+	// original, which stays readable in the history with its
+	// acknowledgment.
+	await page.getByRole('link', { name: 'Home' }).click();
+	await page.getByRole('button', { name: 'Sign out' }).click();
+	await page.getByLabel('Username').fill('casey.coord');
+	await page.getByLabel('Password').fill(CASEY_PASSWORD);
+	await page.getByRole('button', { name: 'Sign in' }).click();
+	await expect(page.getByRole('heading', { name: 'Installation status' })).toBeVisible();
+	await page.goto(draftUrl);
+	await page.getByLabel('Decision').selectOption({ label: 'Approve' });
+	await page.getByRole('button', { name: 'Decide' }).click();
+	await expect(page.getByText('Approved', { exact: true })).toBeVisible();
+	await page.getByRole('button', { name: 'Finalize record' }).click();
+	await expect(page.getByText('Finalized', { exact: true })).toBeVisible();
+	await expect(page.getByText('Version 2 · record schema')).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Version history' })).toBeVisible();
+	await expect(
+		page.getByText('The invented callback timing was recorded one hour early.')
+	).toBeVisible();
+	await expect(page.getByText('Taylor Trainee acknowledged receipt with a response')).toBeVisible();
+	await page.getByRole('button', { name: 'Verify hashes' }).click();
+	await expect(
+		page.getByText('Recomputed from the stored record: both fingerprints match.')
+	).toBeVisible();
+
+	// The successor never inherits acknowledgment: Taylor's timeline
+	// shows the amended record awaiting them again.
+	await page.getByRole('link', { name: 'Home' }).click();
+	await page.getByRole('button', { name: 'Sign out' }).click();
+	await page.getByLabel('Username').fill('taylor.trainee');
+	await page.getByLabel('Password').fill(TAYLOR_PASSWORD);
+	await page.getByRole('button', { name: 'Sign in' }).click();
+	await page.getByRole('link', { name: 'My records' }).click();
+	await expect(page.getByText('Awaiting acknowledgment')).toBeVisible();
+	await expect(page.getByText('Amended — v2')).toBeVisible();
+	await page.getByRole('link', { name: 'Open' }).click();
+	await page.getByRole('button', { name: 'Record acknowledgment' }).click();
+	await expect(page.getByText('Taylor Trainee acknowledged receipt', { exact: false })).toBeVisible();
 });

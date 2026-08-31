@@ -709,9 +709,12 @@ async fn completion_rules_gate_submission_and_sealing() {
     .bind(s.casey_id)
     .execute(&fx.pool)
     .await;
+    // Since migration 0012, a duplicate first version meets the UNIQUE
+    // constraint; true successors are the amendment contract's to
+    // admit (proven in the amendments suite).
     let err = raw.expect_err("must be refused").to_string();
     assert!(
-        err.contains("successor versions arrive with amendments"),
+        err.contains("UNIQUE constraint failed"),
         "second version: {err}"
     );
 

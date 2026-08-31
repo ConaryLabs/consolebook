@@ -12,6 +12,7 @@ use axum::routing::{get, post, put};
 use serde::{Deserialize, Serialize};
 
 use crate::acknowledgments::{self, AckRefusal, AttestedKind, TraineeAckKind};
+use crate::amendments::{self, AmendRefusal};
 use crate::draft_content::{self, DraftContent, FormSkeleton};
 use crate::draft_review::{self, ReviewDecisionKind};
 use crate::evaluation_drafts::{self, DraftDetail, DraftRefusal};
@@ -33,6 +34,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/drafts/{id}/acknowledge", post(acknowledge_record))
         .route("/api/drafts/{id}/attest", post(attest_record))
         .route("/api/drafts/{id}/acknowledgment", get(get_acknowledgment))
+        .route("/api/drafts/{id}/amend", post(amend_record))
+        .route("/api/drafts/{id}/versions", get(version_history))
         .route("/api/my/records", get(my_records))
         .route("/api/reviews/queue", get(review_queue))
 }
@@ -400,6 +403,67 @@ fn ack_refusal(refusal: AckRefusal) -> ApiError {
             "response_not_allowed",
             "a plain acknowledgment carries no text",
         ),
+    }
+}
+
+fn amend_refusal(refusal: AmendRefusal) -> ApiError {
+    match refusal {
+        AmendRefusal::NoSuchRecord => {
+            ApiError::new(StatusCode::NOT_FOUND, "no_such_record", "no such record")
+        }
+        AmendRefusal::CapabilityRequired => ApiError::new(
+            StatusCode::FORBIDDEN,
+            "capability_required",
+            "this action is not available to this account",
+        ),
+        AmendRefusal::NotFinalized => ApiError::new(
+            StatusCode::CONFLICT,
+            "not_finalized",
+            "amendments correct finalized records; this working copy is already open",
+        ),
+        AmendRefusal::AmendmentOpen => ApiError::new(
+            StatusCode::CONFLICT,
+            "amendment_open",
+            "this record is already reopened for amendment",
+        ),
+        AmendRefusal::ReasonRequired => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "reason_required",
+            "an amendment explains itself; add the reason",
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct AmendRequest {
+    reason: String,
+}
+
+async fn amend_record(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(record_id): Path<i64>,
+    Json(req): Json<AmendRequest>,
+) -> Result<Response, ApiError> {
+    match amendments::open(&state.pool, current.user.id, record_id, &req.reason).await? {
+        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(refusal) => Err(amend_refusal(refusal)),
+    }
+}
+
+#[derive(Serialize)]
+struct VersionsBody {
+    versions: Vec<amendments::VersionHistoryRow>,
+}
+
+async fn version_history(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(record_id): Path<i64>,
+) -> Result<Response, ApiError> {
+    match amendments::history(&state.pool, current.user.id, record_id).await? {
+        Ok(versions) => Ok(Json(VersionsBody { versions }).into_response()),
+        Err(refusal) => Err(amend_refusal(refusal)),
     }
 }
 

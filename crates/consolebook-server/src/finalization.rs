@@ -156,15 +156,23 @@ pub async fn finalize(
     let mut tx = storage::write_tx(pool)
         .await
         .context("starting finalization")?;
+    // A finalized record seals again only through its open amendment
+    // (migration 0012): the successor extends the chain from the
+    // version the amendment reopened.
     let finalized: Option<i64> =
         sqlx::query_scalar("SELECT 1 FROM evaluation_version WHERE evaluation_record_id = ?1")
             .bind(record_id)
             .fetch_optional(&mut *tx)
             .await
             .context("checking for a finalized version")?;
-    if finalized.is_some() {
-        return storage::refuse(tx, FinalizeRefusal::AlreadyFinalized).await;
-    }
+    let amendment = if finalized.is_some() {
+        match crate::amendments::open_scope(&mut tx, record_id).await? {
+            None => return storage::refuse(tx, FinalizeRefusal::AlreadyFinalized).await,
+            Some(scope) => Some(scope),
+        }
+    } else {
+        None
+    };
     // The revision is rechecked inside the transaction (the submit
     // contract): under a policy without required review the copy stays
     // editable up to this moment, and a racing save must resolve as a
@@ -192,21 +200,44 @@ pub async fn finalize(
     }
 
     let now = OffsetDateTime::now_utc().unix_timestamp();
-    let envelope = envelope(&mut tx, &record, record_id, actor_user_id, now, policy).await?;
+    // The successor extends the chain (ADR 0011): its number follows
+    // its predecessor's, its envelope commits to the predecessor's
+    // content hash, and its chain hash covers that hash and the bytes.
+    let (version_number, predecessor_id, predecessor_hash) = match &amendment {
+        None => (1, None, None),
+        Some(scope) => (
+            scope.predecessor_version_number + 1,
+            Some(scope.predecessor_version_id),
+            Some(scope.predecessor_content_hash.clone()),
+        ),
+    };
+    let envelope = envelope(
+        &mut tx,
+        &record,
+        record_id,
+        actor_user_id,
+        now,
+        policy,
+        version_number,
+        predecessor_hash.as_deref(),
+    )
+    .await?;
     let bytes = canonical::canonical_bytes(&envelope)?;
     let content_hash = canonical::content_hash_hex(&bytes);
-    let chain_hash = canonical::chain_hash_hex(None, &bytes)?;
+    let chain_hash = canonical::chain_hash_hex(predecessor_hash.as_deref(), &bytes)?;
     sqlx::query(
         "INSERT INTO evaluation_version
              (evaluation_record_id, version_number, record_schema, canonical_bytes,
               content_hash, chain_hash, predecessor_id, finalized_at, finalized_by)
-         VALUES (?1, 1, ?2, ?3, ?4, ?5, NULL, ?6, ?7)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )
     .bind(record_id)
+    .bind(version_number)
     .bind(canonical::RECORD_SCHEMA)
     .bind(&bytes)
     .bind(&content_hash)
     .bind(&chain_hash)
+    .bind(predecessor_id)
     .bind(now)
     .bind(actor_user_id)
     .execute(&mut *tx)
@@ -259,7 +290,7 @@ pub async fn finalize(
         .context("reading finalizer")?;
     tx.commit().await.context("committing finalization")?;
     Ok(Ok(VersionMeta {
-        version_number: 1,
+        version_number,
         record_schema: canonical::RECORD_SCHEMA,
         content_hash,
         chain_hash,
@@ -270,7 +301,7 @@ pub async fn finalize(
 }
 
 /// Builds the record-schema-1 envelope (ADR 0011) from committed rows.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn envelope(
     conn: &mut SqliteConnection,
     record: &evaluation_drafts::RecordRow,
@@ -278,6 +309,8 @@ async fn envelope(
     finalized_by: i64,
     finalized_at: i64,
     policy: Policy,
+    version_number: i64,
+    predecessor_content_hash: Option<&str>,
 ) -> Result<Value> {
     let instance: String = sqlx::query_scalar("SELECT installation_id FROM instance WHERE id = 1")
         .fetch_one(&mut *conn)
@@ -586,9 +619,10 @@ async fn envelope(
         },
         "record": {
             "id": record_id,
-            "version_number": 1,
+            "version_number": version_number,
             "record_schema": canonical::RECORD_SCHEMA,
-            "predecessor_content_hash": Value::Null,
+            "predecessor_content_hash": predecessor_content_hash
+                .map_or(Value::Null, |hash| Value::String(hash.to_owned())),
         },
         "review": review,
         "sessions": sessions,
@@ -699,10 +733,19 @@ pub async fn verify(
     let stored_chain: String = row.get("chain_hash");
     let predecessor: Option<i64> = row.get("predecessor_id");
     let content_ok = canonical::content_hash_hex(&bytes) == stored_content;
-    // Slice 1 produces first versions only; slice 3's amendments carry
-    // the predecessor hash through this recomputation.
-    let chain_ok =
-        predecessor.is_none() && canonical::chain_hash_hex(None, &bytes)? == stored_chain;
+    // A successor's chain covers its predecessor's content hash
+    // (ADR 0011); a first version's covers the zero predecessor.
+    let predecessor_hash: Option<String> = match predecessor {
+        None => None,
+        Some(predecessor_id) => Some(
+            sqlx::query_scalar("SELECT content_hash FROM evaluation_version WHERE id = ?1")
+                .bind(predecessor_id)
+                .fetch_one(pool)
+                .await
+                .context("reading predecessor hash")?,
+        ),
+    };
+    let chain_ok = canonical::chain_hash_hex(predecessor_hash.as_deref(), &bytes)? == stored_chain;
     Ok(Ok(Some(Verification {
         content_hash_ok: content_ok,
         chain_hash_ok: chain_ok,

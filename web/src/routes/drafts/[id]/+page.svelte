@@ -3,6 +3,7 @@
 	import {
 		ApiError,
 		acknowledgeRecord,
+		amendRecord,
 		attestRecord,
 		finalizeDraft,
 		finalizedVersion,
@@ -13,6 +14,7 @@
 		submitDraft,
 		transferDraft,
 		verifyVersion,
+		versionHistory,
 		type Acknowledgment,
 		type AttestedKind,
 		type DraftContent,
@@ -22,7 +24,8 @@
 		type ReviewDecisionKind,
 		type SkeletonCompetency,
 		type TraineeAckKind,
-		type Verification
+		type Verification,
+		type VersionHistoryRow
 	} from '$lib/api';
 	import { instant } from '$lib/format';
 	import type { ShellData } from '../../+layout';
@@ -62,6 +65,7 @@
 	let sealed: FinalizedView | null = $state(null);
 	let verification: Verification | null = $state(null);
 	let ack: Acknowledgment | null = $state(null);
+	let versions: VersionHistoryRow[] = $state([]);
 
 	async function load() {
 		try {
@@ -72,10 +76,12 @@
 				// fails closed and presents nothing from live joins.
 				sealed = await finalizedVersion(draftId);
 				ack = (await getAcknowledgment(draftId)).acknowledgment;
+				versions = (await versionHistory(draftId)).versions;
 			} else {
 				sealed = null;
 				verification = null;
 				ack = null;
+				versions = [];
 			}
 			view = fetched;
 			const nextValues: Record<number, number | null> = {};
@@ -427,6 +433,25 @@
 		}
 	}
 
+	// Amending never edits the sealed version: it reopens the working
+	// copy for a correction that seals as the next version, which then
+	// awaits its own acknowledgment.
+	let amendReason = $state('');
+
+	async function amendNow() {
+		busy = true;
+		error = '';
+		try {
+			await amendRecord(draftId, amendReason);
+			amendReason = '';
+			await load();
+		} catch (err) {
+			error = err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
+
 	function ackLine(recorded: Acknowledgment): string {
 		switch (recorded.kind) {
 			case 'acknowledged':
@@ -615,6 +640,17 @@
 		{:else if view.status === 'changes_requested' && view.decisions.length > 0}
 			<p class="callout">
 				Change request: {view.decisions[view.decisions.length - 1].comment}
+			</p>
+		{/if}
+		{#if view.open_amendment !== null && view.status !== 'finalized'}
+			<p class="callout">
+				Amendment in progress — {view.open_amendment.reason}
+				<span class="quiet-inline">
+					(opened by {view.open_amendment.opened_by_display_name},
+					{instant(view.open_amendment.opened_at)}; version
+					{view.latest_version_number} stays readable, and sealing this
+					correction produces version {(view.latest_version_number ?? 0) + 1})
+				</span>
 			</p>
 		{/if}
 		{#if error}
@@ -811,6 +847,68 @@
 				{/if}
 			{/if}
 		</section>
+
+		{#if versions.length > 1}
+			<section class="panel">
+				<h2>Version history</h2>
+				<p class="quiet">
+					Every version remains readable while retained; a correction is a
+					successor, never an edit.
+				</p>
+				{#each versions as version (version.version_number)}
+					<div class="version-row">
+						<p>
+							<strong>Version {version.version_number}</strong>
+							<span class="quiet-inline">
+								finalized by {version.finalized_by_display_name}
+								{instant(version.finalized_at)}
+							</span>
+						</p>
+						{#if version.amendment}
+							<p class="quiet small-note">
+								Amendment by {version.amendment.opened_by_display_name}
+								({instant(version.amendment.opened_at)}):
+								{version.amendment.reason}
+							</p>
+						{/if}
+						<p class="quiet small-note">
+							{#if version.acknowledgment}
+								{ackLine(version.acknowledgment)}
+								({instant(version.acknowledgment.recorded_at)})
+							{:else if version.version_number === versions[0].version_number}
+								Awaiting acknowledgment.
+							{:else}
+								Never acknowledged; superseded.
+							{/if}
+						</p>
+						<p class="quiet small-note">
+							Content hash: <code>{version.content_hash}</code>
+						</p>
+					</div>
+				{/each}
+			</section>
+		{/if}
+
+		{#if view.viewer_may_amend}
+			<section class="panel">
+				<h2>Amend</h2>
+				<p class="quiet">
+					An amendment reopens the working copy for a correction that seals
+					as the next version under the same workflow rules. This version
+					stays readable, and the successor requires a new acknowledgment.
+				</p>
+				<label for="amend-reason">Reason</label>
+				<textarea id="amend-reason" rows="2" bind:value={amendReason}></textarea>
+				<button
+					type="button"
+					class="secondary"
+					disabled={busy || amendReason.trim() === ''}
+					onclick={amendNow}
+				>
+					Open amendment
+				</button>
+			</section>
+		{/if}
 	{/if}
 
 	{#if view.status !== 'finalized'}
@@ -1122,6 +1220,13 @@
 		padding: 0.45rem 0.6rem;
 		border-bottom: 1px solid #e4e9ee;
 		vertical-align: top;
+	}
+	.version-row {
+		border-top: 1px solid light-dark(#e3e6eb, #2a303b);
+		padding: 0.5rem 0;
+	}
+	.version-row p {
+		margin: 0 0 0.2rem;
 	}
 	.small-note {
 		margin: 0.15rem 0 0;
