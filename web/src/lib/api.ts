@@ -222,6 +222,12 @@ export interface FormDef {
 	narratives: NarrativeDef[];
 }
 
+export interface PolicyDef {
+	review_approved: boolean;
+	required_narratives: boolean;
+	ratings_complete: boolean;
+}
+
 export interface VersionContent {
 	name: string;
 	label: string;
@@ -233,6 +239,7 @@ export interface VersionContent {
 	rating_modifiers: ModifierDef[];
 	evaluation_forms: FormDef[];
 	citations: CitationDef[];
+	finalization_policy: PolicyDef;
 }
 
 export interface ProgramSummary {
@@ -664,7 +671,8 @@ export type DraftStatus =
 	| 'submitted'
 	| 'changes_requested'
 	| 'returned'
-	| 'approved';
+	| 'approved'
+	| 'finalized';
 
 export type ReviewDecisionKind = 'approved' | 'changes_requested' | 'returned';
 
@@ -752,6 +760,7 @@ export interface SkeletonModifier {
 export interface RatingEntry {
 	form_competency_id: number;
 	value: number | null;
+	not_observed: boolean;
 	modifier_ids: number[];
 }
 
@@ -783,6 +792,7 @@ export interface DraftView {
 	eligible_recipients: EligibleRecipient[];
 	decisions: ReviewDecision[];
 	viewer_may_review: boolean;
+	viewer_may_finalize: boolean;
 	created_at: number;
 	revision: number;
 	form: {
@@ -852,6 +862,100 @@ export function reviewQueue(): Promise<{ drafts: ReviewQueueRow[] }> {
 	return request('/api/reviews/queue');
 }
 
+export interface VersionMeta {
+	version_number: number;
+	record_schema: number;
+	content_hash: string;
+	chain_hash: string;
+	finalized_at: number;
+	finalized_by: number;
+	finalized_by_display_name: string;
+}
+
+/** One identity as the finalized envelope presents it. */
+export interface EnvelopeUser {
+	id: number;
+	username: string;
+	display_name: string;
+}
+
+/** The stored canonical envelope (record schema 1, ADR 0011). */
+export interface RecordEnvelope {
+	attachments: unknown[];
+	attribution: {
+		kind: string;
+		actor: EnvelopeUser;
+		to: EnvelopeUser | null;
+		recorded_at: number;
+	}[];
+	canonicalization: string;
+	content: {
+		narratives: { prompt: string; required: boolean; text: string | null }[];
+		ratings: {
+			competency: { category: string; name: string; description: string; tasks: string[] };
+			scale: {
+				name: string;
+				kind: string;
+				min_value: number | null;
+				max_value: number | null;
+				anchors: { value: number; label: string; definition: string }[];
+			};
+			value: number | null;
+			not_observed: boolean;
+			modifiers: { code: string; label: string; description: string }[];
+		}[];
+	};
+	finalization: {
+		finalized_at: number;
+		finalized_by: EnvelopeUser;
+		policy: PolicyDef;
+	};
+	form: { name: string; instructions: string; record_type: string };
+	instance: string;
+	program: { name: string; version_number: number; label: string };
+	record: {
+		id: number;
+		version_number: number;
+		record_schema: number;
+		predecessor_content_hash: string | null;
+	};
+	review: { reviewer: EnvelopeUser; decision: string; comment: string; decided_at: number }[];
+	sessions: {
+		business_date: string;
+		timezone: string;
+		local_start: string;
+		local_end: string | null;
+		utc_start: number;
+		utc_end: number | null;
+		disposition: string | null;
+		phase: { name: string; presentation_number: number } | null;
+		trainers: EnvelopeUser[];
+	}[];
+	trainee: EnvelopeUser & { employee_id: string; title: string };
+}
+
+export interface FinalizedView {
+	meta: VersionMeta;
+	envelope: RecordEnvelope;
+}
+
+export interface Verification {
+	content_hash_ok: boolean;
+	chain_hash_ok: boolean;
+}
+
+export function finalizeDraft(draftId: number): Promise<VersionMeta> {
+	return request(`/api/drafts/${draftId}/finalize`, { method: 'POST' });
+}
+
+export function finalizedVersion(draftId: number): Promise<FinalizedView> {
+	return request(`/api/drafts/${draftId}/version`);
+}
+
+export function verifyVersion(draftId: number): Promise<Verification> {
+	return request(`/api/drafts/${draftId}/version/verify`);
+}
+
 /** A structurally valid empty draft for starting a program from scratch. */
 export function blankContent(name: string): VersionContent {
 	return {
@@ -864,6 +968,11 @@ export function blankContent(name: string): VersionContent {
 		rating_scales: [],
 		rating_modifiers: [],
 		evaluation_forms: [],
-		citations: []
+		citations: [],
+		finalization_policy: {
+			review_approved: true,
+			required_narratives: true,
+			ratings_complete: true
+		}
 	};
 }

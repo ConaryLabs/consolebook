@@ -2,16 +2,21 @@
 	import { page } from '$app/state';
 	import {
 		ApiError,
+		finalizeDraft,
+		finalizedVersion,
 		getDraft,
 		reviewDraft,
 		saveDraftContent,
 		submitDraft,
 		transferDraft,
+		verifyVersion,
 		type DraftContent,
 		type DraftStatus,
 		type DraftView,
+		type FinalizedView,
 		type ReviewDecisionKind,
-		type SkeletonCompetency
+		type SkeletonCompetency,
+		type Verification
 	} from '$lib/api';
 	import { instant } from '$lib/format';
 	import type { ShellData } from '../../+layout';
@@ -35,21 +40,31 @@
 	// concurrent contributor's work is never silently overwritten.
 	let revision = $state(0);
 	let values: Record<number, number | null> = $state({});
+	let notObserved: Record<number, boolean> = $state({});
 	let modifiers: Record<number, Record<number, boolean>> = $state({});
 	let narratives: Record<number, string> = $state({});
+
+	// The sealed record, fetched when the draft is finalized: the page
+	// then presents from the stored envelope, never from live rows
+	// (ADR 0011).
+	let sealed: FinalizedView | null = $state(null);
+	let verification: Verification | null = $state(null);
 
 	async function load() {
 		try {
 			const fetched = await getDraft(draftId);
 			view = fetched;
 			const nextValues: Record<number, number | null> = {};
+			const nextObserved: Record<number, boolean> = {};
 			const nextModifiers: Record<number, Record<number, boolean>> = {};
 			for (const competency of fetched.form.competencies) {
 				nextValues[competency.form_competency_id] = null;
+				nextObserved[competency.form_competency_id] = false;
 				nextModifiers[competency.form_competency_id] = {};
 			}
 			for (const rating of fetched.content.ratings) {
 				nextValues[rating.form_competency_id] = rating.value;
+				nextObserved[rating.form_competency_id] = rating.not_observed;
 				const picked: Record<number, boolean> = {};
 				for (const id of rating.modifier_ids) {
 					picked[id] = true;
@@ -64,9 +79,16 @@
 				nextNarratives[entry.form_narrative_id] = entry.text;
 			}
 			values = nextValues;
+			notObserved = nextObserved;
 			modifiers = nextModifiers;
 			narratives = nextNarratives;
 			revision = fetched.revision;
+			if (fetched.status === 'finalized') {
+				sealed = await finalizedVersion(draftId);
+			} else {
+				sealed = null;
+				verification = null;
+			}
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : 'the server could not be reached';
 		}
@@ -99,12 +121,18 @@
 		const ratings = [];
 		for (const competency of current.form.competencies) {
 			const id = competency.form_competency_id;
-			const value = values[id] ?? null;
+			const marked = notObserved[id] ?? false;
+			const value = marked ? null : (values[id] ?? null);
 			const picked = Object.entries(modifiers[id] ?? {})
 				.filter(([, on]) => on)
 				.map(([modifierId]) => Number(modifierId));
-			if (value !== null || picked.length > 0) {
-				ratings.push({ form_competency_id: id, value, modifier_ids: picked });
+			if (value !== null || marked || picked.length > 0) {
+				ratings.push({
+					form_competency_id: id,
+					value,
+					not_observed: marked,
+					modifier_ids: picked
+				});
 			}
 		}
 		const texts = [];
@@ -292,6 +320,33 @@
 				return 'Returned';
 			case 'approved':
 				return 'Approved';
+			case 'finalized':
+				return 'Finalized';
+		}
+	}
+
+	// Sealing: completion rules answer at the act with typed refusals;
+	// the page surfaces them verbatim.
+	async function finalizeNow() {
+		busy = true;
+		error = '';
+		try {
+			await flushSaves();
+			await finalizeDraft(draftId);
+			await load();
+		} catch (err) {
+			error = err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function verifyNow() {
+		error = '';
+		try {
+			verification = await verifyVersion(draftId);
+		} catch (err) {
+			error = err instanceof ApiError ? err.message : 'the server could not be reached';
 		}
 	}
 
@@ -326,6 +381,19 @@
 	function anchorLabel(competency: SkeletonCompetency, value: number): string {
 		const anchor = competency.anchors.find((candidate) => candidate.value === value);
 		return anchor ? `${value} — ${anchor.label}` : String(value);
+	}
+
+	function sealedRatingLabel(rating: {
+		value: number | null;
+		scale: { kind: string; anchors: { value: number; label: string }[] };
+	}): string {
+		const anchor = rating.scale.anchors.find(
+			(candidate) => candidate.value === rating.value
+		);
+		if (rating.scale.kind === 'pass_fail' && anchor) {
+			return anchor.label;
+		}
+		return anchor ? `${rating.value} — ${anchor.label}` : String(rating.value);
 	}
 
 	// A select enumerates the scale only while that stays usable; a wider
@@ -393,7 +461,9 @@
 			<div class="workflow">
 				<span
 					class="pill"
-					class:submitted={view.status === 'submitted' || view.status === 'approved'}
+					class:submitted={view.status === 'submitted' ||
+						view.status === 'approved' ||
+						view.status === 'finalized'}
 					class:draft={openStatus(view.status)}
 				>
 					{statusLabel(view.status)}
@@ -420,6 +490,10 @@
 			</p>
 		{:else if view.status === 'approved'}
 			<p class="quiet">The draft is approved and stays frozen until finalization.</p>
+		{:else if view.status === 'finalized'}
+			<p class="quiet">
+				The record is finalized and permanent; corrections are amendments.
+			</p>
 		{:else if view.status === 'changes_requested' && view.decisions.length > 0}
 			<p class="callout">
 				Change request: {view.decisions[view.decisions.length - 1].comment}
@@ -456,6 +530,109 @@
 		</section>
 	{/if}
 
+	{#if view.viewer_may_finalize}
+		<section class="panel">
+			<h2>Finalize</h2>
+			<p class="quiet">
+				Finalization seals this record as an immutable version with its
+				content fingerprint. The pinned program version's completion
+				rules answer here; a shortfall is named, never skipped.
+			</p>
+			<div class="row route">
+				<button type="button" disabled={busy} onclick={finalizeNow}>
+					Finalize record
+				</button>
+			</div>
+		</section>
+	{/if}
+
+	{#if view.status === 'finalized' && sealed !== null}
+		<section class="panel">
+			<h2>Finalized record</h2>
+			<p class="quiet">
+				Version {sealed.meta.version_number} · record schema
+				{sealed.meta.record_schema} · finalized by
+				{sealed.meta.finalized_by_display_name}
+				<span class="quiet-inline">{instant(sealed.meta.finalized_at)}</span>
+			</p>
+			<p class="quiet">
+				{sealed.envelope.trainee.display_name}
+				{#if sealed.envelope.trainee.employee_id}
+					· {sealed.envelope.trainee.employee_id}
+				{/if}
+				{#if sealed.envelope.trainee.title}
+					· {sealed.envelope.trainee.title}
+				{/if}
+			</p>
+			<h3>Ratings</h3>
+			<table class="grid">
+				<thead>
+					<tr>
+						<th>Competency</th>
+						<th>Rating</th>
+						<th>Modifiers</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each sealed.envelope.content.ratings as rating (rating.competency.name)}
+						<tr>
+							<td>
+								<strong>{rating.competency.name}</strong>
+								{#if rating.competency.category}
+									<span class="quiet-inline">({rating.competency.category})</span>
+								{/if}
+							</td>
+							<td>
+								{#if rating.not_observed}
+									Not observed
+								{:else if rating.value !== null}
+									{sealedRatingLabel(rating)}
+								{:else if rating.scale.kind === 'narrative_only'}
+									<span class="quiet-inline">narrative</span>
+								{:else}
+									<span class="quiet-inline">—</span>
+								{/if}
+							</td>
+							<td>{rating.modifiers.map((modifier) => modifier.code).join(' ')}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+			<h3>Narratives</h3>
+			{#each sealed.envelope.content.narratives as narrative (narrative.prompt)}
+				<div class="narrative">
+					<strong>{narrative.prompt}</strong>
+					<p class="sealed-text">{narrative.text ?? ''}</p>
+				</div>
+			{/each}
+			<h3>Integrity</h3>
+			<p class="quiet small-note">Content hash: <code>{sealed.meta.content_hash}</code></p>
+			<p class="quiet small-note">Chain hash: <code>{sealed.meta.chain_hash}</code></p>
+			<div class="row route">
+				<button type="button" class="secondary" onclick={verifyNow}>
+					Verify hashes
+				</button>
+				{#if verification !== null}
+					{#if verification.content_hash_ok && verification.chain_hash_ok}
+						<span class="quiet-inline" role="status">
+							Recomputed from the stored record: both fingerprints match.
+						</span>
+					{:else}
+						<span class="error" role="alert">
+							The stored fingerprints do not match the stored record.
+						</span>
+					{/if}
+				{/if}
+			</div>
+			<p class="quiet small-note">
+				Verification proves this record reproduces consistently from what is
+				stored; it is not by itself proof against a writer with direct
+				database access.
+			</p>
+		</section>
+	{/if}
+
+	{#if view.status !== 'finalized'}
 	<section class="panel">
 		<h2>Ratings</h2>
 		{#if view.form.competencies.length === 0}
@@ -507,7 +684,8 @@
 								{:else if competency.scale_kind === 'pass_fail'}
 									<select
 										aria-label={`Rate ${competency.name}`}
-										disabled={!editable}
+										disabled={!editable ||
+											notObserved[competency.form_competency_id]}
 										bind:value={values[competency.form_competency_id]}
 										onchange={scheduleSave}
 									>
@@ -522,14 +700,16 @@
 										type="number"
 										min={competency.min_value}
 										max={competency.max_value}
-										disabled={!editable}
+										disabled={!editable ||
+											notObserved[competency.form_competency_id]}
 										bind:value={values[competency.form_competency_id]}
 										oninput={scheduleSave}
 									/>
 								{:else}
 									<select
 										aria-label={`Rate ${competency.name}`}
-										disabled={!editable}
+										disabled={!editable ||
+											notObserved[competency.form_competency_id]}
 										bind:value={values[competency.form_competency_id]}
 										onchange={scheduleSave}
 									>
@@ -538,6 +718,27 @@
 											<option {value}>{anchorLabel(competency, value)}</option>
 										{/each}
 									</select>
+								{/if}
+								{#if competency.scale_kind !== 'narrative_only'}
+									<label
+										class="modifier"
+										title="No opportunity to observe this competency today"
+									>
+										<input
+											type="checkbox"
+											disabled={!editable}
+											bind:checked={
+												notObserved[competency.form_competency_id]
+											}
+											onchange={() => {
+												if (notObserved[competency.form_competency_id]) {
+													values[competency.form_competency_id] = null;
+												}
+												scheduleSave();
+											}}
+										/>
+										Not observed
+									</label>
 								{/if}
 							</td>
 							{#if view.form.modifiers.length > 0}
@@ -590,6 +791,7 @@
 			{/each}
 		{/if}
 	</section>
+	{/if}
 
 	<section class="panel">
 		<h2>Attribution</h2>
@@ -761,6 +963,13 @@
 		background: #f4f6f8;
 		border-left: 3px solid #b9c2cc;
 		white-space: pre-wrap;
+	}
+	.sealed-text {
+		white-space: pre-wrap;
+		margin: 0.25rem 0 0.75rem;
+	}
+	code {
+		word-break: break-all;
 	}
 	.callout {
 		padding: 0.45rem 0.6rem;
