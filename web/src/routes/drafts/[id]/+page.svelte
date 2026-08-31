@@ -7,6 +7,7 @@
 		attestRecord,
 		finalizeDraft,
 		finalizedVersion,
+		finalizedVersionAt,
 		getAcknowledgment,
 		getDraft,
 		reviewDraft,
@@ -14,6 +15,7 @@
 		submitDraft,
 		transferDraft,
 		verifyVersion,
+		verifyVersionAt,
 		versionHistory,
 		type Acknowledgment,
 		type AttestedKind,
@@ -32,6 +34,12 @@
 
 	let { data }: { data: ShellData } = $props();
 	let draftId = $derived(Number(page.params.id));
+	// A history link may address a superseded version: every retained
+	// version stays readable while retained.
+	let requestedVersion = $derived.by(() => {
+		const raw = page.url.searchParams.get('version');
+		return raw === null ? null : Number(raw);
+	});
 	let myUserId = $derived(data.session?.user.id ?? 0);
 	let canAssign = $derived(
 		data.session?.capabilities.includes('assign_training') ?? false
@@ -69,12 +77,16 @@
 
 	async function load() {
 		try {
+			const wanted = requestedVersion;
 			const fetched = await getDraft(draftId);
 			if (fetched.status === 'finalized') {
 				// The envelope is the only permitted presentation of a
 				// finalized record (ADR 0011): if it cannot load, the page
 				// fails closed and presents nothing from live joins.
-				sealed = await finalizedVersion(draftId);
+				sealed =
+					wanted === null
+						? await finalizedVersion(draftId)
+						: await finalizedVersionAt(draftId, wanted);
 				ack = (await getAcknowledgment(draftId)).acknowledgment;
 				versions = (await versionHistory(draftId)).versions;
 			} else {
@@ -121,6 +133,7 @@
 	}
 
 	$effect(() => {
+		void [draftId, requestedVersion];
 		void load();
 	});
 
@@ -379,10 +392,25 @@
 		}
 	}
 
+	let viewingSuperseded = $derived.by(() => {
+		const current = view;
+		const shown = sealed;
+		return (
+			current !== null &&
+			shown !== null &&
+			current.latest_version_number !== null &&
+			shown.meta.version_number < current.latest_version_number
+		);
+	});
+
 	async function verifyNow() {
 		error = '';
 		try {
-			verification = await verifyVersion(draftId);
+			const shown = sealed;
+			verification =
+				shown === null || !viewingSuperseded
+					? await verifyVersion(draftId)
+					: await verifyVersionAt(draftId, shown.meta.version_number);
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : 'the server could not be reached';
 		}
@@ -703,6 +731,13 @@
 	{#if view.status === 'finalized' && sealed !== null}
 		<section class="panel">
 			<h2>Finalized record</h2>
+			{#if viewingSuperseded}
+				<p class="callout">
+					Superseded version {sealed.meta.version_number} — retained and
+					readable; the current version is {view.latest_version_number}.
+					<a href={`/drafts/${draftId}`}>View the current version</a>
+				</p>
+			{/if}
 			<p class="quiet">
 				Version {sealed.meta.version_number} · record schema
 				{sealed.meta.record_schema} · finalized by
@@ -787,6 +822,7 @@
 			</p>
 		</section>
 
+		{#if !viewingSuperseded}
 		<section class="panel">
 			<h2>Acknowledgment</h2>
 			<p class="quiet">Acknowledgment records receipt, not agreement.</p>
@@ -847,6 +883,7 @@
 				{/if}
 			{/if}
 		</section>
+		{/if}
 
 		{#if versions.length > 1}
 			<section class="panel">
@@ -883,13 +920,21 @@
 						</p>
 						<p class="quiet small-note">
 							Content hash: <code>{version.content_hash}</code>
+							·
+							{#if sealed !== null && version.version_number === sealed.meta.version_number}
+								<span class="quiet-inline">shown above</span>
+							{:else if view.latest_version_number !== null && version.version_number === view.latest_version_number}
+								<a href={`/drafts/${draftId}`}>Read</a>
+							{:else}
+								<a href={`/drafts/${draftId}?version=${version.version_number}`}>Read</a>
+							{/if}
 						</p>
 					</div>
 				{/each}
 			</section>
 		{/if}
 
-		{#if view.viewer_may_amend}
+		{#if view.viewer_may_amend && !viewingSuperseded}
 			<section class="panel">
 				<h2>Amend</h2>
 				<p class="quiet">

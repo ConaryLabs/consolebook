@@ -644,13 +644,25 @@ pub struct FinalizedView {
     pub envelope: Value,
 }
 
-/// Reads the finalized version. Access follows the draft's read rule:
-/// finalized records were submitted, so reviewers and contributors see
-/// them alike.
+/// Reads the latest finalized version. Access follows the draft's read
+/// rule: finalized records were submitted, so reviewers and
+/// contributors see them alike.
 pub async fn finalized_view(
     pool: &SqlitePool,
     actor_user_id: i64,
     record_id: i64,
+) -> Result<std::result::Result<Option<FinalizedView>, FinalizeRefusal>> {
+    finalized_view_at(pool, actor_user_id, record_id, None).await
+}
+
+/// Reads one finalized version by number — every retained version stays
+/// readable while retained (`docs/records-integrity.md`), a superseded
+/// original included. `None` asks for the latest.
+pub async fn finalized_view_at(
+    pool: &SqlitePool,
+    actor_user_id: i64,
+    record_id: i64,
+    version_number: Option<i64>,
 ) -> Result<std::result::Result<Option<FinalizedView>, FinalizeRefusal>> {
     let mut conn = pool.acquire().await.context("acquiring connection")?;
     let Some(record) = evaluation_drafts::load_record(&mut conn, record_id).await? else {
@@ -666,9 +678,11 @@ pub async fn finalized_view(
                 u.display_name
          FROM evaluation_version v JOIN user u ON u.id = v.finalized_by
          WHERE v.evaluation_record_id = ?1
+           AND (?2 IS NULL OR v.version_number = ?2)
          ORDER BY v.version_number DESC LIMIT 1",
     )
     .bind(record_id)
+    .bind(version_number)
     .fetch_optional(pool)
     .await
     .context("reading the finalized version")?
@@ -701,12 +715,23 @@ pub struct Verification {
     pub chain_hash_ok: bool,
 }
 
-/// Recomputes both fingerprints from the stored canonical bytes and
-/// compares them with the stored values.
+/// Recomputes both fingerprints of the latest version from its stored
+/// canonical bytes and compares them with the stored values.
 pub async fn verify(
     pool: &SqlitePool,
     actor_user_id: i64,
     record_id: i64,
+) -> Result<std::result::Result<Option<Verification>, FinalizeRefusal>> {
+    verify_at(pool, actor_user_id, record_id, None).await
+}
+
+/// Recomputes both fingerprints of one version by number; `None` asks
+/// for the latest.
+pub async fn verify_at(
+    pool: &SqlitePool,
+    actor_user_id: i64,
+    record_id: i64,
+    version_number: Option<i64>,
 ) -> Result<std::result::Result<Option<Verification>, FinalizeRefusal>> {
     let mut conn = pool.acquire().await.context("acquiring connection")?;
     let Some(record) = evaluation_drafts::load_record(&mut conn, record_id).await? else {
@@ -719,9 +744,11 @@ pub async fn verify(
     let Some(row) = sqlx::query(
         "SELECT canonical_bytes, content_hash, chain_hash, predecessor_id
          FROM evaluation_version WHERE evaluation_record_id = ?1
+           AND (?2 IS NULL OR version_number = ?2)
          ORDER BY version_number DESC LIMIT 1",
     )
     .bind(record_id)
+    .bind(version_number)
     .fetch_optional(pool)
     .await
     .context("reading the finalized version")?

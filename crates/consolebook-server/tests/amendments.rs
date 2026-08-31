@@ -13,7 +13,7 @@ use consolebook_server::amendments::{self, AmendRefusal};
 use consolebook_server::capabilities::RoleBundle;
 use consolebook_server::draft_content::{self, DraftContent, NarrativeEntry, RatingEntry};
 use consolebook_server::draft_review::{self, ReviewDecisionKind};
-use consolebook_server::evaluation_drafts::{self, DraftStatus};
+use consolebook_server::evaluation_drafts::{self, DraftRefusal, DraftStatus};
 use consolebook_server::finalization::{self, FinalizeRefusal};
 use consolebook_server::programs::{
     self, AnchorDef, CompetencyDef, FormCompetencyDef, FormDef, NarrativeDef, PolicyDef,
@@ -391,6 +391,22 @@ async fn amendment_produces_a_chained_successor() {
         .expect("call");
     assert_eq!(refused, Err(AmendRefusal::AmendmentOpen));
 
+    // Opening advanced the revision: a save carrying the prior cycle's
+    // token is a typed stale refusal, never a silent overwrite.
+    let stale_save = draft_content::save(
+        &fx.pool,
+        s.jordan_id,
+        s.record_id,
+        0,
+        &DraftContent {
+            ratings: Vec::new(),
+            narratives: Vec::new(),
+        },
+    )
+    .await
+    .expect("call");
+    assert_eq!(stale_save, Err(DraftRefusal::StaleSave));
+
     // The copy is editable again — the reopened cycle, not the stale
     // approved state — and the correction lands in it.
     let workspace = evaluation_drafts::workspace(&fx.pool, s.jordan_id, s.record_id)
@@ -430,6 +446,24 @@ async fn amendment_produces_a_chained_successor() {
     .await
     .expect("call")
     .expect("saved");
+
+    // The in-progress correction is not the trainee's to see: their
+    // own-record read presents the sealed self — finalized status, no
+    // working copy, no reopened-cycle events, no amendment internals.
+    let mine = evaluation_drafts::workspace(&fx.pool, s.taylor_id, s.record_id)
+        .await
+        .expect("call")
+        .expect("readable");
+    assert_eq!(mine.detail.status, DraftStatus::Finalized);
+    assert!(mine.content.ratings.is_empty() && mine.content.narratives.is_empty());
+    assert!(mine.detail.open_amendment.is_none());
+    assert!(
+        mine.detail
+            .events
+            .iter()
+            .all(|event| event.kind != "contributed"),
+        "the reopened cycle's events stay out of the own-record read"
+    );
 
     // Sealing the correction produces version 2, chained to version 1
     // exactly as ADR 0011 pinned.
@@ -530,6 +564,27 @@ async fn amendment_produces_a_chained_successor() {
         history[0].acknowledgment.as_ref().expect("new act").kind,
         "acknowledged_with_response"
     );
+
+    // Every retained version stays readable — the superseded original
+    // included, for the trainee too — and verifies by number.
+    let original = finalization::finalized_view_at(&fx.pool, s.taylor_id, s.record_id, Some(1))
+        .await
+        .expect("call")
+        .expect("readable")
+        .expect("retained");
+    assert_eq!(original.meta.version_number, 1);
+    assert_eq!(original.envelope["record"]["version_number"], 1);
+    let checked = finalization::verify_at(&fx.pool, s.taylor_id, s.record_id, Some(1))
+        .await
+        .expect("call")
+        .expect("readable")
+        .expect("retained");
+    assert!(checked.content_hash_ok && checked.chain_hash_ok);
+    let missing = finalization::finalized_view_at(&fx.pool, s.taylor_id, s.record_id, Some(3))
+        .await
+        .expect("call")
+        .expect("readable");
+    assert!(missing.is_none());
 }
 
 #[tokio::test]
@@ -760,6 +815,7 @@ async fn amended_record_travels_review_when_configured() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn amendment_api_round_trip() {
     let fx = Fixture::new().await;
     let s = seed(&fx, OPEN_POLICY, "api").await;
@@ -861,4 +917,25 @@ async fn amendment_api_round_trip() {
         body["records"][0]["acknowledgment_kind"],
         serde_json::Value::Null
     );
+
+    let (status, body) = request(
+        fx.app(),
+        "GET",
+        &format!("/api/drafts/{}/versions/1", s.record_id),
+        Some(&taylor),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["envelope"]["record"]["version_number"], 1);
+    let (status, body) = request(
+        fx.app(),
+        "GET",
+        &format!("/api/drafts/{}/versions/9", s.record_id),
+        Some(&taylor),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "no_such_version");
 }

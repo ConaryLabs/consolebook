@@ -174,6 +174,15 @@ pub async fn open(
     .execute(&mut *tx)
     .await
     .context("recording amendment")?;
+    // Opening starts a new editable cycle, so the optimistic-concurrency
+    // token advances with it: a save or finalization carrying a prior
+    // cycle's revision resolves as a typed stale refusal, never a
+    // silent overwrite of the new cycle's copy.
+    sqlx::query("UPDATE evaluation_record SET revision = revision + 1 WHERE id = ?1")
+        .bind(record_id)
+        .execute(&mut *tx)
+        .await
+        .context("advancing the revision")?;
     let (trainee_id, trainee_name, owner): (i64, String, i64) = sqlx::query_as(
         "SELECT e.user_id, u.display_name, r.owner_user_id
          FROM evaluation_record r

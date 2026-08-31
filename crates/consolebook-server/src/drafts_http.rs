@@ -36,6 +36,11 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/drafts/{id}/acknowledgment", get(get_acknowledgment))
         .route("/api/drafts/{id}/amend", post(amend_record))
         .route("/api/drafts/{id}/versions", get(version_history))
+        .route("/api/drafts/{id}/versions/{number}", get(version_at))
+        .route(
+            "/api/drafts/{id}/versions/{number}/verify",
+            get(verify_version_at),
+        )
         .route("/api/my/records", get(my_records))
         .route("/api/reviews/queue", get(review_queue))
 }
@@ -454,6 +459,40 @@ async fn amend_record(
 #[derive(Serialize)]
 struct VersionsBody {
     versions: Vec<amendments::VersionHistoryRow>,
+}
+
+async fn version_at(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path((record_id, number)): Path<(i64, i64)>,
+) -> Result<Response, ApiError> {
+    match finalization::finalized_view_at(&state.pool, current.user.id, record_id, Some(number))
+        .await?
+    {
+        Ok(Some(view)) => Ok(Json(view).into_response()),
+        Ok(None) => Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "no_such_version",
+            "this record has no finalized version with that number",
+        )),
+        Err(refusal) => Err(finalize_refusal(refusal)),
+    }
+}
+
+async fn verify_version_at(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path((record_id, number)): Path<(i64, i64)>,
+) -> Result<Response, ApiError> {
+    match finalization::verify_at(&state.pool, current.user.id, record_id, Some(number)).await? {
+        Ok(Some(verification)) => Ok(Json(verification).into_response()),
+        Ok(None) => Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "no_such_version",
+            "this record has no finalized version with that number",
+        )),
+        Err(refusal) => Err(finalize_refusal(refusal)),
+    }
 }
 
 async fn version_history(

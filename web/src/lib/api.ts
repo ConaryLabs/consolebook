@@ -1025,6 +1025,21 @@ export function versionHistory(
 	return request(`/api/drafts/${draftId}/versions`);
 }
 
+/** One retained version by number — a superseded original included. */
+export function finalizedVersionAt(
+	draftId: number,
+	versionNumber: number
+): Promise<FinalizedView> {
+	return request(`/api/drafts/${draftId}/versions/${versionNumber}`);
+}
+
+export function verifyVersionAt(
+	draftId: number,
+	versionNumber: number
+): Promise<Verification> {
+	return request(`/api/drafts/${draftId}/versions/${versionNumber}/verify`);
+}
+
 export function acknowledgeRecord(
 	draftId: number,
 	kind: TraineeAckKind,

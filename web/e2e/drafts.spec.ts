@@ -425,6 +425,16 @@ test('draft, collaborate, transfer, and submit a daily evaluation', async ({ pag
 		page.getByText('Recomputed from the stored record: both fingerprints match.')
 	).toBeVisible();
 
+	// Every retained version stays readable: the superseded original
+	// opens from the history with its own sealed content.
+	await page.getByRole('link', { name: 'Read', exact: true }).click();
+	await expect(page.getByText('Superseded version 1')).toBeVisible();
+	await expect(
+		page.getByText('Callback 555-0100 (invented) now named; corrected.')
+	).toBeVisible();
+	await page.getByRole('link', { name: 'View the current version' }).click();
+	await expect(page.getByText('Version 2 · record schema')).toBeVisible();
+
 	// The successor never inherits acknowledgment: Taylor's timeline
 	// shows the amended record awaiting them again.
 	await page.getByRole('link', { name: 'Home' }).click();

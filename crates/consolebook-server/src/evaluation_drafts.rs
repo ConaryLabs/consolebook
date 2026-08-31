@@ -768,12 +768,28 @@ pub async fn workspace(
     let Some(record) = load_record(&mut conn, record_id).await? else {
         return Ok(Err(DraftRefusal::NoSuchRecord));
     };
-    let status = status_of(&mut conn, record_id).await?;
+    // For an own-record reader the record presents as its sealed self:
+    // an in-progress correction is a draft about them, not theirs to
+    // see, so the status reads finalized, the working copy stays out of
+    // the response, and the streams stop at the sealed cycle's marks
+    // (the envelope carries exactly that history).
+    let scope = crate::amendments::open_scope(&mut conn, record_id).await?;
+    let (event_cap, decision_cap) = match (&scope, workflow_reader) {
+        (Some(scope), false) => (scope.opened_after_event_id, scope.opened_after_decision_id),
+        _ => (i64::MAX, i64::MAX),
+    };
+    let status = if workflow_reader {
+        status_of(&mut conn, record_id).await?
+    } else {
+        DraftStatus::Finalized
+    };
     let viewer_may_review = reviewer_capability
         && status == DraftStatus::Submitted
         && !crate::draft_access::is_contributor(&mut conn, record_id, actor_user_id).await?;
-    let viewer_may_finalize = reviewer_capability && status != DraftStatus::Finalized;
-    let viewer_may_amend = reviewer_capability && status == DraftStatus::Finalized;
+    let viewer_may_finalize =
+        workflow_reader && reviewer_capability && status != DraftStatus::Finalized;
+    let viewer_may_amend =
+        workflow_reader && reviewer_capability && status == DraftStatus::Finalized;
     let latest_version_number: Option<i64> = sqlx::query_scalar(
         "SELECT MAX(version_number) FROM evaluation_version WHERE evaluation_record_id = ?1",
     )
@@ -781,13 +797,15 @@ pub async fn workspace(
     .fetch_one(&mut *conn)
     .await
     .context("reading latest version number")?;
-    let open_amendment = crate::amendments::open_scope(&mut conn, record_id)
-        .await?
-        .map(|scope| crate::amendments::AmendmentView {
+    let open_amendment = if workflow_reader {
+        scope.map(|scope| crate::amendments::AmendmentView {
             reason: scope.reason,
             opened_by_display_name: scope.opened_by_display_name,
             opened_at: scope.opened_at,
-        });
+        })
+    } else {
+        None
+    };
     let header = sqlx::query(
         "SELECT r.created_at, e.user_id AS trainee_user_id,
                 tu.display_name AS trainee_display_name,
@@ -830,10 +848,11 @@ pub async fn workspace(
          FROM contributor_event ce
          JOIN user au ON au.id = ce.actor_user_id
          LEFT JOIN user tu ON tu.id = ce.to_user_id
-         WHERE ce.evaluation_record_id = ?1
+         WHERE ce.evaluation_record_id = ?1 AND ce.id <= ?2
          ORDER BY ce.id",
     )
     .bind(record_id)
+    .bind(event_cap)
     .fetch_all(&mut *conn)
     .await
     .context("listing contributor events")?
@@ -909,10 +928,11 @@ pub async fn workspace(
                 rd.decision, rd.comment, rd.decided_at
          FROM review_decision rd
          JOIN user u ON u.id = rd.reviewer_user_id
-         WHERE rd.evaluation_record_id = ?1
+         WHERE rd.evaluation_record_id = ?1 AND rd.id <= ?2
          ORDER BY rd.id",
     )
     .bind(record_id)
+    .bind(decision_cap)
     .fetch_all(&mut *conn)
     .await
     .context("listing review decisions")?
@@ -932,7 +952,16 @@ pub async fn workspace(
         record.evaluation_form_id,
     )
     .await?;
-    let content = draft_content::content(&mut conn, record_id).await?;
+    // The working copy travels only to workflow readers; an own-record
+    // reader's content is the stored envelope, fetched separately.
+    let content = if workflow_reader {
+        draft_content::content(&mut conn, record_id).await?
+    } else {
+        draft_content::DraftContent {
+            ratings: Vec::new(),
+            narratives: Vec::new(),
+        }
+    };
     Ok(Ok(DraftWorkspace {
         detail: DraftDetail {
             id: record.id,
