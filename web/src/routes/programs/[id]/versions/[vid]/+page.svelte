@@ -286,6 +286,38 @@
 		<CitationsEditor bind:citations={content.citations} {disabled} heading="" />
 	</section>
 
+	<section class="panel">
+		<h2>Finalization rules</h2>
+		<p class="quiet">
+			What a draft must satisfy before it becomes an immutable record.
+			Versioned with this program version; conservative defaults.
+		</p>
+		<label class="rule">
+			<input
+				type="checkbox"
+				bind:checked={content.finalization_policy.review_approved}
+				{disabled}
+			/>
+			Review approval required before finalization
+		</label>
+		<label class="rule">
+			<input
+				type="checkbox"
+				bind:checked={content.finalization_policy.required_narratives}
+				{disabled}
+			/>
+			Required narratives must carry text
+		</label>
+		<label class="rule">
+			<input
+				type="checkbox"
+				bind:checked={content.finalization_policy.ratings_complete}
+				{disabled}
+			/>
+			Every competency rated or explicitly marked not observed
+		</label>
+	</section>
+
 	<div class="actionbar">
 		<a class="back" href={`/programs/${programId}`}>Back to versions</a>
 		<a href={versionExportPath(versionId)} download>Export</a>
@@ -304,6 +336,11 @@
 {/if}
 
 <style>
+	.rule {
+		display: block;
+		margin: 0.35rem 0;
+	}
+
 	h2 {
 		font-size: 1.1rem;
 		margin: 0 0 0.75rem;

@@ -2,16 +2,21 @@
 	import { page } from '$app/state';
 	import {
 		ApiError,
+		finalizeDraft,
+		finalizedVersion,
 		getDraft,
 		reviewDraft,
 		saveDraftContent,
 		submitDraft,
 		transferDraft,
+		verifyVersion,
 		type DraftContent,
 		type DraftStatus,
 		type DraftView,
+		type FinalizedView,
 		type ReviewDecisionKind,
-		type SkeletonCompetency
+		type SkeletonCompetency,
+		type Verification
 	} from '$lib/api';
 	import { instant } from '$lib/format';
 	import type { ShellData } from '../../+layout';
@@ -35,21 +40,40 @@
 	// concurrent contributor's work is never silently overwritten.
 	let revision = $state(0);
 	let values: Record<number, number | null> = $state({});
+	let notObserved: Record<number, boolean> = $state({});
 	let modifiers: Record<number, Record<number, boolean>> = $state({});
 	let narratives: Record<number, string> = $state({});
+
+	// The sealed record, fetched when the draft is finalized: the page
+	// then presents from the stored envelope, never from live rows
+	// (ADR 0011).
+	let sealed: FinalizedView | null = $state(null);
+	let verification: Verification | null = $state(null);
 
 	async function load() {
 		try {
 			const fetched = await getDraft(draftId);
+			if (fetched.status === 'finalized') {
+				// The envelope is the only permitted presentation of a
+				// finalized record (ADR 0011): if it cannot load, the page
+				// fails closed and presents nothing from live joins.
+				sealed = await finalizedVersion(draftId);
+			} else {
+				sealed = null;
+				verification = null;
+			}
 			view = fetched;
 			const nextValues: Record<number, number | null> = {};
+			const nextObserved: Record<number, boolean> = {};
 			const nextModifiers: Record<number, Record<number, boolean>> = {};
 			for (const competency of fetched.form.competencies) {
 				nextValues[competency.form_competency_id] = null;
+				nextObserved[competency.form_competency_id] = false;
 				nextModifiers[competency.form_competency_id] = {};
 			}
 			for (const rating of fetched.content.ratings) {
 				nextValues[rating.form_competency_id] = rating.value;
+				nextObserved[rating.form_competency_id] = rating.not_observed;
 				const picked: Record<number, boolean> = {};
 				for (const id of rating.modifier_ids) {
 					picked[id] = true;
@@ -64,10 +88,13 @@
 				nextNarratives[entry.form_narrative_id] = entry.text;
 			}
 			values = nextValues;
+			notObserved = nextObserved;
 			modifiers = nextModifiers;
 			narratives = nextNarratives;
 			revision = fetched.revision;
 		} catch (err) {
+			view = null;
+			sealed = null;
 			error = err instanceof ApiError ? err.message : 'the server could not be reached';
 		}
 	}
@@ -99,12 +126,18 @@
 		const ratings = [];
 		for (const competency of current.form.competencies) {
 			const id = competency.form_competency_id;
-			const value = values[id] ?? null;
+			const marked = notObserved[id] ?? false;
+			const value = marked ? null : (values[id] ?? null);
 			const picked = Object.entries(modifiers[id] ?? {})
 				.filter(([, on]) => on)
 				.map(([modifierId]) => Number(modifierId));
-			if (value !== null || picked.length > 0) {
-				ratings.push({ form_competency_id: id, value, modifier_ids: picked });
+			if (value !== null || marked || picked.length > 0) {
+				ratings.push({
+					form_competency_id: id,
+					value,
+					not_observed: marked,
+					modifier_ids: picked
+				});
 			}
 		}
 		const texts = [];
@@ -292,6 +325,45 @@
 				return 'Returned';
 			case 'approved':
 				return 'Approved';
+			case 'finalized':
+				return 'Finalized';
+		}
+	}
+
+	// Sealing: completion rules answer at the act with typed refusals;
+	// the page surfaces them verbatim. Like submission, nothing is
+	// sealed over a failed save, a stale reload, or a revision this
+	// page has not seen.
+	async function finalizeNow() {
+		busy = true;
+		error = '';
+		try {
+			await flushSaves();
+			if (saveState === 'failed' || staleReloaded) {
+				staleReloaded = false;
+				return;
+			}
+			await finalizeDraft(draftId, revision);
+			await load();
+		} catch (err) {
+			if (err instanceof ApiError && err.code === 'stale_save') {
+				await load();
+				error =
+					'The record changed since this page last saw it; review the reloaded content before finalizing.';
+				return;
+			}
+			error = err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function verifyNow() {
+		error = '';
+		try {
+			verification = await verifyVersion(draftId);
+		} catch (err) {
+			error = err instanceof ApiError ? err.message : 'the server could not be reached';
 		}
 	}
 
@@ -326,6 +398,19 @@
 	function anchorLabel(competency: SkeletonCompetency, value: number): string {
 		const anchor = competency.anchors.find((candidate) => candidate.value === value);
 		return anchor ? `${value} — ${anchor.label}` : String(value);
+	}
+
+	function sealedRatingLabel(rating: {
+		value: number | null;
+		scale: { kind: string; anchors: { value: number; label: string }[] };
+	}): string {
+		const anchor = rating.scale.anchors.find(
+			(candidate) => candidate.value === rating.value
+		);
+		if (rating.scale.kind === 'pass_fail' && anchor) {
+			return anchor.label;
+		}
+		return anchor ? `${rating.value} — ${anchor.label}` : String(rating.value);
 	}
 
 	// A select enumerates the scale only while that stays usable; a wider
@@ -374,26 +459,50 @@
 	<section class="panel">
 		<div class="head">
 			<div>
-				<h1>{view.form.form_name}</h1>
-				<p class="quiet">
-					{view.trainee_display_name} · {view.program_name} — v{view.version_number}
-					· owned by {view.owner_display_name}
-				</p>
-				{#each view.sessions as covered (covered.session_id)}
+				{#if view.status === 'finalized' && sealed !== null}
+					<!-- A finalized record presents from its stored envelope
+					     only (ADR 0011): a later rename or session close
+					     changes nothing shown here. -->
+					<h1>{sealed.envelope.form.name}</h1>
 					<p class="quiet">
-						Session {covered.business_date}:
-						{covered.local_start.replace('T', ' ')}
-						{#if covered.local_end}
-							– {covered.local_end.replace('T', ' ')}
-						{/if}
-						<span class="quiet-inline">({covered.timezone})</span>
+						{sealed.envelope.trainee.display_name} ·
+						{sealed.envelope.program.name} —
+						v{sealed.envelope.program.version_number}
 					</p>
-				{/each}
+					{#each sealed.envelope.sessions as covered (covered.utc_start)}
+						<p class="quiet">
+							Session {covered.business_date}:
+							{covered.local_start.replace('T', ' ')}
+							{#if covered.local_end}
+								– {covered.local_end.replace('T', ' ')}
+							{/if}
+							<span class="quiet-inline">({covered.timezone})</span>
+						</p>
+					{/each}
+				{:else}
+					<h1>{view.form.form_name}</h1>
+					<p class="quiet">
+						{view.trainee_display_name} · {view.program_name} — v{view.version_number}
+						· owned by {view.owner_display_name}
+					</p>
+					{#each view.sessions as covered (covered.session_id)}
+						<p class="quiet">
+							Session {covered.business_date}:
+							{covered.local_start.replace('T', ' ')}
+							{#if covered.local_end}
+								– {covered.local_end.replace('T', ' ')}
+							{/if}
+							<span class="quiet-inline">({covered.timezone})</span>
+						</p>
+					{/each}
+				{/if}
 			</div>
 			<div class="workflow">
 				<span
 					class="pill"
-					class:submitted={view.status === 'submitted' || view.status === 'approved'}
+					class:submitted={view.status === 'submitted' ||
+						view.status === 'approved' ||
+						view.status === 'finalized'}
 					class:draft={openStatus(view.status)}
 				>
 					{statusLabel(view.status)}
@@ -411,7 +520,11 @@
 				{/if}
 			</div>
 		</div>
-		{#if view.form.instructions}
+		{#if view.status === 'finalized' && sealed !== null}
+			{#if sealed.envelope.form.instructions}
+				<p class="instructions">{sealed.envelope.form.instructions}</p>
+			{/if}
+		{:else if view.form.instructions}
 			<p class="instructions">{view.form.instructions}</p>
 		{/if}
 		{#if view.status === 'submitted'}
@@ -420,6 +533,10 @@
 			</p>
 		{:else if view.status === 'approved'}
 			<p class="quiet">The draft is approved and stays frozen until finalization.</p>
+		{:else if view.status === 'finalized'}
+			<p class="quiet">
+				The record is finalized and permanent; corrections are amendments.
+			</p>
 		{:else if view.status === 'changes_requested' && view.decisions.length > 0}
 			<p class="callout">
 				Change request: {view.decisions[view.decisions.length - 1].comment}
@@ -456,6 +573,111 @@
 		</section>
 	{/if}
 
+	{#if view.viewer_may_finalize}
+		<section class="panel">
+			<h2>Finalize</h2>
+			<p class="quiet">
+				Finalization seals this record as an immutable version with its
+				content fingerprint. The pinned program version's completion
+				rules answer here; a shortfall is named, never skipped.
+			</p>
+			<div class="row route">
+				<button type="button" disabled={busy} onclick={finalizeNow}>
+					Finalize record
+				</button>
+			</div>
+		</section>
+	{/if}
+
+	{#if view.status === 'finalized' && sealed !== null}
+		<section class="panel">
+			<h2>Finalized record</h2>
+			<p class="quiet">
+				Version {sealed.meta.version_number} · record schema
+				{sealed.meta.record_schema} · finalized by
+				{sealed.envelope.finalization.finalized_by.display_name}
+				<span class="quiet-inline">
+					{instant(sealed.envelope.finalization.finalized_at)}
+				</span>
+			</p>
+			<p class="quiet">
+				{sealed.envelope.trainee.display_name}
+				{#if sealed.envelope.trainee.employee_id}
+					· {sealed.envelope.trainee.employee_id}
+				{/if}
+				{#if sealed.envelope.trainee.title}
+					· {sealed.envelope.trainee.title}
+				{/if}
+			</p>
+			<h3>Ratings</h3>
+			<table class="grid">
+				<thead>
+					<tr>
+						<th>Competency</th>
+						<th>Rating</th>
+						<th>Modifiers</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each sealed.envelope.content.ratings as rating (rating.competency.name)}
+						<tr>
+							<td>
+								<strong>{rating.competency.name}</strong>
+								{#if rating.competency.category}
+									<span class="quiet-inline">({rating.competency.category})</span>
+								{/if}
+							</td>
+							<td>
+								{#if rating.not_observed}
+									Not observed
+								{:else if rating.value !== null}
+									{sealedRatingLabel(rating)}
+								{:else if rating.scale.kind === 'narrative_only'}
+									<span class="quiet-inline">narrative</span>
+								{:else}
+									<span class="quiet-inline">—</span>
+								{/if}
+							</td>
+							<td>{rating.modifiers.map((modifier) => modifier.code).join(' ')}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+			<h3>Narratives</h3>
+			{#each sealed.envelope.content.narratives as narrative (narrative.prompt)}
+				<div class="narrative">
+					<strong>{narrative.prompt}</strong>
+					<p class="sealed-text">{narrative.text ?? ''}</p>
+				</div>
+			{/each}
+			<h3>Integrity</h3>
+			<p class="quiet small-note">Content hash: <code>{sealed.meta.content_hash}</code></p>
+			<p class="quiet small-note">Chain hash: <code>{sealed.meta.chain_hash}</code></p>
+			<div class="row route">
+				<button type="button" class="secondary" onclick={verifyNow}>
+					Verify hashes
+				</button>
+				{#if verification !== null}
+					{#if verification.content_hash_ok && verification.chain_hash_ok}
+						<span class="quiet-inline" role="status">
+							Recomputed from the stored record: both fingerprints match.
+						</span>
+					{:else}
+						<span class="error" role="alert">
+							The stored fingerprints do not match the stored record.
+						</span>
+					{/if}
+				{/if}
+			</div>
+			<p class="quiet small-note">
+				Verification proves this record reproduces consistently from what is
+				stored; it is not by itself proof against a writer with direct
+				database access.
+			</p>
+		</section>
+	{/if}
+
+	{#if view.status !== 'finalized'}
 	<section class="panel">
 		<h2>Ratings</h2>
 		{#if view.form.competencies.length === 0}
@@ -507,7 +729,8 @@
 								{:else if competency.scale_kind === 'pass_fail'}
 									<select
 										aria-label={`Rate ${competency.name}`}
-										disabled={!editable}
+										disabled={!editable ||
+											notObserved[competency.form_competency_id]}
 										bind:value={values[competency.form_competency_id]}
 										onchange={scheduleSave}
 									>
@@ -522,14 +745,16 @@
 										type="number"
 										min={competency.min_value}
 										max={competency.max_value}
-										disabled={!editable}
+										disabled={!editable ||
+											notObserved[competency.form_competency_id]}
 										bind:value={values[competency.form_competency_id]}
 										oninput={scheduleSave}
 									/>
 								{:else}
 									<select
 										aria-label={`Rate ${competency.name}`}
-										disabled={!editable}
+										disabled={!editable ||
+											notObserved[competency.form_competency_id]}
 										bind:value={values[competency.form_competency_id]}
 										onchange={scheduleSave}
 									>
@@ -538,6 +763,27 @@
 											<option {value}>{anchorLabel(competency, value)}</option>
 										{/each}
 									</select>
+								{/if}
+								{#if competency.scale_kind !== 'narrative_only'}
+									<label
+										class="modifier"
+										title="No opportunity to observe this competency today"
+									>
+										<input
+											type="checkbox"
+											disabled={!editable}
+											bind:checked={
+												notObserved[competency.form_competency_id]
+											}
+											onchange={() => {
+												if (notObserved[competency.form_competency_id]) {
+													values[competency.form_competency_id] = null;
+												}
+												scheduleSave();
+											}}
+										/>
+										Not observed
+									</label>
 								{/if}
 							</td>
 							{#if view.form.modifiers.length > 0}
@@ -590,35 +836,68 @@
 			{/each}
 		{/if}
 	</section>
+	{/if}
 
 	<section class="panel">
 		<h2>Attribution</h2>
-		<ul class="history">
-			{#each view.events as event (event.id)}
-				<li>
-					<strong>{event.actor_display_name}</strong>
-					{eventLine(event.kind)}
-					{#if event.to_display_name}
-						<strong>{event.to_display_name}</strong>
-					{/if}
-					<span class="quiet-inline">{instant(event.recorded_at)}</span>
-				</li>
-			{/each}
-		</ul>
-		{#if view.decisions.length > 0}
-			<h3>Review decisions</h3>
+		{#if view.status === 'finalized' && sealed !== null}
+			<!-- Sealed identities: a contributor or reviewer renamed later
+			     keeps the name the record was finalized with (ADR 0011). -->
 			<ul class="history">
-				{#each view.decisions as decision (decision.id)}
+				{#each sealed.envelope.attribution as event, index (index)}
 					<li>
-						<strong>{decision.reviewer_display_name}</strong>
-						{decisionLabel(decision.decision)}
-						<span class="quiet-inline">{instant(decision.decided_at)}</span>
-						{#if decision.comment}
-							<p class="decision-comment">{decision.comment}</p>
+						<strong>{event.actor.display_name}</strong>
+						{eventLine(event.kind)}
+						{#if event.to}
+							<strong>{event.to.display_name}</strong>
 						{/if}
+						<span class="quiet-inline">{instant(event.recorded_at)}</span>
 					</li>
 				{/each}
 			</ul>
+			{#if sealed.envelope.review.length > 0}
+				<h3>Review decisions</h3>
+				<ul class="history">
+					{#each sealed.envelope.review as decision, index (index)}
+						<li>
+							<strong>{decision.reviewer.display_name}</strong>
+							{decisionLabel(decision.decision as ReviewDecisionKind)}
+							<span class="quiet-inline">{instant(decision.decided_at)}</span>
+							{#if decision.comment}
+								<p class="decision-comment">{decision.comment}</p>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		{:else}
+			<ul class="history">
+				{#each view.events as event (event.id)}
+					<li>
+						<strong>{event.actor_display_name}</strong>
+						{eventLine(event.kind)}
+						{#if event.to_display_name}
+							<strong>{event.to_display_name}</strong>
+						{/if}
+						<span class="quiet-inline">{instant(event.recorded_at)}</span>
+					</li>
+				{/each}
+			</ul>
+			{#if view.decisions.length > 0}
+				<h3>Review decisions</h3>
+				<ul class="history">
+					{#each view.decisions as decision (decision.id)}
+						<li>
+							<strong>{decision.reviewer_display_name}</strong>
+							{decisionLabel(decision.decision)}
+							<span class="quiet-inline">{instant(decision.decided_at)}</span>
+							{#if decision.comment}
+								<p class="decision-comment">{decision.comment}</p>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			{/if}
 		{/if}
 		{#if view.snapshots.length > 0}
 			<p class="quiet">
@@ -761,6 +1040,13 @@
 		background: #f4f6f8;
 		border-left: 3px solid #b9c2cc;
 		white-space: pre-wrap;
+	}
+	.sealed-text {
+		white-space: pre-wrap;
+		margin: 0.25rem 0 0.75rem;
+	}
+	code {
+		word-break: break-all;
 	}
 	.callout {
 		padding: 0.45rem 0.6rem;

@@ -11,7 +11,7 @@ use consolebook_server::data_dir::DataDir;
 use consolebook_server::program_export::{self, ImportTarget};
 use consolebook_server::programs::{
     self, AnchorDef, CitationDef, CompetencyDef, FormCompetencyDef, FormDef, ModifierDef,
-    NarrativeDef, PhaseDef, RecordType, ScaleDef, ScaleKind, TaskDef, TransitionDef,
+    NarrativeDef, PhaseDef, PolicyDef, RecordType, ScaleDef, ScaleKind, TaskDef, TransitionDef,
     TransitionKind, VersionContent,
 };
 use consolebook_server::{enrollments, setup, storage, users};
@@ -271,6 +271,7 @@ fn complete_content() -> VersionContent {
             }],
         }],
         citations: vec![citation("Example Accreditation Program", "3rd", "6.1", "")],
+        finalization_policy: PolicyDef::default(),
     }
 }
 

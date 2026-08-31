@@ -12,8 +12,8 @@ use consolebook_server::draft_content::{self, DraftContent, NarrativeEntry, Rati
 use consolebook_server::draft_review::{self, ReviewDecisionKind};
 use consolebook_server::evaluation_drafts::{self, DraftRefusal, DraftStatus};
 use consolebook_server::programs::{
-    self, AnchorDef, CompetencyDef, FormCompetencyDef, FormDef, NarrativeDef, PhaseDef, RecordType,
-    ScaleDef, ScaleKind, TaskDef, TransitionDef, TransitionKind, VersionContent,
+    self, AnchorDef, CompetencyDef, FormCompetencyDef, FormDef, NarrativeDef, PhaseDef, PolicyDef,
+    RecordType, ScaleDef, ScaleKind, TaskDef, TransitionDef, TransitionKind, VersionContent,
 };
 use consolebook_server::training_sessions::{self, SessionInput};
 use consolebook_server::{assignments, data_dir::DataDir, enrollments, setup, storage, users};
@@ -259,6 +259,13 @@ fn evaluated_content() -> VersionContent {
             ],
         }],
         citations: Vec::new(),
+        // Review depth is under test here; the content-completeness
+        // rules are exercised by tests/finalization.rs.
+        finalization_policy: PolicyDef {
+            review_approved: true,
+            required_narratives: false,
+            ratings_complete: false,
+        },
     }
 }
 
@@ -358,6 +365,7 @@ fn content_with(eci: i64, value: i64, most: i64, text: &str) -> DraftContent {
         ratings: vec![RatingEntry {
             form_competency_id: eci,
             value: Some(value),
+            not_observed: false,
             modifier_ids: Vec::new(),
         }],
         narratives: vec![NarrativeEntry {

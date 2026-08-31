@@ -6,6 +6,7 @@
 pub mod assignments;
 pub mod audit;
 pub mod backup;
+pub mod canonical;
 pub mod capabilities;
 pub mod data_dir;
 pub mod doctor;
@@ -14,6 +15,7 @@ pub mod draft_review;
 pub mod drafts_http;
 pub mod enrollments;
 pub mod evaluation_drafts;
+pub mod finalization;
 pub mod http;
 pub mod lifecycle;
 pub mod notices;

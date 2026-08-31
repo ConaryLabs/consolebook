@@ -6,8 +6,8 @@ use consolebook_server::data_dir::DataDir;
 use consolebook_server::program_export::{self, ImportRefusal, ImportTarget};
 use consolebook_server::programs::{
     self, AnchorDef, AuthorRefusal, CitationDef, CompetencyDef, FormCompetencyDef, FormDef,
-    ModifierDef, NarrativeDef, PhaseDef, ProgramRefusal, PublishRefusal, RecordType, ScaleDef,
-    ScaleKind, TaskDef, TransitionDef, TransitionKind, VersionContent,
+    ModifierDef, NarrativeDef, PhaseDef, PolicyDef, ProgramRefusal, PublishRefusal, RecordType,
+    ScaleDef, ScaleKind, TaskDef, TransitionDef, TransitionKind, VersionContent,
 };
 use consolebook_server::{setup, storage, users};
 
@@ -281,6 +281,7 @@ fn full_content() -> VersionContent {
             "6.1",
             "program-level mapping",
         )],
+        finalization_policy: PolicyDef::default(),
     }
 }
 
@@ -329,6 +330,7 @@ fn in_service_content() -> VersionContent {
             narratives: Vec::new(),
         }],
         citations: Vec::new(),
+        finalization_policy: PolicyDef::default(),
     }
 }
 

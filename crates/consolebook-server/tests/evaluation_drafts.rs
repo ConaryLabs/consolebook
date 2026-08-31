@@ -12,7 +12,7 @@ use consolebook_server::draft_content::{self, DraftContent, NarrativeEntry, Rati
 use consolebook_server::evaluation_drafts::{self, DraftRefusal, DraftStatus};
 use consolebook_server::programs::{
     self, AnchorDef, CompetencyDef, FormCompetencyDef, FormDef, ModifierDef, NarrativeDef,
-    PhaseDef, RecordType, ScaleDef, ScaleKind, TaskDef, TransitionDef, TransitionKind,
+    PhaseDef, PolicyDef, RecordType, ScaleDef, ScaleKind, TaskDef, TransitionDef, TransitionKind,
     VersionContent,
 };
 use consolebook_server::training_sessions::{self, Disposition, SessionInput};
@@ -360,6 +360,13 @@ fn evaluated_content() -> VersionContent {
             ],
         }],
         citations: Vec::new(),
+        // Review depth is under test here; the content-completeness
+        // rules are exercised by tests/finalization.rs.
+        finalization_policy: PolicyDef {
+            review_approved: true,
+            required_narratives: false,
+            ratings_complete: false,
+        },
     }
 }
 
@@ -426,6 +433,7 @@ fn rating(form_competency_id: i64, value: Option<i64>, modifier_ids: Vec<i64>) -
     RatingEntry {
         form_competency_id,
         value,
+        not_observed: false,
         modifier_ids,
     }
 }

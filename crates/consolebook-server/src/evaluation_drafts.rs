@@ -69,6 +69,15 @@ pub enum DraftRefusal {
     NotSubmitted,
     /// A change request explains itself.
     CommentRequired,
+    /// A finalized record is permanent; corrections are amendments
+    /// (Milestone 4 slice 3).
+    DraftFinalized,
+    /// The pinned version requires every required narrative before
+    /// submission or finalization (ADR 0011).
+    NarrativesIncomplete,
+    /// The pinned version requires every competency rated or marked
+    /// not observed before submission or finalization (ADR 0011).
+    RatingsIncomplete,
 }
 
 /// Workflow status derived from the latest contributor event plus the
@@ -82,6 +91,9 @@ pub enum DraftStatus {
     ChangesRequested,
     Returned,
     Approved,
+    /// An immutable `EvaluationVersion` exists (ADR 0011); terminal
+    /// for the working copy.
+    Finalized,
 }
 
 impl DraftStatus {
@@ -91,6 +103,7 @@ impl DraftStatus {
         match self {
             Self::Submitted => Some(DraftRefusal::DraftSubmitted),
             Self::Approved => Some(DraftRefusal::DraftApproved),
+            Self::Finalized => Some(DraftRefusal::DraftFinalized),
             Self::Draft | Self::ChangesRequested | Self::Returned => None,
         }
     }
@@ -131,6 +144,17 @@ pub(crate) async fn load_record(
 }
 
 pub(crate) async fn status_of(conn: &mut SqliteConnection, record_id: i64) -> Result<DraftStatus> {
+    // A finalized version is terminal, whatever the streams say after
+    // it (nothing can say anything: the record is frozen for good).
+    let finalized: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM evaluation_version WHERE evaluation_record_id = ?1")
+            .bind(record_id)
+            .fetch_optional(&mut *conn)
+            .await
+            .context("checking for a finalized version")?;
+    if finalized.is_some() {
+        return Ok(DraftStatus::Finalized);
+    }
     let latest: Option<String> = sqlx::query_scalar(
         "SELECT kind FROM contributor_event
          WHERE evaluation_record_id = ?1
@@ -613,6 +637,7 @@ pub async fn transfer(
 /// the working copy. The submission carries the revision the submitter
 /// viewed, so content another contributor saved meanwhile is never
 /// frozen sight unseen.
+#[allow(clippy::too_many_lines)]
 pub async fn submit(
     pool: &SqlitePool,
     actor_user_id: i64,
@@ -651,6 +676,19 @@ pub async fn submit(
     let revision_now: i64 = row.get("revision");
     if expected_revision != revision_now {
         return storage::refuse(tx, DraftRefusal::StaleSave).await;
+    }
+    // Completion rules gate the path toward finalization here too
+    // (ADR 0011): a draft never enters review missing what finalization
+    // will demand, so an approved draft cannot wedge between a frozen
+    // copy and a failing rule.
+    let policy = crate::finalization::policy(&mut tx, record.program_version_id).await?;
+    if policy.required_narratives
+        && crate::finalization::narratives_incomplete(&mut tx, &record).await?
+    {
+        return storage::refuse(tx, DraftRefusal::NarrativesIncomplete).await;
+    }
+    if policy.ratings_complete && crate::finalization::ratings_incomplete(&mut tx, &record).await? {
+        return storage::refuse(tx, DraftRefusal::RatingsIncomplete).await;
     }
     let content = draft_content::content_json(&mut tx, record_id).await?;
     let now = OffsetDateTime::now_utc().unix_timestamp();
@@ -790,6 +828,10 @@ pub struct DraftDetail {
     /// Whether the caller may decide this draft right now: a qualified
     /// non-contributor reviewer looking at a submitted draft.
     pub viewer_may_review: bool,
+    /// Whether the caller may attempt finalization: a reviewer looking
+    /// at an unfinalized record. Completion rules answer at the act
+    /// (ADR 0011).
+    pub viewer_may_finalize: bool,
     pub created_at: i64,
     /// The working copy's optimistic-concurrency revision; every save
     /// carries the revision it read.
@@ -835,6 +877,7 @@ pub async fn workspace(
     let viewer_may_review = reviewer_capability
         && status == DraftStatus::Submitted
         && !is_contributor(&mut conn, record_id, actor_user_id).await?;
+    let viewer_may_finalize = reviewer_capability && status != DraftStatus::Finalized;
     let header = sqlx::query(
         "SELECT r.created_at, e.user_id AS trainee_user_id,
                 tu.display_name AS trainee_display_name,
@@ -989,6 +1032,7 @@ pub async fn workspace(
             eligible_recipients,
             decisions,
             viewer_may_review,
+            viewer_may_finalize,
             created_at: header.get("created_at"),
             revision: record.revision,
         },

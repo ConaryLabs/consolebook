@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::draft_content::{self, DraftContent, FormSkeleton};
 use crate::draft_review::{self, ReviewDecisionKind};
 use crate::evaluation_drafts::{self, DraftDetail, DraftRefusal};
+use crate::finalization::{self, FinalizeRefusal};
 use crate::http::{ApiError, AppState, CurrentUser};
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -25,6 +26,9 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/drafts/{id}/transfer", post(transfer_draft))
         .route("/api/drafts/{id}/submit", post(submit_draft))
         .route("/api/drafts/{id}/review", post(review_draft))
+        .route("/api/drafts/{id}/finalize", post(finalize_draft))
+        .route("/api/drafts/{id}/version", get(finalized_version))
+        .route("/api/drafts/{id}/version/verify", get(verify_version))
         .route("/api/reviews/queue", get(review_queue))
 }
 
@@ -128,6 +132,21 @@ fn draft_refusal(refusal: &DraftRefusal) -> ApiError {
             StatusCode::CONFLICT,
             "draft_approved",
             "an approved draft stays frozen until finalization",
+        ),
+        DraftRefusal::DraftFinalized => ApiError::new(
+            StatusCode::CONFLICT,
+            "draft_finalized",
+            "a finalized record is permanent; corrections are amendments",
+        ),
+        DraftRefusal::NarrativesIncomplete => ApiError::new(
+            StatusCode::CONFLICT,
+            "narratives_incomplete",
+            "every required narrative carries text before submission",
+        ),
+        DraftRefusal::RatingsIncomplete => ApiError::new(
+            StatusCode::CONFLICT,
+            "ratings_incomplete",
+            "every competency is rated or explicitly marked not observed",
         ),
         DraftRefusal::SelfReview => ApiError::new(
             StatusCode::FORBIDDEN,
@@ -295,6 +314,93 @@ async fn review_draft(
     {
         Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
         Err(refusal) => Err(draft_refusal(&refusal)),
+    }
+}
+
+fn finalize_refusal(refusal: FinalizeRefusal) -> ApiError {
+    match refusal {
+        FinalizeRefusal::NoSuchRecord => {
+            ApiError::new(StatusCode::NOT_FOUND, "no_such_record", "no such draft")
+        }
+        FinalizeRefusal::CapabilityRequired => ApiError::new(
+            StatusCode::FORBIDDEN,
+            "capability_required",
+            "this action is not available to this account",
+        ),
+        FinalizeRefusal::AlreadyFinalized => ApiError::new(
+            StatusCode::CONFLICT,
+            "already_finalized",
+            "a finalized record is permanent; corrections are amendments",
+        ),
+        FinalizeRefusal::NotApproved => ApiError::new(
+            StatusCode::CONFLICT,
+            "not_approved",
+            "this program version requires review approval before finalization",
+        ),
+        FinalizeRefusal::NarrativesIncomplete => ApiError::new(
+            StatusCode::CONFLICT,
+            "narratives_incomplete",
+            "every required narrative carries text before finalization",
+        ),
+        FinalizeRefusal::RatingsIncomplete => ApiError::new(
+            StatusCode::CONFLICT,
+            "ratings_incomplete",
+            "every competency is rated or explicitly marked not observed",
+        ),
+        FinalizeRefusal::StaleSave => ApiError::new(
+            StatusCode::CONFLICT,
+            "stale_save",
+            "the record changed since it was viewed; review the latest content",
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct FinalizeRequest {
+    revision: i64,
+}
+
+async fn finalize_draft(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(record_id): Path<i64>,
+    Json(req): Json<FinalizeRequest>,
+) -> Result<Response, ApiError> {
+    match finalization::finalize(&state.pool, current.user.id, record_id, req.revision).await? {
+        Ok(meta) => Ok(Json(meta).into_response()),
+        Err(refusal) => Err(finalize_refusal(refusal)),
+    }
+}
+
+async fn finalized_version(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(record_id): Path<i64>,
+) -> Result<Response, ApiError> {
+    match finalization::finalized_view(&state.pool, current.user.id, record_id).await? {
+        Ok(Some(view)) => Ok(Json(view).into_response()),
+        Ok(None) => Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_finalized",
+            "this record has no finalized version",
+        )),
+        Err(refusal) => Err(finalize_refusal(refusal)),
+    }
+}
+
+async fn verify_version(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(record_id): Path<i64>,
+) -> Result<Response, ApiError> {
+    match finalization::verify(&state.pool, current.user.id, record_id).await? {
+        Ok(Some(verification)) => Ok(Json(verification).into_response()),
+        Ok(None) => Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_finalized",
+            "this record has no finalized version",
+        )),
+        Err(refusal) => Err(finalize_refusal(refusal)),
     }
 }
 

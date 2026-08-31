@@ -24,6 +24,10 @@ use crate::storage;
 pub struct RatingEntry {
     pub form_competency_id: i64,
     pub value: Option<i64>,
+    /// The explicit "not observed today" marking (ADR 0011): a typed
+    /// alternative to a value, never combined with one.
+    #[serde(default)]
+    pub not_observed: bool,
     #[serde(default)]
     pub modifier_ids: Vec<i64>,
 }
@@ -200,7 +204,7 @@ pub(crate) async fn skeleton(
 
 pub(crate) async fn content(conn: &mut SqliteConnection, record_id: i64) -> Result<DraftContent> {
     let rating_rows = sqlx::query(
-        "SELECT id, form_competency_id, value FROM draft_rating
+        "SELECT id, form_competency_id, value, not_observed FROM draft_rating
          WHERE evaluation_record_id = ?1 ORDER BY form_competency_id",
     )
     .bind(record_id)
@@ -221,6 +225,7 @@ pub(crate) async fn content(conn: &mut SqliteConnection, record_id: i64) -> Resu
         ratings.push(RatingEntry {
             form_competency_id: row.get("form_competency_id"),
             value: row.get("value"),
+            not_observed: row.get::<i64, _>("not_observed") != 0,
             modifier_ids,
         });
     }
@@ -317,19 +322,27 @@ pub async fn save(
             return storage::refuse(tx, DraftRefusal::NoSuchFormCompetency).await;
         };
         let kind: String = scale.get("kind");
-        match (kind.as_str(), rating.value) {
-            ("narrative_only", Some(_)) => {
+        if rating.not_observed {
+            // The explicit marker replaces a value (ADR 0011) and only
+            // applies where a value could exist.
+            if rating.value.is_some() || kind == "narrative_only" {
                 return storage::refuse(tx, DraftRefusal::ValueNotAllowed).await;
             }
-            ("narrative_only", None) | ("pass_fail", Some(0 | 1)) => {}
-            ("anchored_numeric", Some(value)) => {
-                let min: i64 = scale.get("min_value");
-                let max: i64 = scale.get("max_value");
-                if value < min || value > max {
-                    return storage::refuse(tx, DraftRefusal::ValueOutOfRange).await;
+        } else {
+            match (kind.as_str(), rating.value) {
+                ("narrative_only", Some(_)) => {
+                    return storage::refuse(tx, DraftRefusal::ValueNotAllowed).await;
                 }
+                ("narrative_only", None) | ("pass_fail", Some(0 | 1)) => {}
+                ("anchored_numeric", Some(value)) => {
+                    let min: i64 = scale.get("min_value");
+                    let max: i64 = scale.get("max_value");
+                    if value < min || value > max {
+                        return storage::refuse(tx, DraftRefusal::ValueOutOfRange).await;
+                    }
+                }
+                _ => return storage::refuse(tx, DraftRefusal::ValueOutOfRange).await,
             }
-            _ => return storage::refuse(tx, DraftRefusal::ValueOutOfRange).await,
         }
         for modifier_id in &rating.modifier_ids {
             let found: Option<i64> = sqlx::query_scalar(
@@ -389,13 +402,15 @@ pub async fn save(
     for rating in &input.ratings {
         let inserted = sqlx::query(
             "INSERT INTO draft_rating
-                 (evaluation_record_id, program_version_id, form_competency_id, value)
-             VALUES (?1, ?2, ?3, ?4)",
+                 (evaluation_record_id, program_version_id, form_competency_id,
+                  value, not_observed)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
         )
         .bind(record_id)
         .bind(record.program_version_id)
         .bind(rating.form_competency_id)
         .bind(rating.value)
+        .bind(i64::from(rating.not_observed))
         .execute(&mut *tx)
         .await
         .context("writing rating")?;
