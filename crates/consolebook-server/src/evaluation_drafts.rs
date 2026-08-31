@@ -76,6 +76,18 @@ pub enum DraftRefusal {
     /// The pinned version requires every competency rated or marked
     /// not observed before submission or finalization (ADR 0011).
     RatingsIncomplete,
+    NoSuchEnrollment,
+    /// The pinned version defines no `weekly_summary` form.
+    NoSummaryForm,
+    /// Daily links belong to weekly summaries (ADR 0013).
+    NotASummary,
+    /// A summary links finalized daily reports.
+    NotADaily,
+    /// A summary links its own enrollment's daily reports.
+    WrongEnrollment,
+    NoSuchVersion,
+    DuplicateLink,
+    NoSuchLink,
 }
 
 /// Workflow status derived from the latest contributor event plus the
@@ -704,6 +716,10 @@ pub struct DraftDetail {
     pub trainee_display_name: String,
     pub program_name: String,
     pub version_number: i64,
+    /// The pinned form's record type; weekly summaries carry links.
+    pub record_type: String,
+    /// The pinned daily links (weekly summaries; empty otherwise).
+    pub summary_links: Vec<crate::summaries::SummaryLink>,
     pub sessions: Vec<CoveredSession>,
     pub events: Vec<ContributorEventRow>,
     pub snapshots: Vec<SnapshotMeta>,
@@ -810,18 +826,27 @@ pub async fn workspace(
         "SELECT r.created_at, e.user_id AS trainee_user_id,
                 tu.display_name AS trainee_display_name,
                 ou.display_name AS owner_display_name,
-                pv.name AS program_name, pv.version_number
+                pv.name AS program_name, pv.version_number,
+                f.record_type
          FROM evaluation_record r
          JOIN enrollment e ON e.id = r.enrollment_id
          JOIN user tu ON tu.id = e.user_id
          JOIN user ou ON ou.id = r.owner_user_id
          JOIN program_version pv ON pv.id = r.program_version_id
+         JOIN evaluation_form f ON f.id = r.evaluation_form_id
          WHERE r.id = ?1",
     )
     .bind(record_id)
     .fetch_one(&mut *conn)
     .await
     .context("reading record header")?;
+    // Working-copy state travels to workflow readers; an own-record
+    // reader's coverage is the sealed envelope's daily_reports.
+    let summary_links = if workflow_reader {
+        crate::summaries::links(&mut conn, record_id).await?
+    } else {
+        Vec::new()
+    };
     let sessions = sqlx::query(
         "SELECT s.id, s.business_date, s.timezone, s.local_start, s.local_end
          FROM evaluation_session es
@@ -975,6 +1000,8 @@ pub async fn workspace(
             trainee_display_name: header.get("trainee_display_name"),
             program_name: header.get("program_name"),
             version_number: header.get("version_number"),
+            record_type: header.get("record_type"),
+            summary_links,
             sessions,
             events,
             snapshots,

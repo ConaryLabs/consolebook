@@ -15,8 +15,10 @@ use sha2::{Digest, Sha256};
 /// The canonicalization identifier stamped into every envelope.
 pub const CANONICALIZATION: &str = "jcs-v1";
 
-/// The record schema this build writes.
-pub const RECORD_SCHEMA: i64 = 1;
+/// The record schema this build writes. Schema 2 added the
+/// `daily_reports` member (ADR 0013); schema-1 bytes remain valid and
+/// present under their own stored schema.
+pub const RECORD_SCHEMA: i64 = 2;
 
 /// Chain-hash domain separator (`docs/records-integrity.md`).
 const CHAIN_DOMAIN: &[u8] = b"consolebook-version-v1";

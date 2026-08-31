@@ -34,6 +34,8 @@ pub mod session_time;
 pub mod sessions;
 pub mod setup;
 pub mod storage;
+pub mod summaries;
+pub mod task_signoffs;
 pub mod training_http;
 pub mod training_sessions;
 pub mod users;

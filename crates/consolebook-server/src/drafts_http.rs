@@ -18,6 +18,7 @@ use crate::draft_review::{self, ReviewDecisionKind};
 use crate::evaluation_drafts::{self, DraftDetail, DraftRefusal};
 use crate::finalization::{self, FinalizeRefusal};
 use crate::http::{ApiError, AppState, CurrentUser};
+use crate::summaries;
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -43,6 +44,14 @@ pub(crate) fn routes() -> Router<AppState> {
         )
         .route("/api/my/records", get(my_records))
         .route("/api/reviews/queue", get(review_queue))
+        .route(
+            "/api/enrollments/{id}/summary-forms",
+            get(list_summary_forms),
+        )
+        .route("/api/enrollments/{id}/weekly-summary", post(create_summary))
+        .route("/api/drafts/{id}/linkable-dailies", get(linkable_dailies))
+        .route("/api/drafts/{id}/links", post(add_summary_link))
+        .route("/api/drafts/{id}/links/remove", post(remove_summary_link))
 }
 
 // ------------------------------------------------------ refusal mapping
@@ -175,6 +184,46 @@ fn draft_refusal(refusal: &DraftRefusal) -> ApiError {
             StatusCode::UNPROCESSABLE_ENTITY,
             "comment_required",
             "a change request explains itself; add a comment",
+        ),
+        DraftRefusal::NoSuchEnrollment => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "no_such_enrollment",
+            "no such enrollment",
+        ),
+        DraftRefusal::NoSummaryForm => ApiError::new(
+            StatusCode::CONFLICT,
+            "no_summary_form",
+            "the pinned version defines no weekly summary form",
+        ),
+        DraftRefusal::NotASummary => ApiError::new(
+            StatusCode::CONFLICT,
+            "not_a_summary",
+            "daily links belong to weekly summaries",
+        ),
+        DraftRefusal::NotADaily => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "not_a_daily",
+            "a summary links finalized daily reports",
+        ),
+        DraftRefusal::WrongEnrollment => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "wrong_enrollment",
+            "a summary links its own enrollment's daily reports",
+        ),
+        DraftRefusal::NoSuchVersion => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "no_such_version",
+            "no such finalized version",
+        ),
+        DraftRefusal::DuplicateLink => ApiError::new(
+            StatusCode::CONFLICT,
+            "duplicate_link",
+            "this version is already linked",
+        ),
+        DraftRefusal::NoSuchLink => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "no_such_link",
+            "this version is not linked",
         ),
     }
 }
@@ -503,6 +552,98 @@ async fn version_history(
     match amendments::history(&state.pool, current.user.id, record_id).await? {
         Ok(versions) => Ok(Json(VersionsBody { versions }).into_response()),
         Err(refusal) => Err(amend_refusal(refusal)),
+    }
+}
+
+async fn list_summary_forms(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(enrollment_id): Path<i64>,
+) -> Result<Response, ApiError> {
+    match summaries::list_summary_forms(&state.pool, current.user.id, enrollment_id).await? {
+        Ok(forms) => Ok(Json(DailyFormsBody { forms }).into_response()),
+        Err(refusal) => Err(draft_refusal(&refusal)),
+    }
+}
+
+async fn create_summary(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(enrollment_id): Path<i64>,
+    Json(req): Json<CreateDraftRequest>,
+) -> Result<Response, ApiError> {
+    match summaries::create(
+        &state.pool,
+        current.user.id,
+        enrollment_id,
+        req.evaluation_form_id,
+    )
+    .await?
+    {
+        Ok(id) => Ok((StatusCode::CREATED, Json(CreatedBody { id })).into_response()),
+        Err(refusal) => Err(draft_refusal(&refusal)),
+    }
+}
+
+#[derive(Serialize)]
+struct LinkableBody {
+    dailies: Vec<summaries::SummaryLink>,
+}
+
+async fn linkable_dailies(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(record_id): Path<i64>,
+) -> Result<Response, ApiError> {
+    match summaries::linkable(&state.pool, current.user.id, record_id).await? {
+        Ok(dailies) => Ok(Json(LinkableBody { dailies }).into_response()),
+        Err(refusal) => Err(draft_refusal(&refusal)),
+    }
+}
+
+#[derive(Deserialize)]
+struct LinkRequest {
+    daily_version_id: i64,
+    revision: i64,
+}
+
+async fn add_summary_link(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(record_id): Path<i64>,
+    Json(req): Json<LinkRequest>,
+) -> Result<Response, ApiError> {
+    match summaries::add_link(
+        &state.pool,
+        current.user.id,
+        record_id,
+        req.daily_version_id,
+        req.revision,
+    )
+    .await?
+    {
+        Ok(revision) => Ok(Json(SavedBody { revision }).into_response()),
+        Err(refusal) => Err(draft_refusal(&refusal)),
+    }
+}
+
+async fn remove_summary_link(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(record_id): Path<i64>,
+    Json(req): Json<LinkRequest>,
+) -> Result<Response, ApiError> {
+    match summaries::remove_link(
+        &state.pool,
+        current.user.id,
+        record_id,
+        req.daily_version_id,
+        req.revision,
+    )
+    .await?
+    {
+        Ok(revision) => Ok(Json(SavedBody { revision }).into_response()),
+        Err(refusal) => Err(draft_refusal(&refusal)),
     }
 }
 

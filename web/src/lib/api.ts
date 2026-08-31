@@ -791,6 +791,8 @@ export interface DraftView {
 	snapshots: SnapshotMeta[];
 	eligible_recipients: EligibleRecipient[];
 	decisions: ReviewDecision[];
+	record_type: RecordType;
+	summary_links: SummaryLink[];
 	viewer_may_review: boolean;
 	viewer_may_finalize: boolean;
 	viewer_may_amend: boolean;
@@ -916,6 +918,8 @@ export interface RecordEnvelope {
 	form: { name: string; instructions: string; record_type: string };
 	instance: string;
 	program: { name: string; version_number: number; label: string };
+	/** Schema 2 (ADR 0013): the exact daily versions a summary covers. */
+	daily_reports?: { content_hash: string; record_id: number; version_number: number }[];
 	record: {
 		id: number;
 		version_number: number;
@@ -1070,6 +1074,92 @@ export function getAcknowledgment(
 
 export function myRecords(): Promise<{ records: TimelineRecord[] }> {
 	return request('/api/my/records');
+}
+
+// Weekly summaries and task signoffs (Milestone 4 slice 4; ADR 0013).
+
+export interface SummaryLink {
+	daily_version_id: number;
+	record_id: number;
+	version_number: number;
+	content_hash: string;
+	finalized_at: number;
+	form_name: string | null;
+	business_date: string | null;
+}
+
+export function summaryForms(
+	enrollmentId: number
+): Promise<{ forms: { id: number; name: string }[] }> {
+	return request(`/api/enrollments/${enrollmentId}/summary-forms`);
+}
+
+export function createWeeklySummary(
+	enrollmentId: number,
+	formId?: number
+): Promise<{ id: number }> {
+	return request(`/api/enrollments/${enrollmentId}/weekly-summary`, {
+		method: 'POST',
+		body: JSON.stringify({ evaluation_form_id: formId })
+	});
+}
+
+export function linkableDailies(draftId: number): Promise<{ dailies: SummaryLink[] }> {
+	return request(`/api/drafts/${draftId}/linkable-dailies`);
+}
+
+export function addSummaryLink(
+	draftId: number,
+	dailyVersionId: number,
+	revision: number
+): Promise<{ revision: number }> {
+	return request(`/api/drafts/${draftId}/links`, {
+		method: 'POST',
+		body: JSON.stringify({ daily_version_id: dailyVersionId, revision })
+	});
+}
+
+export function removeSummaryLink(
+	draftId: number,
+	dailyVersionId: number,
+	revision: number
+): Promise<{ revision: number }> {
+	return request(`/api/drafts/${draftId}/links/remove`, {
+		method: 'POST',
+		body: JSON.stringify({ daily_version_id: dailyVersionId, revision })
+	});
+}
+
+export type SignoffKind = 'observed' | 'demonstrated' | 'revoked';
+
+export interface SignoffTask {
+	task_id: number;
+	competency_category: string;
+	competency_name: string;
+	prompt: string;
+	kind: SignoffKind | null;
+	reason: string | null;
+	signed_by_display_name: string | null;
+	signed_at: number | null;
+	history: number;
+}
+
+export function signoffMatrix(
+	enrollmentId: number
+): Promise<{ tasks: SignoffTask[] }> {
+	return request(`/api/enrollments/${enrollmentId}/signoffs`);
+}
+
+export function recordSignoff(
+	enrollmentId: number,
+	taskId: number,
+	kind: SignoffKind,
+	reason?: string
+): Promise<void> {
+	return request(`/api/enrollments/${enrollmentId}/signoffs`, {
+		method: 'POST',
+		body: JSON.stringify({ task_id: taskId, kind, reason })
+	});
 }
 
 /** A structurally valid empty draft for starting a program from scratch. */

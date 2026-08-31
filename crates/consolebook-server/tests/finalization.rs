@@ -597,7 +597,13 @@ async fn completion_rules_gate_submission_and_sealing() {
     // The envelope carries the historical presentation.
     let envelope = &view.envelope;
     assert_eq!(envelope["canonicalization"], "jcs-v1");
-    assert_eq!(envelope["record"]["record_schema"], 1);
+    assert_eq!(
+        envelope["record"]["record_schema"],
+        consolebook_server::canonical::RECORD_SCHEMA
+    );
+    // Schema 2 (ADR 0013): the coverage member is always present and
+    // empty for a record that links nothing.
+    assert_eq!(envelope["daily_reports"], serde_json::json!([]));
     assert_eq!(
         envelope["record"]["predecessor_content_hash"],
         serde_json::Value::Null

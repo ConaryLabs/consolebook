@@ -117,9 +117,21 @@ const content = {
 				{ prompt: 'Most acceptable performance.', required: true },
 				{ prompt: 'Least acceptable performance.', required: false }
 			]
+		},
+		{
+			record_type: 'weekly_summary',
+			name: 'Weekly Summary',
+			instructions: 'Summarize the week.',
+			competencies: [],
+			narratives: [{ prompt: 'Weekly overview.', required: false }]
 		}
 	],
-	citations: []
+	citations: [],
+	finalization_policy: {
+		review_approved: false,
+		required_narratives: true,
+		ratings_complete: true
+	}
 };
 
 async function resetAndLogin(page: Page, username: string, resetCode: string, password: string) {
@@ -448,4 +460,46 @@ test('draft, collaborate, transfer, and submit a daily evaluation', async ({ pag
 	await page.getByRole('link', { name: 'Open' }).click();
 	await page.getByRole('button', { name: 'Record acknowledgment' }).click();
 	await expect(page.getByText('Taylor Trainee acknowledged receipt', { exact: false })).toBeVisible();
+
+	// The coordinator signs off tasks on the enrollment page: the first
+	// signoff is a plain act, changing it is an override with a reason.
+	await page.getByRole('link', { name: 'Home' }).click();
+	await page.getByRole('button', { name: 'Sign out' }).click();
+	await page.getByLabel('Username').fill('casey.coord');
+	await page.getByLabel('Password').fill(CASEY_PASSWORD);
+	await page.getByRole('button', { name: 'Sign in' }).click();
+	await expect(page.getByRole('heading', { name: 'Installation status' })).toBeVisible();
+	await page.goto(`${BASE}/enrollments/${enrollment.id}`);
+	await expect(page.getByRole('heading', { name: 'Task signoffs' })).toBeVisible();
+	await page.getByRole('button', { name: 'Observed', exact: true }).first().click();
+	await expect(page.getByText('by Casey Coordinator', { exact: false }).first()).toBeVisible();
+	await page
+		.getByPlaceholder('Override reason')
+		.first()
+		.fill('Re-checked at the invented console.');
+	await page.getByRole('button', { name: 'Demonstrated', exact: true }).first().click();
+	await expect(page.getByText('Re-checked at the invented console.')).toBeVisible();
+
+	// A weekly summary links the exact daily version it covers and
+	// seals it into the record bytes.
+	await page.getByRole('button', { name: 'Start weekly summary' }).click();
+	await expect(page).toHaveURL(new RegExp('/drafts/\\d+$'));
+	await expect(page.getByRole('heading', { name: 'Covered daily reports' })).toBeVisible();
+	await page
+		.getByLabel('Link a daily report')
+		.selectOption({ label: '2026-06-02 — Daily Observation Report (v2)' });
+	await page.getByRole('button', { name: 'Add link' }).click();
+	await expect(page.getByText('finalized', { exact: false }).first()).toBeVisible();
+	await page
+		.getByLabel('Weekly overview.')
+		.fill('An invented week of steady progress.');
+	await expect(page.getByText('Saved', { exact: true })).toBeVisible();
+	await page.getByRole('button', { name: 'Finalize record' }).click();
+	await expect(page.getByText('Finalized', { exact: true })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Covered daily reports' })).toBeVisible();
+	await expect(page.getByText('— version 2', { exact: false })).toBeVisible();
+	await page.getByRole('button', { name: 'Verify hashes' }).click();
+	await expect(
+		page.getByText('Recomputed from the stored record: both fingerprints match.')
+	).toBeVisible();
 });

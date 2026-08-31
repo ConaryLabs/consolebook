@@ -588,11 +588,37 @@ async fn envelope(
         }));
     }
 
+    // The summary's bytes commit to exactly what it covered
+    // (ADR 0013): identity by record id and version number, content by
+    // hash. Empty for records that link nothing.
+    let daily_rows = sqlx::query(
+        "SELECT v.evaluation_record_id, v.version_number, v.content_hash
+         FROM summary_daily_link l
+         JOIN evaluation_version v ON v.id = l.daily_version_id
+         WHERE l.summary_record_id = ?1
+         ORDER BY v.evaluation_record_id, v.version_number",
+    )
+    .bind(record_id)
+    .fetch_all(&mut *conn)
+    .await
+    .context("reading summary links")?;
+    let daily_reports: Vec<Value> = daily_rows
+        .iter()
+        .map(|row| {
+            json!({
+                "content_hash": row.get::<String, _>("content_hash"),
+                "record_id": row.get::<i64, _>("evaluation_record_id"),
+                "version_number": row.get::<i64, _>("version_number"),
+            })
+        })
+        .collect();
+
     Ok(json!({
         "attachments": [],
         "attribution": attribution,
         "canonicalization": canonical::CANONICALIZATION,
         "content": { "narratives": narratives, "ratings": ratings },
+        "daily_reports": daily_reports,
         "finalization": {
             "finalized_at": finalized_at,
             "finalized_by": {
