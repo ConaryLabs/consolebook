@@ -19,6 +19,8 @@ pub enum Capability {
     AuthorEvaluation,
     ReviewEvaluation,
     ViewAssignedRecords,
+    ViewOwnRecords,
+    AcknowledgeOwnRecord,
 }
 
 impl Capability {
@@ -32,6 +34,8 @@ impl Capability {
             Self::AuthorEvaluation => "author_evaluation",
             Self::ReviewEvaluation => "review_evaluation",
             Self::ViewAssignedRecords => "view_assigned_records",
+            Self::ViewOwnRecords => "view_own_records",
+            Self::AcknowledgeOwnRecord => "acknowledge_own_record",
         }
     }
 }
@@ -63,6 +67,12 @@ pub const COORDINATOR_BUNDLE: [Capability; 3] = [
     Capability::ViewAssignedRecords,
 ];
 
+/// The Trainee bundle: reads their own finalized records and acknowledges
+/// them. Existing users reached these through migration 0011, identified
+/// by their enrollments.
+pub const TRAINEE_BUNDLE: [Capability; 2] =
+    [Capability::ViewOwnRecords, Capability::AcknowledgeOwnRecord];
+
 /// Role bundles selectable at user creation. A role is consumed when the
 /// grants are created; nothing checks a role name at decision time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
@@ -71,8 +81,6 @@ pub enum RoleBundle {
     Administrator,
     Coordinator,
     Trainer,
-    /// No capabilities today; trainees receive `view_own_records` with the
-    /// Milestone 4 trainee timeline.
     #[default]
     Trainee,
 }
@@ -84,7 +92,7 @@ impl RoleBundle {
             Self::Administrator => &ADMINISTRATOR_BUNDLE,
             Self::Coordinator => &COORDINATOR_BUNDLE,
             Self::Trainer => &TRAINER_BUNDLE,
-            Self::Trainee => &[],
+            Self::Trainee => &TRAINEE_BUNDLE,
         }
     }
 }

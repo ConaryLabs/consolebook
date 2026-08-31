@@ -45,6 +45,7 @@ pub enum EventKind {
     DraftSubmitted,
     DraftReviewDecided,
     DraftFinalized,
+    AcknowledgmentRecorded,
 }
 
 impl EventKind {
@@ -84,6 +85,7 @@ impl EventKind {
             Self::DraftSubmitted => "draft_submitted",
             Self::DraftReviewDecided => "draft_review_decided",
             Self::DraftFinalized => "draft_finalized",
+            Self::AcknowledgmentRecorded => "acknowledgment_recorded",
         }
     }
 }

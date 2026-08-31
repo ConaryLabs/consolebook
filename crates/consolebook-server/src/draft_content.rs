@@ -275,7 +275,7 @@ pub async fn save(
         return Ok(Err(DraftRefusal::NoSuchRecord));
     };
     drop(conn);
-    if !evaluation_drafts::may_contribute(pool, actor_user_id, &record).await? {
+    if !crate::draft_access::may_contribute(pool, actor_user_id, &record).await? {
         return Ok(Err(DraftRefusal::CapabilityRequired));
     }
 

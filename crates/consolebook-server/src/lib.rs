@@ -3,6 +3,7 @@
 //! The binary in `main.rs` is a thin command-line wrapper; everything it does
 //! lives here so integration tests exercise the same code paths operators use.
 
+pub mod acknowledgments;
 pub mod assignments;
 pub mod audit;
 pub mod backup;
@@ -10,6 +11,7 @@ pub mod canonical;
 pub mod capabilities;
 pub mod data_dir;
 pub mod doctor;
+pub mod draft_access;
 pub mod draft_content;
 pub mod draft_review;
 pub mod drafts_http;

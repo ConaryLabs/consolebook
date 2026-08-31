@@ -12,7 +12,7 @@ use sqlx::{Row, SqlitePool};
 use time::OffsetDateTime;
 
 use crate::audit::{self, EventKind, Subject};
-use crate::capabilities::{self, Capability};
+use crate::capabilities::{self, Capability, TRAINEE_BUNDLE};
 
 /// One enrollee of a program version, with presentation fields resolved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -84,18 +84,37 @@ pub async fn enroll(
     if duplicate.is_some() {
         return Ok(Err(EnrollRefusal::AlreadyEnrolled));
     }
+    let now = OffsetDateTime::now_utc().unix_timestamp();
     let result = sqlx::query(
         "INSERT INTO enrollment (user_id, program_version_id, enrolled_at, enrolled_by)
          VALUES (?1, ?2, ?3, ?4)",
     )
     .bind(user_id)
     .bind(version_id)
-    .bind(OffsetDateTime::now_utc().unix_timestamp())
+    .bind(now)
     .bind(actor_user_id)
     .execute(&mut *tx)
     .await
     .context("creating enrollment")?;
     let enrollment_id = result.last_insert_rowid();
+    // Enrollment is what makes someone a trainee (migration 0011's
+    // rationale): whatever bundle created the account, the enrolled
+    // person can read and acknowledge their own finalized records.
+    // Idempotent — a grant already held stays exactly as granted.
+    for capability in TRAINEE_BUNDLE {
+        sqlx::query(
+            "INSERT INTO capability_grant (user_id, capability, granted_at, granted_by)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (user_id, capability) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(capability.as_str())
+        .bind(now)
+        .bind(actor_user_id)
+        .execute(&mut *tx)
+        .await
+        .context("granting trainee capabilities")?;
+    }
     audit::record_for_subject(
         &mut *tx,
         EventKind::EnrollmentCreated,

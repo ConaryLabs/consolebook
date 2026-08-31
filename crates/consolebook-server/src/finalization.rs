@@ -243,6 +243,15 @@ pub async fn finalize(
         &format!("The evaluation for {trainee_name} was finalized."),
     )
     .await?;
+    // Acknowledgment is the trainee's act (slice 2): the record they
+    // are bound to now exists, so they are told it awaits them.
+    notices::notify_user(
+        &mut *tx,
+        trainee_id,
+        NoticeKind::RecordAwaitsAcknowledgment,
+        "A finalized evaluation record awaits your acknowledgment.",
+    )
+    .await?;
     let sealer_name: String = sqlx::query_scalar("SELECT display_name FROM user WHERE id = ?1")
         .bind(actor_user_id)
         .fetch_one(&mut *tx)
@@ -614,7 +623,7 @@ pub async fn finalized_view(
         return Ok(Err(FinalizeRefusal::NoSuchRecord));
     };
     drop(conn);
-    if !evaluation_drafts::may_read(pool, actor_user_id, &record).await? {
+    if !crate::draft_access::may_read(pool, actor_user_id, &record).await? {
         return Ok(Err(FinalizeRefusal::CapabilityRequired));
     }
     let Some(row) = sqlx::query(
@@ -670,7 +679,7 @@ pub async fn verify(
         return Ok(Err(FinalizeRefusal::NoSuchRecord));
     };
     drop(conn);
-    if !evaluation_drafts::may_read(pool, actor_user_id, &record).await? {
+    if !crate::draft_access::may_read(pool, actor_user_id, &record).await? {
         return Ok(Err(FinalizeRefusal::CapabilityRequired));
     }
     let Some(row) = sqlx::query(

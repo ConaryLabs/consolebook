@@ -18,6 +18,7 @@ const PASSWORD = 'invented-passphrase-1';
 const JORDAN_PASSWORD = 'trainer-passphrase-3';
 const ROWAN_PASSWORD = 'trainer-passphrase-4';
 const CASEY_PASSWORD = 'coordinator-passphrase-5';
+const TAYLOR_PASSWORD = 'trainee-passphrase-6';
 
 let server: ChildProcess;
 let dataDir: string;
@@ -330,4 +331,39 @@ test('draft, collaborate, transfer, and submit a daily evaluation', async ({ pag
 	// The sealed record takes no further decisions or edits.
 	await expect(page.getByRole('button', { name: 'Finalize record' })).toHaveCount(0);
 	await expect(page.getByLabel('Most acceptable performance.')).toHaveCount(0);
+
+	// The sealed record awaits the trainee; the reviewer sees the attest
+	// controls but the trainee timeline is not theirs.
+	await expect(page.getByText('This version awaits acknowledgment.')).toBeVisible();
+	await expect(page.getByLabel("Attest on the trainee's behalf")).toBeVisible();
+	await expect(page.getByRole('link', { name: 'My records' })).toHaveCount(0);
+
+	// Taylor signs in, finds the record on their timeline, and
+	// acknowledges receipt with a response.
+	await page.getByRole('link', { name: 'Home' }).click();
+	await page.getByRole('button', { name: 'Sign out' }).click();
+	await resetAndLogin(page, 'taylor.trainee', trainee.reset_code, TAYLOR_PASSWORD);
+	await page.getByRole('link', { name: 'My records' }).click();
+	await expect(page.getByRole('heading', { name: 'My records' })).toBeVisible();
+	await expect(page.getByText('Awaiting acknowledgment')).toBeVisible();
+	await page.getByRole('link', { name: 'Open' }).click();
+	await expect(page).toHaveURL(draftUrl);
+	await expect(page.getByRole('heading', { name: 'Finalized record' })).toBeVisible();
+	await page
+		.getByLabel('Your acknowledgment')
+		.selectOption({ label: 'Acknowledge with a response' });
+	await page
+		.getByLabel('Response')
+		.fill('Received; the invented callback correction is noted.');
+	await page.getByRole('button', { name: 'Record acknowledgment' }).click();
+	await expect(
+		page.getByText('Taylor Trainee acknowledged receipt with a response')
+	).toBeVisible();
+	await expect(
+		page.getByText('Received; the invented callback correction is noted.')
+	).toBeVisible();
+	// One acknowledgment per version: the controls leave with the act.
+	await expect(page.getByRole('button', { name: 'Record acknowledgment' })).toHaveCount(0);
+	await page.getByRole('link', { name: 'My records' }).click();
+	await expect(page.getByText('Acknowledged with response')).toBeVisible();
 });

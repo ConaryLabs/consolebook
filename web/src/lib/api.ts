@@ -959,6 +959,65 @@ export function verifyVersion(draftId: number): Promise<Verification> {
 	return request(`/api/drafts/${draftId}/version/verify`);
 }
 
+// Acknowledgments and the trainee's own-records timeline (Milestone 4
+// slice 2). Acknowledgment means receipt, not agreement.
+
+export type TraineeAckKind = 'acknowledged' | 'acknowledged_with_response' | 'refused';
+export type AttestedKind = 'supervisor_attested_refusal' | 'unavailable';
+export type AckKind = TraineeAckKind | AttestedKind;
+
+export interface Acknowledgment {
+	kind: AckKind;
+	response: string;
+	user_display_name: string;
+	recorded_by: number;
+	recorded_by_display_name: string;
+	recorded_at: number;
+}
+
+export interface TimelineRecord {
+	record_id: number;
+	program_name: string;
+	version_number: number;
+	form_name: string;
+	business_date: string | null;
+	finalized_at: number;
+	acknowledgment_kind: AckKind | null;
+	acknowledged_at: number | null;
+}
+
+export function acknowledgeRecord(
+	draftId: number,
+	kind: TraineeAckKind,
+	response?: string
+): Promise<void> {
+	return request(`/api/drafts/${draftId}/acknowledge`, {
+		method: 'POST',
+		body: JSON.stringify({ kind, response })
+	});
+}
+
+export function attestRecord(
+	draftId: number,
+	kind: AttestedKind,
+	reason: string
+): Promise<void> {
+	return request(`/api/drafts/${draftId}/attest`, {
+		method: 'POST',
+		body: JSON.stringify({ kind, reason })
+	});
+}
+
+export function getAcknowledgment(
+	draftId: number
+): Promise<{ acknowledgment: Acknowledgment | null }> {
+	return request(`/api/drafts/${draftId}/acknowledgment`);
+}
+
+export function myRecords(): Promise<{ records: TimelineRecord[] }> {
+	return request('/api/my/records');
+}
+
 /** A structurally valid empty draft for starting a program from scratch. */
 export function blankContent(name: string): VersionContent {
 	return {

@@ -334,7 +334,11 @@ async fn role_bundles_grant_capabilities_and_profile_fields_list() {
         consolebook_server::capabilities::list_for_user(&fx.pool, taylor_id)
             .await
             .expect("list");
-    assert!(taylor_caps.is_empty(), "trainee holds no capabilities yet");
+    assert_eq!(
+        taylor_caps,
+        vec!["acknowledge_own_record", "view_own_records"],
+        "the Trainee bundle grants the own-record capabilities (slice 2)"
+    );
 
     // The roster presents the profile fields.
     let (status, body) = request(fx.app(), "GET", "/api/users", Some(&admin), None).await;
