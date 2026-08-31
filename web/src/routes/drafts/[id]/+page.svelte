@@ -53,6 +53,15 @@
 	async function load() {
 		try {
 			const fetched = await getDraft(draftId);
+			if (fetched.status === 'finalized') {
+				// The envelope is the only permitted presentation of a
+				// finalized record (ADR 0011): if it cannot load, the page
+				// fails closed and presents nothing from live joins.
+				sealed = await finalizedVersion(draftId);
+			} else {
+				sealed = null;
+				verification = null;
+			}
 			view = fetched;
 			const nextValues: Record<number, number | null> = {};
 			const nextObserved: Record<number, boolean> = {};
@@ -83,13 +92,9 @@
 			modifiers = nextModifiers;
 			narratives = nextNarratives;
 			revision = fetched.revision;
-			if (fetched.status === 'finalized') {
-				sealed = await finalizedVersion(draftId);
-			} else {
-				sealed = null;
-				verification = null;
-			}
 		} catch (err) {
+			view = null;
+			sealed = null;
 			error = err instanceof ApiError ? err.message : 'the server could not be reached';
 		}
 	}

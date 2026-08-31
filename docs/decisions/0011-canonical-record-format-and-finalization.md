@@ -110,8 +110,12 @@ rewritten.
 - `finalization_policy`, one row per program version, authored with
   the version and frozen by publication like all version content:
   `review_approved`, `required_narratives`, `ratings_complete` — each
-  on or off, all defaulting on; existing published versions are
-  backfilled all-on.
+  on or off, all defaulting on for newly authored versions. Existing
+  versions are backfilled with review approval on but the content
+  rules off: their drafts were authored under no completeness
+  contract, and a retroactive rule could wedge an already-approved
+  copy with no recovery — versioned configuration exists precisely so
+  history is not rewritten under records.
 - `review_approved` on: only an approved draft finalizes. Off: a
   record may finalize from any unfinalized state — review remains
   available but optional, which is configuration, not a code path.

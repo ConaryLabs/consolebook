@@ -14,9 +14,14 @@
 -- Instants are UTC unix seconds (INTEGER). Hashes are lowercase hex.
 
 -- The closed v1 completion-rule set (#32 decision 2), all defaulting
--- on. Existing versions are backfilled before the freeze triggers
--- below exist, so already-published versions receive the conservative
--- defaults exactly once.
+-- on for newly authored versions. Existing versions are backfilled
+-- before the freeze triggers below exist — with review approval on,
+-- but the two content rules off: their drafts were authored under no
+-- completeness contract, and imposing one retroactively could wedge an
+-- already-approved copy (frozen since submission, no further decision
+-- possible, finalization refusing) with no recovery. Retroactive
+-- configuration rewriting workflow expectations is exactly what
+-- versioned configuration exists to prevent.
 CREATE TABLE finalization_policy (
     program_version_id INTEGER PRIMARY KEY REFERENCES program_version (id),
     review_approved INTEGER NOT NULL DEFAULT 1 CHECK (review_approved IN (0, 1)),
@@ -26,8 +31,9 @@ CREATE TABLE finalization_policy (
         CHECK (ratings_complete IN (0, 1))
 ) STRICT;
 
-INSERT INTO finalization_policy (program_version_id)
-SELECT id FROM program_version;
+INSERT INTO finalization_policy
+    (program_version_id, review_approved, required_narratives, ratings_complete)
+SELECT id, 1, 0, 0 FROM program_version;
 
 CREATE TRIGGER finalization_policy_published_no_insert
 BEFORE INSERT ON finalization_policy
