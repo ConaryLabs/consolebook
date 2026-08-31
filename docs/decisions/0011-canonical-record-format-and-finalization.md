@@ -115,6 +115,12 @@ rewritten.
 - `review_approved` on: only an approved draft finalizes. Off: a
   record may finalize from any unfinalized state — review remains
   available but optional, which is configuration, not a code path.
+- The two content rules are enforced at submission as well as at
+  finalization: a draft never enters review missing what finalization
+  will demand, so an approved draft — frozen until sealed — can never
+  wedge between an uneditable copy and a failing rule. With
+  `review_approved` off the rules answer at the finalization attempt,
+  where the copy is still editable; no state is a dead end.
 - `required_narratives` on: every narrative prompt marked required
   carries non-blank text.
 - `ratings_complete` on: every form competency whose scale is not

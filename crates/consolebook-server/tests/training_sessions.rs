@@ -9,8 +9,8 @@ use axum::http::{Request, StatusCode};
 use consolebook_server::capabilities::RoleBundle;
 use consolebook_server::lifecycle::{self, EnrollmentEventKind};
 use consolebook_server::programs::{
-    self, CompetencyDef, PhaseDef, PolicyDef, ScaleDef, ScaleKind, TaskDef, TransitionDef, TransitionKind,
-    VersionContent,
+    self, CompetencyDef, PhaseDef, PolicyDef, ScaleDef, ScaleKind, TaskDef, TransitionDef,
+    TransitionKind, VersionContent,
 };
 use consolebook_server::training_sessions::{
     self, Disposition, SessionInput, SessionRefusal, SessionUpdate,

@@ -37,13 +37,13 @@ pub enum FinalizeRefusal {
 /// The pinned version's completion rules; a missing row fails closed
 /// (every rule on), matching migration 0010's trigger.
 #[derive(Debug, Clone, Copy)]
-struct Policy {
-    review_approved: bool,
-    required_narratives: bool,
-    ratings_complete: bool,
+pub(crate) struct Policy {
+    pub review_approved: bool,
+    pub required_narratives: bool,
+    pub ratings_complete: bool,
 }
 
-async fn policy(conn: &mut SqliteConnection, version_id: i64) -> Result<Policy> {
+pub(crate) async fn policy(conn: &mut SqliteConnection, version_id: i64) -> Result<Policy> {
     let row = sqlx::query(
         "SELECT review_approved, required_narratives, ratings_complete
          FROM finalization_policy WHERE program_version_id = ?1",
@@ -66,8 +66,60 @@ async fn policy(conn: &mut SqliteConnection, version_id: i64) -> Result<Policy> 
     ))
 }
 
+/// Whether a required narrative prompt lacks non-blank text. Shared by
+/// submission and finalization: when the rule is on, a draft cannot
+/// enter review missing what finalization will demand, so an approved
+/// draft is never wedged between a frozen copy and a failing rule
+/// (ADR 0011).
+pub(crate) async fn narratives_incomplete(
+    conn: &mut SqliteConnection,
+    record: &evaluation_drafts::RecordRow,
+) -> Result<bool> {
+    let texts: Vec<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT fn.id, dn.text FROM form_narrative fn
+         LEFT JOIN draft_narrative dn
+             ON dn.form_narrative_id = fn.id AND dn.evaluation_record_id = ?1
+         WHERE fn.evaluation_form_id = ?2 AND fn.program_version_id = ?3
+           AND fn.required = 1",
+    )
+    .bind(record.id)
+    .bind(record.evaluation_form_id)
+    .bind(record.program_version_id)
+    .fetch_all(&mut *conn)
+    .await
+    .context("checking required narratives")?;
+    Ok(texts
+        .iter()
+        .any(|(_, text)| text.as_deref().is_none_or(|text| text.trim().is_empty())))
+}
+
+/// Whether a competency that takes a value carries neither one nor the
+/// explicit not-observed marker.
+pub(crate) async fn ratings_incomplete(
+    conn: &mut SqliteConnection,
+    record: &evaluation_drafts::RecordRow,
+) -> Result<bool> {
+    let unrated: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM form_competency fc
+         JOIN rating_scale rs ON rs.id = fc.rating_scale_id
+         LEFT JOIN draft_rating dr
+             ON dr.form_competency_id = fc.id AND dr.evaluation_record_id = ?1
+         WHERE fc.evaluation_form_id = ?2 AND fc.program_version_id = ?3
+           AND rs.kind != 'narrative_only'
+           AND (dr.id IS NULL OR (dr.value IS NULL AND dr.not_observed = 0))
+         LIMIT 1",
+    )
+    .bind(record.id)
+    .bind(record.evaluation_form_id)
+    .bind(record.program_version_id)
+    .fetch_optional(&mut *conn)
+    .await
+    .context("checking rating completeness")?;
+    Ok(unrated.is_some())
+}
+
 /// One finalized version's metadata, presented.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VersionMeta {
     pub version_number: i64,
     pub record_schema: i64,
@@ -94,7 +146,9 @@ pub async fn finalize(
         return Ok(Err(FinalizeRefusal::CapabilityRequired));
     }
 
-    let mut tx = storage::write_tx(pool).await.context("starting finalization")?;
+    let mut tx = storage::write_tx(pool)
+        .await
+        .context("starting finalization")?;
     let finalized: Option<i64> =
         sqlx::query_scalar("SELECT 1 FROM evaluation_version WHERE evaluation_record_id = ?1")
             .bind(record_id)
@@ -110,48 +164,11 @@ pub async fn finalize(
     {
         return storage::refuse(tx, FinalizeRefusal::NotApproved).await;
     }
-    if policy.required_narratives {
-        let texts: Vec<(i64, Option<String>)> = sqlx::query_as(
-            "SELECT fn.id, dn.text FROM form_narrative fn
-             LEFT JOIN draft_narrative dn
-                 ON dn.form_narrative_id = fn.id AND dn.evaluation_record_id = ?1
-             WHERE fn.evaluation_form_id = ?2 AND fn.program_version_id = ?3
-               AND fn.required = 1",
-        )
-        .bind(record_id)
-        .bind(record.evaluation_form_id)
-        .bind(record.program_version_id)
-        .fetch_all(&mut *tx)
-        .await
-        .context("checking required narratives")?;
-        if texts
-            .iter()
-            .any(|(_, text)| text.as_deref().is_none_or(|text| text.trim().is_empty()))
-        {
-            return storage::refuse(tx, FinalizeRefusal::NarrativesIncomplete).await;
-        }
+    if policy.required_narratives && narratives_incomplete(&mut tx, &record).await? {
+        return storage::refuse(tx, FinalizeRefusal::NarrativesIncomplete).await;
     }
-    if policy.ratings_complete {
-        let unrated: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM form_competency fc
-             JOIN rating_scale rs ON rs.id = fc.rating_scale_id
-             LEFT JOIN draft_rating dr
-                 ON dr.form_competency_id = fc.id AND dr.evaluation_record_id = ?1
-             WHERE fc.evaluation_form_id = ?2 AND fc.program_version_id = ?3
-               AND rs.kind != 'narrative_only'
-               AND (dr.id IS NULL
-                    OR (dr.value IS NULL AND dr.not_observed = 0))
-             LIMIT 1",
-        )
-        .bind(record_id)
-        .bind(record.evaluation_form_id)
-        .bind(record.program_version_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .context("checking rating completeness")?;
-        if unrated.is_some() {
-            return storage::refuse(tx, FinalizeRefusal::RatingsIncomplete).await;
-        }
+    if policy.ratings_complete && ratings_incomplete(&mut tx, &record).await? {
+        return storage::refuse(tx, FinalizeRefusal::RatingsIncomplete).await;
     }
 
     let now = OffsetDateTime::now_utc().unix_timestamp();
@@ -245,20 +262,18 @@ async fn envelope(
     .fetch_one(&mut *conn)
     .await
     .context("reading trainee")?;
-    let program = sqlx::query(
-        "SELECT name, version_number, label FROM program_version WHERE id = ?1",
-    )
-    .bind(record.program_version_id)
-    .fetch_one(&mut *conn)
-    .await
-    .context("reading program version")?;
-    let form = sqlx::query(
-        "SELECT name, instructions, record_type FROM evaluation_form WHERE id = ?1",
-    )
-    .bind(record.evaluation_form_id)
-    .fetch_one(&mut *conn)
-    .await
-    .context("reading form")?;
+    let program =
+        sqlx::query("SELECT name, version_number, label FROM program_version WHERE id = ?1")
+            .bind(record.program_version_id)
+            .fetch_one(&mut *conn)
+            .await
+            .context("reading program version")?;
+    let form =
+        sqlx::query("SELECT name, instructions, record_type FROM evaluation_form WHERE id = ?1")
+            .bind(record.evaluation_form_id)
+            .fetch_one(&mut *conn)
+            .await
+            .context("reading form")?;
     let finalizer = sqlx::query("SELECT id, username, display_name FROM user WHERE id = ?1")
         .bind(finalized_by)
         .fetch_one(&mut *conn)
@@ -284,13 +299,15 @@ async fn envelope(
     let attribution: Vec<Value> = attribution_rows
         .iter()
         .map(|row| {
-            let to = row.get::<Option<i64>, _>("to_id").map_or(Value::Null, |id| {
-                json!({
-                    "id": id,
-                    "username": row.get::<String, _>("to_username"),
-                    "display_name": row.get::<String, _>("to_display_name"),
-                })
-            });
+            let to = row
+                .get::<Option<i64>, _>("to_id")
+                .map_or(Value::Null, |id| {
+                    json!({
+                        "id": id,
+                        "username": row.get::<String, _>("to_username"),
+                        "display_name": row.get::<String, _>("to_display_name"),
+                    })
+                });
             json!({
                 "kind": row.get::<String, _>("kind"),
                 "actor": {
@@ -655,8 +672,8 @@ pub async fn verify(
     let content_ok = canonical::content_hash_hex(&bytes) == stored_content;
     // Slice 1 produces first versions only; slice 3's amendments carry
     // the predecessor hash through this recomputation.
-    let chain_ok = predecessor.is_none()
-        && canonical::chain_hash_hex(None, &bytes)? == stored_chain;
+    let chain_ok =
+        predecessor.is_none() && canonical::chain_hash_hex(None, &bytes)? == stored_chain;
     Ok(Ok(Some(Verification {
         content_hash_ok: content_ok,
         chain_hash_ok: chain_ok,

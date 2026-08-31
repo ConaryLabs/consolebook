@@ -6,8 +6,8 @@ use consolebook_server::data_dir::DataDir;
 use consolebook_server::program_export::{self, ImportRefusal, ImportTarget};
 use consolebook_server::programs::{
     self, AnchorDef, AuthorRefusal, CitationDef, CompetencyDef, FormCompetencyDef, FormDef,
-    ModifierDef, NarrativeDef, PhaseDef, PolicyDef, ProgramRefusal, PublishRefusal, RecordType, ScaleDef,
-    ScaleKind, TaskDef, TransitionDef, TransitionKind, VersionContent,
+    ModifierDef, NarrativeDef, PhaseDef, PolicyDef, ProgramRefusal, PublishRefusal, RecordType,
+    ScaleDef, ScaleKind, TaskDef, TransitionDef, TransitionKind, VersionContent,
 };
 use consolebook_server::{setup, storage, users};
 

@@ -360,7 +360,13 @@ fn evaluated_content() -> VersionContent {
             ],
         }],
         citations: Vec::new(),
-        finalization_policy: PolicyDef::default(),
+        // Review depth is under test here; the content-completeness
+        // rules are exercised by tests/finalization.rs.
+        finalization_policy: PolicyDef {
+            review_approved: true,
+            required_narratives: false,
+            ratings_complete: false,
+        },
     }
 }
 

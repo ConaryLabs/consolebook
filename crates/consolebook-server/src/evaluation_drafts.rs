@@ -72,6 +72,12 @@ pub enum DraftRefusal {
     /// A finalized record is permanent; corrections are amendments
     /// (Milestone 4 slice 3).
     DraftFinalized,
+    /// The pinned version requires every required narrative before
+    /// submission or finalization (ADR 0011).
+    NarrativesIncomplete,
+    /// The pinned version requires every competency rated or marked
+    /// not observed before submission or finalization (ADR 0011).
+    RatingsIncomplete,
 }
 
 /// Workflow status derived from the latest contributor event plus the
@@ -631,6 +637,7 @@ pub async fn transfer(
 /// the working copy. The submission carries the revision the submitter
 /// viewed, so content another contributor saved meanwhile is never
 /// frozen sight unseen.
+#[allow(clippy::too_many_lines)]
 pub async fn submit(
     pool: &SqlitePool,
     actor_user_id: i64,
@@ -669,6 +676,19 @@ pub async fn submit(
     let revision_now: i64 = row.get("revision");
     if expected_revision != revision_now {
         return storage::refuse(tx, DraftRefusal::StaleSave).await;
+    }
+    // Completion rules gate the path toward finalization here too
+    // (ADR 0011): a draft never enters review missing what finalization
+    // will demand, so an approved draft cannot wedge between a frozen
+    // copy and a failing rule.
+    let policy = crate::finalization::policy(&mut tx, record.program_version_id).await?;
+    if policy.required_narratives
+        && crate::finalization::narratives_incomplete(&mut tx, &record).await?
+    {
+        return storage::refuse(tx, DraftRefusal::NarrativesIncomplete).await;
+    }
+    if policy.ratings_complete && crate::finalization::ratings_incomplete(&mut tx, &record).await? {
+        return storage::refuse(tx, DraftRefusal::RatingsIncomplete).await;
     }
     let content = draft_content::content_json(&mut tx, record_id).await?;
     let now = OffsetDateTime::now_utc().unix_timestamp();

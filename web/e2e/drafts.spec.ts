@@ -312,4 +312,22 @@ test('draft, collaborate, transfer, and submit a daily evaluation', async ({ pag
 	await expect(page.getByLabel('Most acceptable performance.')).toBeDisabled();
 	await expect(page.getByText('Casey Coordinator requested changes')).toBeVisible();
 	await expect(page.getByText('Casey Coordinator approved the draft')).toBeVisible();
+
+	// Finalization seals the approved draft into an immutable version:
+	// the sealed view presents from the stored envelope with both
+	// fingerprints, and verification reports honest consistency.
+	await page.getByRole('button', { name: 'Finalize record' }).click();
+	await expect(page.getByText('Finalized', { exact: true })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Finalized record' })).toBeVisible();
+	await expect(page.getByText('finalized by Casey Coordinator')).toBeVisible();
+	await expect(
+		page.getByText('Ran the invented structure fire cleanly.')
+	).toBeVisible();
+	await page.getByRole('button', { name: 'Verify hashes' }).click();
+	await expect(
+		page.getByText('Recomputed from the stored record: both fingerprints match.')
+	).toBeVisible();
+	// The sealed record takes no further decisions or edits.
+	await expect(page.getByRole('button', { name: 'Finalize record' })).toHaveCount(0);
+	await expect(page.getByLabel('Most acceptable performance.')).toHaveCount(0);
 });

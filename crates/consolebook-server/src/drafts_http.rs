@@ -138,6 +138,16 @@ fn draft_refusal(refusal: &DraftRefusal) -> ApiError {
             "draft_finalized",
             "a finalized record is permanent; corrections are amendments",
         ),
+        DraftRefusal::NarrativesIncomplete => ApiError::new(
+            StatusCode::CONFLICT,
+            "narratives_incomplete",
+            "every required narrative carries text before submission",
+        ),
+        DraftRefusal::RatingsIncomplete => ApiError::new(
+            StatusCode::CONFLICT,
+            "ratings_incomplete",
+            "every competency is rated or explicitly marked not observed",
+        ),
         DraftRefusal::SelfReview => ApiError::new(
             StatusCode::FORBIDDEN,
             "self_review",

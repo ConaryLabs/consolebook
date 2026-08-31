@@ -81,10 +81,7 @@ pub fn content_hash_hex(canonical: &[u8]) -> String {
 /// `SHA-256(domain || 0x00 || predecessor || bytes)` with the
 /// predecessor's raw 32-byte content hash, or 32 zero bytes for a
 /// first version (ADR 0011 fixes the missing-predecessor treatment).
-pub fn chain_hash_hex(
-    predecessor_content_hash: Option<&str>,
-    canonical: &[u8],
-) -> Result<String> {
+pub fn chain_hash_hex(predecessor_content_hash: Option<&str>, canonical: &[u8]) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(CHAIN_DOMAIN);
     hasher.update([0u8]);
@@ -111,8 +108,7 @@ fn from_hex32(hex: &str) -> Result<[u8; 32]> {
     let mut bytes = [0u8; 32];
     for (index, chunk) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let pair = std::str::from_utf8(chunk).context("hash hex encoding")?;
-        bytes[index] =
-            u8::from_str_radix(pair, 16).context("hash hex encoding")?;
+        bytes[index] = u8::from_str_radix(pair, 16).context("hash hex encoding")?;
     }
     Ok(bytes)
 }

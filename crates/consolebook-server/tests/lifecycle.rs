@@ -12,8 +12,8 @@ use consolebook_server::lifecycle::{
     self, EnrollmentEventKind, EnrollmentStatus, LifecycleRefusal, PhaseEventKind,
 };
 use consolebook_server::programs::{
-    self, CompetencyDef, PhaseDef, PolicyDef, ScaleDef, ScaleKind, TaskDef, TransitionDef, TransitionKind,
-    VersionContent,
+    self, CompetencyDef, PhaseDef, PolicyDef, ScaleDef, ScaleKind, TaskDef, TransitionDef,
+    TransitionKind, VersionContent,
 };
 use consolebook_server::{assignments, enrollments, notices, setup, storage, users};
 use http_body_util::BodyExt;
