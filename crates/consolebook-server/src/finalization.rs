@@ -623,7 +623,7 @@ pub async fn finalized_view(
         return Ok(Err(FinalizeRefusal::NoSuchRecord));
     };
     drop(conn);
-    if !evaluation_drafts::may_read(pool, actor_user_id, &record).await? {
+    if !crate::draft_access::may_read(pool, actor_user_id, &record).await? {
         return Ok(Err(FinalizeRefusal::CapabilityRequired));
     }
     let Some(row) = sqlx::query(
@@ -679,7 +679,7 @@ pub async fn verify(
         return Ok(Err(FinalizeRefusal::NoSuchRecord));
     };
     drop(conn);
-    if !evaluation_drafts::may_read(pool, actor_user_id, &record).await? {
+    if !crate::draft_access::may_read(pool, actor_user_id, &record).await? {
         return Ok(Err(FinalizeRefusal::CapabilityRequired));
     }
     let Some(row) = sqlx::query(

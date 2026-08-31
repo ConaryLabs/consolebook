@@ -348,7 +348,7 @@ pub async fn acknowledgment_of(
         return Ok(Err(AckRefusal::NoSuchRecord));
     };
     drop(conn);
-    if !evaluation_drafts::may_read(pool, actor_user_id, &record).await? {
+    if !crate::draft_access::may_read(pool, actor_user_id, &record).await? {
         return Ok(Err(AckRefusal::CapabilityRequired));
     }
     // Start from the latest version, not from the acknowledgment: a

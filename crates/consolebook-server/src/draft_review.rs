@@ -87,7 +87,7 @@ pub async fn decide(
     if evaluation_drafts::status_of(&mut tx, record_id).await? != DraftStatus::Submitted {
         return storage::refuse(tx, DraftRefusal::NotSubmitted).await;
     }
-    if evaluation_drafts::is_contributor(&mut tx, record_id, actor_user_id).await? {
+    if crate::draft_access::is_contributor(&mut tx, record_id, actor_user_id).await? {
         return storage::refuse(tx, DraftRefusal::SelfReview).await;
     }
     let now = OffsetDateTime::now_utc().unix_timestamp();

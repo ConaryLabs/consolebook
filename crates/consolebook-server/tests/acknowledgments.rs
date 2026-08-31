@@ -538,6 +538,62 @@ async fn trainee_reads_and_acknowledges_own_finalized_record() {
 }
 
 #[tokio::test]
+async fn enrollment_grants_own_record_capabilities() {
+    let fx = Fixture::new().await;
+    let content = program("Example County Program grants", OPEN_POLICY);
+    let program_id = programs::create_program(&fx.pool, fx.admin_id, &content.name)
+        .await
+        .expect("create program")
+        .expect("accepted");
+    let version_id = programs::create_version(&fx.pool, fx.admin_id, program_id, &content)
+        .await
+        .expect("create version")
+        .expect("accepted");
+    programs::publish_version(&fx.pool, fx.admin_id, version_id)
+        .await
+        .expect("publish")
+        .expect("accepted");
+
+    // A trainer-bundle account enrolled as a trainee gains the
+    // own-record capabilities with the enrollment: the 0011 backfill
+    // ran once, so the enrollment transaction is what makes later
+    // trainees whole.
+    let jordan_id = fx
+        .user_with_role("jordan.grant", "Jordan Trainer", RoleBundle::Trainer)
+        .await;
+    enrollments::enroll(&fx.pool, fx.admin_id, version_id, jordan_id)
+        .await
+        .expect("call")
+        .expect("enrolled");
+    let held = capabilities::list_for_user(&fx.pool, jordan_id)
+        .await
+        .expect("list");
+    assert_eq!(
+        held,
+        vec![
+            "acknowledge_own_record",
+            "author_evaluation",
+            "view_assigned_records",
+            "view_own_records"
+        ]
+    );
+
+    // Idempotent over grants a bundle already made: a plain trainee
+    // enrolls without duplicate-grant failures or extra rows.
+    let taylor_id = fx
+        .user_with_role("taylor.grant", "Taylor Trainee", RoleBundle::Trainee)
+        .await;
+    enrollments::enroll(&fx.pool, fx.admin_id, version_id, taylor_id)
+        .await
+        .expect("call")
+        .expect("enrolled");
+    let held = capabilities::list_for_user(&fx.pool, taylor_id)
+        .await
+        .expect("list");
+    assert_eq!(held, vec!["acknowledge_own_record", "view_own_records"]);
+}
+
+#[tokio::test]
 async fn refusal_escalates_to_review_holders() {
     let fx = Fixture::new().await;
     let s = seed(&fx, "refuse").await;
