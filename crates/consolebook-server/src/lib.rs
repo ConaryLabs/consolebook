@@ -4,6 +4,7 @@
 //! lives here so integration tests exercise the same code paths operators use.
 
 pub mod acknowledgments;
+pub mod amendments;
 pub mod assignments;
 pub mod audit;
 pub mod backup;

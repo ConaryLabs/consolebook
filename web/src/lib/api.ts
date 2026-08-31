@@ -793,6 +793,9 @@ export interface DraftView {
 	decisions: ReviewDecision[];
 	viewer_may_review: boolean;
 	viewer_may_finalize: boolean;
+	viewer_may_amend: boolean;
+	latest_version_number: number | null;
+	open_amendment: AmendmentView | null;
 	created_at: number;
 	revision: number;
 	form: {
@@ -982,8 +985,59 @@ export interface TimelineRecord {
 	form_name: string;
 	business_date: string | null;
 	finalized_at: number;
+	/** The latest version's number; above 1 the record was amended. */
+	record_version_number: number;
 	acknowledgment_kind: AckKind | null;
 	acknowledged_at: number | null;
+}
+
+// Amendments (Milestone 4 slice 3): a correction produces a successor
+// version linked to the original with a reason and authority; the
+// original stays readable while retained.
+
+export interface AmendmentView {
+	reason: string;
+	opened_by_display_name: string;
+	opened_at: number;
+}
+
+export interface VersionHistoryRow {
+	version_number: number;
+	record_schema: number;
+	content_hash: string;
+	chain_hash: string;
+	finalized_at: number;
+	finalized_by_display_name: string;
+	amendment: AmendmentView | null;
+	acknowledgment: Acknowledgment | null;
+}
+
+export function amendRecord(draftId: number, reason: string): Promise<void> {
+	return request(`/api/drafts/${draftId}/amend`, {
+		method: 'POST',
+		body: JSON.stringify({ reason })
+	});
+}
+
+export function versionHistory(
+	draftId: number
+): Promise<{ versions: VersionHistoryRow[] }> {
+	return request(`/api/drafts/${draftId}/versions`);
+}
+
+/** One retained version by number — a superseded original included. */
+export function finalizedVersionAt(
+	draftId: number,
+	versionNumber: number
+): Promise<FinalizedView> {
+	return request(`/api/drafts/${draftId}/versions/${versionNumber}`);
+}
+
+export function verifyVersionAt(
+	draftId: number,
+	versionNumber: number
+): Promise<Verification> {
+	return request(`/api/drafts/${draftId}/versions/${versionNumber}/verify`);
 }
 
 export function acknowledgeRecord(

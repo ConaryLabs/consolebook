@@ -99,6 +99,9 @@
 							<span class="pill" class:pending={record.acknowledgment_kind === null}>
 								{ackLabel(record.acknowledgment_kind)}
 							</span>
+							{#if record.record_version_number > 1}
+								<span class="pill">Amended — v{record.record_version_number}</span>
+							{/if}
 						</td>
 						<td><a href={`/drafts/${record.record_id}`}>Open</a></td>
 					</tr>

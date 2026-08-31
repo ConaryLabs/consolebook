@@ -3,9 +3,11 @@
 	import {
 		ApiError,
 		acknowledgeRecord,
+		amendRecord,
 		attestRecord,
 		finalizeDraft,
 		finalizedVersion,
+		finalizedVersionAt,
 		getAcknowledgment,
 		getDraft,
 		reviewDraft,
@@ -13,6 +15,8 @@
 		submitDraft,
 		transferDraft,
 		verifyVersion,
+		verifyVersionAt,
+		versionHistory,
 		type Acknowledgment,
 		type AttestedKind,
 		type DraftContent,
@@ -22,13 +26,20 @@
 		type ReviewDecisionKind,
 		type SkeletonCompetency,
 		type TraineeAckKind,
-		type Verification
+		type Verification,
+		type VersionHistoryRow
 	} from '$lib/api';
 	import { instant } from '$lib/format';
 	import type { ShellData } from '../../+layout';
 
 	let { data }: { data: ShellData } = $props();
 	let draftId = $derived(Number(page.params.id));
+	// A history link may address a superseded version: every retained
+	// version stays readable while retained.
+	let requestedVersion = $derived.by(() => {
+		const raw = page.url.searchParams.get('version');
+		return raw === null ? null : Number(raw);
+	});
 	let myUserId = $derived(data.session?.user.id ?? 0);
 	let canAssign = $derived(
 		data.session?.capabilities.includes('assign_training') ?? false
@@ -62,20 +73,27 @@
 	let sealed: FinalizedView | null = $state(null);
 	let verification: Verification | null = $state(null);
 	let ack: Acknowledgment | null = $state(null);
+	let versions: VersionHistoryRow[] = $state([]);
 
 	async function load() {
 		try {
+			const wanted = requestedVersion;
 			const fetched = await getDraft(draftId);
 			if (fetched.status === 'finalized') {
 				// The envelope is the only permitted presentation of a
 				// finalized record (ADR 0011): if it cannot load, the page
 				// fails closed and presents nothing from live joins.
-				sealed = await finalizedVersion(draftId);
+				sealed =
+					wanted === null
+						? await finalizedVersion(draftId)
+						: await finalizedVersionAt(draftId, wanted);
 				ack = (await getAcknowledgment(draftId)).acknowledgment;
+				versions = (await versionHistory(draftId)).versions;
 			} else {
 				sealed = null;
 				verification = null;
 				ack = null;
+				versions = [];
 			}
 			view = fetched;
 			const nextValues: Record<number, number | null> = {};
@@ -115,6 +133,7 @@
 	}
 
 	$effect(() => {
+		void [draftId, requestedVersion];
 		void load();
 	});
 
@@ -373,10 +392,25 @@
 		}
 	}
 
+	let viewingSuperseded = $derived.by(() => {
+		const current = view;
+		const shown = sealed;
+		return (
+			current !== null &&
+			shown !== null &&
+			current.latest_version_number !== null &&
+			shown.meta.version_number < current.latest_version_number
+		);
+	});
+
 	async function verifyNow() {
 		error = '';
 		try {
-			verification = await verifyVersion(draftId);
+			const shown = sealed;
+			verification =
+				shown === null || !viewingSuperseded
+					? await verifyVersion(draftId)
+					: await verifyVersionAt(draftId, shown.meta.version_number);
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : 'the server could not be reached';
 		}
@@ -420,6 +454,25 @@
 			await attestRecord(draftId, attestKind, attestReason);
 			ack = (await getAcknowledgment(draftId)).acknowledgment;
 			attestReason = '';
+		} catch (err) {
+			error = err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
+
+	// Amending never edits the sealed version: it reopens the working
+	// copy for a correction that seals as the next version, which then
+	// awaits its own acknowledgment.
+	let amendReason = $state('');
+
+	async function amendNow() {
+		busy = true;
+		error = '';
+		try {
+			await amendRecord(draftId, amendReason);
+			amendReason = '';
+			await load();
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : 'the server could not be reached';
 		} finally {
@@ -617,6 +670,17 @@
 				Change request: {view.decisions[view.decisions.length - 1].comment}
 			</p>
 		{/if}
+		{#if view.open_amendment !== null && view.status !== 'finalized'}
+			<p class="callout">
+				Amendment in progress — {view.open_amendment.reason}
+				<span class="quiet-inline">
+					(opened by {view.open_amendment.opened_by_display_name},
+					{instant(view.open_amendment.opened_at)}; version
+					{view.latest_version_number} stays readable, and sealing this
+					correction produces version {(view.latest_version_number ?? 0) + 1})
+				</span>
+			</p>
+		{/if}
 		{#if error}
 			<p class="error" role="alert">{error}</p>
 		{/if}
@@ -667,6 +731,13 @@
 	{#if view.status === 'finalized' && sealed !== null}
 		<section class="panel">
 			<h2>Finalized record</h2>
+			{#if viewingSuperseded}
+				<p class="callout">
+					Superseded version {sealed.meta.version_number} — retained and
+					readable; the current version is {view.latest_version_number}.
+					<a href={`/drafts/${draftId}`}>View the current version</a>
+				</p>
+			{/if}
 			<p class="quiet">
 				Version {sealed.meta.version_number} · record schema
 				{sealed.meta.record_schema} · finalized by
@@ -751,6 +822,7 @@
 			</p>
 		</section>
 
+		{#if !viewingSuperseded}
 		<section class="panel">
 			<h2>Acknowledgment</h2>
 			<p class="quiet">Acknowledgment records receipt, not agreement.</p>
@@ -811,6 +883,77 @@
 				{/if}
 			{/if}
 		</section>
+		{/if}
+
+		{#if versions.length > 1}
+			<section class="panel">
+				<h2>Version history</h2>
+				<p class="quiet">
+					Every version remains readable while retained; a correction is a
+					successor, never an edit.
+				</p>
+				{#each versions as version (version.version_number)}
+					<div class="version-row">
+						<p>
+							<strong>Version {version.version_number}</strong>
+							<span class="quiet-inline">
+								finalized by {version.finalized_by_display_name}
+								{instant(version.finalized_at)}
+							</span>
+						</p>
+						{#if version.amendment}
+							<p class="quiet small-note">
+								Amendment by {version.amendment.opened_by_display_name}
+								({instant(version.amendment.opened_at)}):
+								{version.amendment.reason}
+							</p>
+						{/if}
+						<p class="quiet small-note">
+							{#if version.acknowledgment}
+								{ackLine(version.acknowledgment)}
+								({instant(version.acknowledgment.recorded_at)})
+							{:else if version.version_number === versions[0].version_number}
+								Awaiting acknowledgment.
+							{:else}
+								Never acknowledged; superseded.
+							{/if}
+						</p>
+						<p class="quiet small-note">
+							Content hash: <code>{version.content_hash}</code>
+							·
+							{#if sealed !== null && version.version_number === sealed.meta.version_number}
+								<span class="quiet-inline">shown above</span>
+							{:else if view.latest_version_number !== null && version.version_number === view.latest_version_number}
+								<a href={`/drafts/${draftId}`}>Read</a>
+							{:else}
+								<a href={`/drafts/${draftId}?version=${version.version_number}`}>Read</a>
+							{/if}
+						</p>
+					</div>
+				{/each}
+			</section>
+		{/if}
+
+		{#if view.viewer_may_amend && !viewingSuperseded}
+			<section class="panel">
+				<h2>Amend</h2>
+				<p class="quiet">
+					An amendment reopens the working copy for a correction that seals
+					as the next version under the same workflow rules. This version
+					stays readable, and the successor requires a new acknowledgment.
+				</p>
+				<label for="amend-reason">Reason</label>
+				<textarea id="amend-reason" rows="2" bind:value={amendReason}></textarea>
+				<button
+					type="button"
+					class="secondary"
+					disabled={busy || amendReason.trim() === ''}
+					onclick={amendNow}
+				>
+					Open amendment
+				</button>
+			</section>
+		{/if}
 	{/if}
 
 	{#if view.status !== 'finalized'}
@@ -1122,6 +1265,13 @@
 		padding: 0.45rem 0.6rem;
 		border-bottom: 1px solid #e4e9ee;
 		vertical-align: top;
+	}
+	.version-row {
+		border-top: 1px solid light-dark(#e3e6eb, #2a303b);
+		padding: 0.5rem 0;
+	}
+	.version-row p {
+		margin: 0 0 0.2rem;
 	}
 	.small-note {
 		margin: 0.15rem 0 0;

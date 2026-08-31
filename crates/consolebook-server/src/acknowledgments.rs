@@ -413,6 +413,8 @@ pub struct TimelineRow {
     /// meaning), for presentation; ordering uses the finalized instant.
     pub business_date: Option<String>,
     pub finalized_at: i64,
+    /// The latest version's number; above 1 the record was amended.
+    pub record_version_number: i64,
     pub acknowledgment_kind: Option<String>,
     pub acknowledged_at: Option<i64>,
 }
@@ -431,6 +433,7 @@ pub async fn own_records(
     let rows = sqlx::query(
         "SELECT r.id AS record_id, pv.name AS program_name, pv.version_number,
                 f.name AS form_name, v.finalized_at,
+                v.version_number AS record_version_number,
                 (SELECT MIN(ts.business_date) FROM evaluation_session es
                  JOIN training_session ts ON ts.id = es.training_session_id
                  WHERE es.evaluation_record_id = r.id) AS business_date,
@@ -461,6 +464,7 @@ pub async fn own_records(
             form_name: row.get("form_name"),
             business_date: row.get("business_date"),
             finalized_at: row.get("finalized_at"),
+            record_version_number: row.get("record_version_number"),
             acknowledgment_kind: row.get("ack_kind"),
             acknowledged_at: row.get("ack_at"),
         })

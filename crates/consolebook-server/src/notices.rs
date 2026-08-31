@@ -27,6 +27,7 @@ pub enum NoticeKind {
     AcknowledgmentResponse,
     AcknowledgmentRefused,
     AcknowledgmentAttested,
+    AmendmentOpened,
 }
 
 impl NoticeKind {
@@ -45,6 +46,7 @@ impl NoticeKind {
             Self::AcknowledgmentResponse => "acknowledgment_response",
             Self::AcknowledgmentRefused => "acknowledgment_refused",
             Self::AcknowledgmentAttested => "acknowledgment_attested",
+            Self::AmendmentOpened => "amendment_opened",
         }
     }
 }
