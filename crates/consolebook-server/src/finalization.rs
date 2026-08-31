@@ -32,6 +32,10 @@ pub enum FinalizeRefusal {
     NotApproved,
     NarrativesIncomplete,
     RatingsIncomplete,
+    /// The record changed since the finalizer viewed it; sealing
+    /// carries the viewed revision exactly as submission does, so
+    /// content nobody reviewed is never made permanent.
+    StaleSave,
 }
 
 /// The pinned version's completion rules; a missing row fails closed
@@ -130,12 +134,15 @@ pub struct VersionMeta {
     pub finalized_by_display_name: String,
 }
 
-/// Seals an approved draft into its first immutable version.
+/// Seals an approved draft into its first immutable version. The
+/// caller passes the revision it viewed; a save that landed since is a
+/// typed stale refusal, never content sealed sight unseen.
 #[allow(clippy::too_many_lines)]
 pub async fn finalize(
     pool: &SqlitePool,
     actor_user_id: i64,
     record_id: i64,
+    expected_revision: i64,
 ) -> Result<std::result::Result<VersionMeta, FinalizeRefusal>> {
     let mut conn = pool.acquire().await.context("acquiring connection")?;
     let Some(record) = evaluation_drafts::load_record(&mut conn, record_id).await? else {
@@ -157,6 +164,19 @@ pub async fn finalize(
             .context("checking for a finalized version")?;
     if finalized.is_some() {
         return storage::refuse(tx, FinalizeRefusal::AlreadyFinalized).await;
+    }
+    // The revision is rechecked inside the transaction (the submit
+    // contract): under a policy without required review the copy stays
+    // editable up to this moment, and a racing save must resolve as a
+    // stale refusal rather than be sealed unseen.
+    let revision_now: i64 =
+        sqlx::query_scalar("SELECT revision FROM evaluation_record WHERE id = ?1")
+            .bind(record_id)
+            .fetch_one(&mut *tx)
+            .await
+            .context("rechecking revision")?;
+    if expected_revision != revision_now {
+        return storage::refuse(tx, FinalizeRefusal::StaleSave).await;
     }
     let policy = policy(&mut tx, record.program_version_id).await?;
     if policy.review_approved

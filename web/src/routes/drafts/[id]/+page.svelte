@@ -326,15 +326,27 @@
 	}
 
 	// Sealing: completion rules answer at the act with typed refusals;
-	// the page surfaces them verbatim.
+	// the page surfaces them verbatim. Like submission, nothing is
+	// sealed over a failed save, a stale reload, or a revision this
+	// page has not seen.
 	async function finalizeNow() {
 		busy = true;
 		error = '';
 		try {
 			await flushSaves();
-			await finalizeDraft(draftId);
+			if (saveState === 'failed' || staleReloaded) {
+				staleReloaded = false;
+				return;
+			}
+			await finalizeDraft(draftId, revision);
 			await load();
 		} catch (err) {
+			if (err instanceof ApiError && err.code === 'stale_save') {
+				await load();
+				error =
+					'The record changed since this page last saw it; review the reloaded content before finalizing.';
+				return;
+			}
 			error = err instanceof ApiError ? err.message : 'the server could not be reached';
 		} finally {
 			busy = false;
@@ -442,21 +454,43 @@
 	<section class="panel">
 		<div class="head">
 			<div>
-				<h1>{view.form.form_name}</h1>
-				<p class="quiet">
-					{view.trainee_display_name} · {view.program_name} — v{view.version_number}
-					· owned by {view.owner_display_name}
-				</p>
-				{#each view.sessions as covered (covered.session_id)}
+				{#if view.status === 'finalized' && sealed !== null}
+					<!-- A finalized record presents from its stored envelope
+					     only (ADR 0011): a later rename or session close
+					     changes nothing shown here. -->
+					<h1>{sealed.envelope.form.name}</h1>
 					<p class="quiet">
-						Session {covered.business_date}:
-						{covered.local_start.replace('T', ' ')}
-						{#if covered.local_end}
-							– {covered.local_end.replace('T', ' ')}
-						{/if}
-						<span class="quiet-inline">({covered.timezone})</span>
+						{sealed.envelope.trainee.display_name} ·
+						{sealed.envelope.program.name} —
+						v{sealed.envelope.program.version_number}
 					</p>
-				{/each}
+					{#each sealed.envelope.sessions as covered (covered.utc_start)}
+						<p class="quiet">
+							Session {covered.business_date}:
+							{covered.local_start.replace('T', ' ')}
+							{#if covered.local_end}
+								– {covered.local_end.replace('T', ' ')}
+							{/if}
+							<span class="quiet-inline">({covered.timezone})</span>
+						</p>
+					{/each}
+				{:else}
+					<h1>{view.form.form_name}</h1>
+					<p class="quiet">
+						{view.trainee_display_name} · {view.program_name} — v{view.version_number}
+						· owned by {view.owner_display_name}
+					</p>
+					{#each view.sessions as covered (covered.session_id)}
+						<p class="quiet">
+							Session {covered.business_date}:
+							{covered.local_start.replace('T', ' ')}
+							{#if covered.local_end}
+								– {covered.local_end.replace('T', ' ')}
+							{/if}
+							<span class="quiet-inline">({covered.timezone})</span>
+						</p>
+					{/each}
+				{/if}
 			</div>
 			<div class="workflow">
 				<span
@@ -481,7 +515,11 @@
 				{/if}
 			</div>
 		</div>
-		{#if view.form.instructions}
+		{#if view.status === 'finalized' && sealed !== null}
+			{#if sealed.envelope.form.instructions}
+				<p class="instructions">{sealed.envelope.form.instructions}</p>
+			{/if}
+		{:else if view.form.instructions}
 			<p class="instructions">{view.form.instructions}</p>
 		{/if}
 		{#if view.status === 'submitted'}

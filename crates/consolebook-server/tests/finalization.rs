@@ -526,11 +526,11 @@ async fn completion_rules_gate_submission_and_sealing() {
 
     // Sealing an unapproved draft is refused; so is a sealer without
     // the capability; the database holds the approval gate raw.
-    let refused = finalization::finalize(&fx.pool, s.casey_id, s.record_id)
+    let refused = finalization::finalize(&fx.pool, s.casey_id, s.record_id, revision)
         .await
         .expect("call");
     assert_eq!(refused, Err(FinalizeRefusal::NotApproved));
-    let refused = finalization::finalize(&fx.pool, s.taylor_id, s.record_id)
+    let refused = finalization::finalize(&fx.pool, s.taylor_id, s.record_id, revision)
         .await
         .expect("call");
     assert_eq!(refused, Err(FinalizeRefusal::CapabilityRequired));
@@ -560,14 +560,19 @@ async fn completion_rules_gate_submission_and_sealing() {
     .await
     .expect("call")
     .expect("decided");
-    let meta = finalization::finalize(&fx.pool, s.casey_id, s.record_id)
+    // Sealing carries the viewed revision, exactly like submission.
+    let stale = finalization::finalize(&fx.pool, s.casey_id, s.record_id, revision + 1)
+        .await
+        .expect("call");
+    assert_eq!(stale, Err(FinalizeRefusal::StaleSave));
+    let meta = finalization::finalize(&fx.pool, s.casey_id, s.record_id, revision)
         .await
         .expect("call")
         .expect("sealed");
     assert_eq!(meta.version_number, 1);
     assert_eq!(meta.content_hash.len(), 64);
     assert_eq!(meta.chain_hash.len(), 64);
-    let again = finalization::finalize(&fx.pool, s.casey_id, s.record_id)
+    let again = finalization::finalize(&fx.pool, s.casey_id, s.record_id, revision)
         .await
         .expect("call");
     assert_eq!(again, Err(FinalizeRefusal::AlreadyFinalized));
@@ -749,11 +754,31 @@ async fn policy_off_seals_without_review() {
 
     // No submission, no review, no content: the configured rules are
     // all off, so the empty draft seals directly from its open state.
-    let refused = finalization::finalize(&fx.pool, s.jordan_id, s.record_id)
+    let refused = finalization::finalize(&fx.pool, s.jordan_id, s.record_id, 0)
         .await
         .expect("call");
     assert_eq!(refused, Err(FinalizeRefusal::CapabilityRequired));
-    let meta = finalization::finalize(&fx.pool, s.casey_id, s.record_id)
+    // The copy stays editable up to sealing here, so the race Codex
+    // named is live: a save landing after the finalizer viewed the
+    // record resolves as a stale refusal, never sealed sight unseen.
+    let revision = draft_content::save(
+        &fx.pool,
+        s.jordan_id,
+        s.record_id,
+        0,
+        &DraftContent {
+            ratings: Vec::new(),
+            narratives: Vec::new(),
+        },
+    )
+    .await
+    .expect("call")
+    .expect("saved");
+    let stale = finalization::finalize(&fx.pool, s.casey_id, s.record_id, 0)
+        .await
+        .expect("call");
+    assert_eq!(stale, Err(FinalizeRefusal::StaleSave));
+    let meta = finalization::finalize(&fx.pool, s.casey_id, s.record_id, revision)
         .await
         .expect("call")
         .expect("sealed");
@@ -851,7 +876,7 @@ async fn finalize_api_round_trip() {
         "POST",
         &format!("/api/drafts/{}/finalize", s.record_id),
         Some(&casey),
-        None,
+        Some(serde_json::json!({ "revision": revision })),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
@@ -861,7 +886,7 @@ async fn finalize_api_round_trip() {
         "POST",
         &format!("/api/drafts/{}/finalize", s.record_id),
         Some(&jordan),
-        None,
+        Some(serde_json::json!({ "revision": revision })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -891,7 +916,7 @@ async fn finalize_api_round_trip() {
         "POST",
         &format!("/api/drafts/{}/finalize", s.record_id),
         Some(&casey),
-        None,
+        Some(serde_json::json!({ "revision": revision })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "finalize: {body}");
@@ -927,7 +952,7 @@ async fn finalize_api_round_trip() {
         "POST",
         &format!("/api/drafts/{}/finalize", s.record_id),
         Some(&casey),
-        None,
+        Some(serde_json::json!({ "revision": revision })),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);

@@ -944,8 +944,11 @@ export interface Verification {
 	chain_hash_ok: boolean;
 }
 
-export function finalizeDraft(draftId: number): Promise<VersionMeta> {
-	return request(`/api/drafts/${draftId}/finalize`, { method: 'POST' });
+export function finalizeDraft(draftId: number, revision: number): Promise<VersionMeta> {
+	return request(`/api/drafts/${draftId}/finalize`, {
+		method: 'POST',
+		body: JSON.stringify({ revision })
+	});
 }
 
 export function finalizedVersion(draftId: number): Promise<FinalizedView> {

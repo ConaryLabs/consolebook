@@ -347,15 +347,26 @@ fn finalize_refusal(refusal: FinalizeRefusal) -> ApiError {
             "ratings_incomplete",
             "every competency is rated or explicitly marked not observed",
         ),
+        FinalizeRefusal::StaleSave => ApiError::new(
+            StatusCode::CONFLICT,
+            "stale_save",
+            "the record changed since it was viewed; review the latest content",
+        ),
     }
+}
+
+#[derive(Deserialize)]
+struct FinalizeRequest {
+    revision: i64,
 }
 
 async fn finalize_draft(
     State(state): State<AppState>,
     current: CurrentUser,
     Path(record_id): Path<i64>,
+    Json(req): Json<FinalizeRequest>,
 ) -> Result<Response, ApiError> {
-    match finalization::finalize(&state.pool, current.user.id, record_id).await? {
+    match finalization::finalize(&state.pool, current.user.id, record_id, req.revision).await? {
         Ok(meta) => Ok(Json(meta).into_response()),
         Err(refusal) => Err(finalize_refusal(refusal)),
     }
