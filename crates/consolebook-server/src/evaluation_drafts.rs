@@ -260,7 +260,9 @@ pub(crate) async fn may_contribute(
 }
 
 /// Whether the actor may read this draft: contributors, everyone the
-/// enrollment history is open to, and — once the record has been
+/// enrollment history is open to, the trainee themselves once the
+/// record is finalized (`view_own_records`; drafts in progress about
+/// them are not theirs to see), and — once the record has been
 /// submitted at least once — evaluation reviewers.
 pub(crate) async fn may_read(
     pool: &SqlitePool,
@@ -272,6 +274,23 @@ pub(crate) async fn may_read(
     }
     if lifecycle::may_read(pool, actor_user_id, record.enrollment_id).await? {
         return Ok(true);
+    }
+    if capabilities::user_has(pool, actor_user_id, Capability::ViewOwnRecords).await? {
+        let own_finalized: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM enrollment e
+             WHERE e.id = ?1 AND e.user_id = ?2
+               AND EXISTS (SELECT 1 FROM evaluation_version v
+                           WHERE v.evaluation_record_id = ?3)",
+        )
+        .bind(record.enrollment_id)
+        .bind(actor_user_id)
+        .bind(record.id)
+        .fetch_optional(pool)
+        .await
+        .context("checking own finalized record")?;
+        if own_finalized.is_some() {
+            return Ok(true);
+        }
     }
     if capabilities::user_has(pool, actor_user_id, Capability::ReviewEvaluation).await? {
         let submitted: Option<i64> = sqlx::query_scalar(

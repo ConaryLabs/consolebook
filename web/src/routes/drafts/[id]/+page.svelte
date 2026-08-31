@@ -2,20 +2,26 @@
 	import { page } from '$app/state';
 	import {
 		ApiError,
+		acknowledgeRecord,
+		attestRecord,
 		finalizeDraft,
 		finalizedVersion,
+		getAcknowledgment,
 		getDraft,
 		reviewDraft,
 		saveDraftContent,
 		submitDraft,
 		transferDraft,
 		verifyVersion,
+		type Acknowledgment,
+		type AttestedKind,
 		type DraftContent,
 		type DraftStatus,
 		type DraftView,
 		type FinalizedView,
 		type ReviewDecisionKind,
 		type SkeletonCompetency,
+		type TraineeAckKind,
 		type Verification
 	} from '$lib/api';
 	import { instant } from '$lib/format';
@@ -29,6 +35,12 @@
 	);
 	let canAuthor = $derived(
 		data.session?.capabilities.includes('author_evaluation') ?? false
+	);
+	let canAcknowledgeOwn = $derived(
+		data.session?.capabilities.includes('acknowledge_own_record') ?? false
+	);
+	let canReviewCap = $derived(
+		data.session?.capabilities.includes('review_evaluation') ?? false
 	);
 
 	let view: DraftView | null = $state(null);
@@ -49,6 +61,7 @@
 	// (ADR 0011).
 	let sealed: FinalizedView | null = $state(null);
 	let verification: Verification | null = $state(null);
+	let ack: Acknowledgment | null = $state(null);
 
 	async function load() {
 		try {
@@ -58,9 +71,11 @@
 				// finalized record (ADR 0011): if it cannot load, the page
 				// fails closed and presents nothing from live joins.
 				sealed = await finalizedVersion(draftId);
+				ack = (await getAcknowledgment(draftId)).acknowledgment;
 			} else {
 				sealed = null;
 				verification = null;
+				ack = null;
 			}
 			view = fetched;
 			const nextValues: Record<number, number | null> = {};
@@ -364,6 +379,66 @@
 			verification = await verifyVersion(draftId);
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : 'the server could not be reached';
+		}
+	}
+
+	// Acknowledgment records receipt, not agreement (docs/domain-model.md):
+	// the trainee speaks for themselves; a reviewer attests only what the
+	// trainee cannot or will not record.
+	let ackKind: TraineeAckKind = $state('acknowledged');
+	let ackText = $state('');
+	let attestKind: AttestedKind = $state('supervisor_attested_refusal');
+	let attestReason = $state('');
+
+	let isTrainee = $derived.by(() => {
+		const current = sealed;
+		return current !== null && current.envelope.trainee.id === myUserId;
+	});
+
+	async function recordAcknowledgment() {
+		busy = true;
+		error = '';
+		try {
+			await acknowledgeRecord(
+				draftId,
+				ackKind,
+				ackKind === 'acknowledged' ? undefined : ackText
+			);
+			ack = (await getAcknowledgment(draftId)).acknowledgment;
+			ackText = '';
+		} catch (err) {
+			error = err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function recordAttestation() {
+		busy = true;
+		error = '';
+		try {
+			await attestRecord(draftId, attestKind, attestReason);
+			ack = (await getAcknowledgment(draftId)).acknowledgment;
+			attestReason = '';
+		} catch (err) {
+			error = err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
+
+	function ackLine(recorded: Acknowledgment): string {
+		switch (recorded.kind) {
+			case 'acknowledged':
+				return `${recorded.user_display_name} acknowledged receipt`;
+			case 'acknowledged_with_response':
+				return `${recorded.user_display_name} acknowledged receipt with a response`;
+			case 'refused':
+				return `${recorded.user_display_name} refused to acknowledge`;
+			case 'supervisor_attested_refusal':
+				return `${recorded.recorded_by_display_name} attested that ${recorded.user_display_name} refused to acknowledge`;
+			case 'unavailable':
+				return `${recorded.recorded_by_display_name} recorded ${recorded.user_display_name} as unavailable to acknowledge`;
 		}
 	}
 
@@ -674,6 +749,67 @@
 				stored; it is not by itself proof against a writer with direct
 				database access.
 			</p>
+		</section>
+
+		<section class="panel">
+			<h2>Acknowledgment</h2>
+			<p class="quiet">Acknowledgment records receipt, not agreement.</p>
+			{#if ack !== null}
+				<p>
+					{ackLine(ack)}
+					<span class="quiet-inline">{instant(ack.recorded_at)}</span>
+				</p>
+				{#if ack.response}
+					<p class="sealed-text">{ack.response}</p>
+				{/if}
+			{:else}
+				<p class="quiet">This version awaits acknowledgment.</p>
+				{#if isTrainee && canAcknowledgeOwn}
+					<div class="row route">
+						<label class="inline" for="ack-kind">Your acknowledgment</label>
+						<select id="ack-kind" bind:value={ackKind}>
+							<option value="acknowledged">Acknowledge</option>
+							<option value="acknowledged_with_response">
+								Acknowledge with a response
+							</option>
+							<option value="refused">Refuse to acknowledge</option>
+						</select>
+					</div>
+					{#if ackKind !== 'acknowledged'}
+						<label for="ack-text">
+							{ackKind === 'refused' ? 'Reason' : 'Response'}
+						</label>
+						<textarea id="ack-text" rows="3" bind:value={ackText}></textarea>
+					{/if}
+					<button
+						type="button"
+						disabled={busy || (ackKind !== 'acknowledged' && ackText.trim() === '')}
+						onclick={recordAcknowledgment}
+					>
+						Record acknowledgment
+					</button>
+				{:else if canReviewCap && !isTrainee}
+					<div class="row route">
+						<label class="inline" for="attest-kind">Attest on the trainee's behalf</label>
+						<select id="attest-kind" bind:value={attestKind}>
+							<option value="supervisor_attested_refusal">
+								Supervisor-attested refusal
+							</option>
+							<option value="unavailable">Unavailable to acknowledge</option>
+						</select>
+					</div>
+					<label for="attest-reason">Reason</label>
+					<textarea id="attest-reason" rows="3" bind:value={attestReason}></textarea>
+					<button
+						type="button"
+						class="secondary"
+						disabled={busy || attestReason.trim() === ''}
+						onclick={recordAttestation}
+					>
+						Record attestation
+					</button>
+				{/if}
+			{/if}
 		</section>
 	{/if}
 

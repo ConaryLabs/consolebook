@@ -442,7 +442,7 @@
 			<input id="new-display-name" bind:value={newDisplayName} />
 			<label for="new-role">Role</label>
 			<select id="new-role" bind:value={newRole}>
-				<option value="trainee">Trainee (no capabilities yet)</option>
+				<option value="trainee">Trainee</option>
 				<option value="trainer">Trainer</option>
 				<option value="coordinator">Coordinator</option>
 				<option value="administrator">Administrator</option>

@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post, put};
 use serde::{Deserialize, Serialize};
 
+use crate::acknowledgments::{self, AckRefusal, AttestedKind, TraineeAckKind};
 use crate::draft_content::{self, DraftContent, FormSkeleton};
 use crate::draft_review::{self, ReviewDecisionKind};
 use crate::evaluation_drafts::{self, DraftDetail, DraftRefusal};
@@ -29,6 +30,10 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/drafts/{id}/finalize", post(finalize_draft))
         .route("/api/drafts/{id}/version", get(finalized_version))
         .route("/api/drafts/{id}/version/verify", get(verify_version))
+        .route("/api/drafts/{id}/acknowledge", post(acknowledge_record))
+        .route("/api/drafts/{id}/attest", post(attest_record))
+        .route("/api/drafts/{id}/acknowledgment", get(get_acknowledgment))
+        .route("/api/my/records", get(my_records))
         .route("/api/reviews/queue", get(review_queue))
 }
 
@@ -352,6 +357,133 @@ fn finalize_refusal(refusal: FinalizeRefusal) -> ApiError {
             "stale_save",
             "the record changed since it was viewed; review the latest content",
         ),
+    }
+}
+
+fn ack_refusal(refusal: AckRefusal) -> ApiError {
+    match refusal {
+        AckRefusal::NoSuchRecord => {
+            ApiError::new(StatusCode::NOT_FOUND, "no_such_record", "no such record")
+        }
+        AckRefusal::NotFinalized => ApiError::new(
+            StatusCode::CONFLICT,
+            "not_finalized",
+            "acknowledgments reference a finalized version",
+        ),
+        AckRefusal::CapabilityRequired => ApiError::new(
+            StatusCode::FORBIDDEN,
+            "capability_required",
+            "this action is not available to this account",
+        ),
+        AckRefusal::NotYourRecord => ApiError::new(
+            StatusCode::FORBIDDEN,
+            "not_your_record",
+            "an acknowledgment binds the record's own trainee",
+        ),
+        AckRefusal::SelfAttestation => ApiError::new(
+            StatusCode::CONFLICT,
+            "self_attestation",
+            "an attested kind is recorded about the trainee, never by them",
+        ),
+        AckRefusal::AlreadyAcknowledged => ApiError::new(
+            StatusCode::CONFLICT,
+            "already_acknowledged",
+            "this version already carries its acknowledgment",
+        ),
+        AckRefusal::ResponseRequired => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "response_required",
+            "this kind explains itself; add the text",
+        ),
+        AckRefusal::ResponseNotAllowed => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "response_not_allowed",
+            "a plain acknowledgment carries no text",
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct AcknowledgeRequest {
+    kind: TraineeAckKind,
+    #[serde(default)]
+    response: Option<String>,
+}
+
+async fn acknowledge_record(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(record_id): Path<i64>,
+    Json(req): Json<AcknowledgeRequest>,
+) -> Result<Response, ApiError> {
+    match acknowledgments::acknowledge(
+        &state.pool,
+        current.user.id,
+        record_id,
+        req.kind,
+        req.response.as_deref().unwrap_or_default(),
+    )
+    .await?
+    {
+        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(refusal) => Err(ack_refusal(refusal)),
+    }
+}
+
+#[derive(Deserialize)]
+struct AttestRequest {
+    kind: AttestedKind,
+    reason: String,
+}
+
+async fn attest_record(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(record_id): Path<i64>,
+    Json(req): Json<AttestRequest>,
+) -> Result<Response, ApiError> {
+    match acknowledgments::attest(
+        &state.pool,
+        current.user.id,
+        record_id,
+        req.kind,
+        &req.reason,
+    )
+    .await?
+    {
+        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(refusal) => Err(ack_refusal(refusal)),
+    }
+}
+
+#[derive(Serialize)]
+struct AcknowledgmentBody {
+    acknowledgment: Option<acknowledgments::AckView>,
+}
+
+async fn get_acknowledgment(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(record_id): Path<i64>,
+) -> Result<Response, ApiError> {
+    match acknowledgments::acknowledgment_of(&state.pool, current.user.id, record_id).await? {
+        Ok(acknowledgment) => Ok(Json(AcknowledgmentBody { acknowledgment }).into_response()),
+        Err(refusal) => Err(ack_refusal(refusal)),
+    }
+}
+
+#[derive(Serialize)]
+struct MyRecordsBody {
+    records: Vec<acknowledgments::TimelineRow>,
+}
+
+async fn my_records(
+    State(state): State<AppState>,
+    current: CurrentUser,
+) -> Result<Response, ApiError> {
+    match acknowledgments::own_records(&state.pool, current.user.id).await? {
+        Ok(records) => Ok(Json(MyRecordsBody { records }).into_response()),
+        Err(refusal) => Err(ack_refusal(refusal)),
     }
 }
 

@@ -23,6 +23,9 @@ pub enum NoticeKind {
     DraftChangesRequested,
     DraftReturned,
     DraftFinalized,
+    RecordAwaitsAcknowledgment,
+    AcknowledgmentRefused,
+    AcknowledgmentAttested,
 }
 
 impl NoticeKind {
@@ -37,6 +40,9 @@ impl NoticeKind {
             Self::DraftChangesRequested => "draft_changes_requested",
             Self::DraftReturned => "draft_returned",
             Self::DraftFinalized => "draft_finalized",
+            Self::RecordAwaitsAcknowledgment => "record_awaits_acknowledgment",
+            Self::AcknowledgmentRefused => "acknowledgment_refused",
+            Self::AcknowledgmentAttested => "acknowledgment_attested",
         }
     }
 }
