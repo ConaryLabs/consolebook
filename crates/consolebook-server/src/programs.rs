@@ -46,6 +46,30 @@ pub struct VersionContent {
     /// Version-level standards citations; competency- and task-level
     /// citations nest under their owners.
     pub citations: Vec<CitationDef>,
+    /// Completion rules gating finalization (ADR 0011), versioned like
+    /// every other piece of configuration. Absent in older exports;
+    /// the conservative defaults apply.
+    #[serde(default)]
+    pub finalization_policy: PolicyDef,
+}
+
+/// The closed v1 completion-rule set (#32 decision 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyDef {
+    pub review_approved: bool,
+    pub required_narratives: bool,
+    pub ratings_complete: bool,
+}
+
+impl Default for PolicyDef {
+    fn default() -> Self {
+        Self {
+            review_approved: true,
+            required_narratives: true,
+            ratings_complete: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1134,6 +1158,18 @@ async fn insert_content(
     for citation in &content.citations {
         insert_citation(&mut *conn, version_id, None, None, citation).await?;
     }
+    sqlx::query(
+        "INSERT INTO finalization_policy
+             (program_version_id, review_approved, required_narratives, ratings_complete)
+         VALUES (?1, ?2, ?3, ?4)",
+    )
+    .bind(version_id)
+    .bind(i64::from(content.finalization_policy.review_approved))
+    .bind(i64::from(content.finalization_policy.required_narratives))
+    .bind(i64::from(content.finalization_policy.ratings_complete))
+    .execute(&mut *conn)
+    .await
+    .context("writing finalization policy")?;
     Ok(())
 }
 
@@ -1141,6 +1177,7 @@ async fn insert_content(
 /// foreign keys hold throughout.
 async fn delete_content(conn: &mut SqliteConnection, version_id: i64) -> Result<()> {
     for statement in [
+        "DELETE FROM finalization_policy WHERE program_version_id = ?1",
         "DELETE FROM standards_citation WHERE program_version_id = ?1",
         "DELETE FROM form_narrative WHERE program_version_id = ?1",
         "DELETE FROM form_competency WHERE program_version_id = ?1",
@@ -1190,7 +1227,23 @@ pub async fn load_content(pool: &SqlitePool, version_id: i64) -> Result<Option<V
         rating_modifiers: Vec::new(),
         evaluation_forms: Vec::new(),
         citations: Vec::new(),
+        finalization_policy: PolicyDef::default(),
     };
+    if let Some(policy) = sqlx::query(
+        "SELECT review_approved, required_narratives, ratings_complete
+         FROM finalization_policy WHERE program_version_id = ?1",
+    )
+    .bind(version_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .context("loading finalization policy")?
+    {
+        content.finalization_policy = PolicyDef {
+            review_approved: policy.get::<i64, _>("review_approved") != 0,
+            required_narratives: policy.get::<i64, _>("required_narratives") != 0,
+            ratings_complete: policy.get::<i64, _>("ratings_complete") != 0,
+        };
+    }
     load_phases(&mut tx, version_id, &mut content).await?;
     let competency_index = load_competencies(&mut tx, version_id, &mut content).await?;
     load_scales(&mut tx, version_id, &mut content).await?;

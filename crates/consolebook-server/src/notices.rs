@@ -22,6 +22,7 @@ pub enum NoticeKind {
     DraftApproved,
     DraftChangesRequested,
     DraftReturned,
+    DraftFinalized,
 }
 
 impl NoticeKind {
@@ -35,6 +36,7 @@ impl NoticeKind {
             Self::DraftApproved => "draft_approved",
             Self::DraftChangesRequested => "draft_changes_requested",
             Self::DraftReturned => "draft_returned",
+            Self::DraftFinalized => "draft_finalized",
         }
     }
 }

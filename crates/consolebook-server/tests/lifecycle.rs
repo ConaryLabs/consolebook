@@ -12,7 +12,7 @@ use consolebook_server::lifecycle::{
     self, EnrollmentEventKind, EnrollmentStatus, LifecycleRefusal, PhaseEventKind,
 };
 use consolebook_server::programs::{
-    self, CompetencyDef, PhaseDef, ScaleDef, ScaleKind, TaskDef, TransitionDef, TransitionKind,
+    self, CompetencyDef, PhaseDef, PolicyDef, ScaleDef, ScaleKind, TaskDef, TransitionDef, TransitionKind,
     VersionContent,
 };
 use consolebook_server::{assignments, enrollments, notices, setup, storage, users};
@@ -250,6 +250,7 @@ fn phased_content() -> VersionContent {
         rating_modifiers: Vec::new(),
         evaluation_forms: Vec::new(),
         citations: Vec::new(),
+        finalization_policy: PolicyDef::default(),
     }
 }
 
