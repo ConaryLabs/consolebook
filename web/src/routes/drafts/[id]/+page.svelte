@@ -590,8 +590,10 @@
 			<p class="quiet">
 				Version {sealed.meta.version_number} · record schema
 				{sealed.meta.record_schema} · finalized by
-				{sealed.meta.finalized_by_display_name}
-				<span class="quiet-inline">{instant(sealed.meta.finalized_at)}</span>
+				{sealed.envelope.finalization.finalized_by.display_name}
+				<span class="quiet-inline">
+					{instant(sealed.envelope.finalization.finalized_at)}
+				</span>
 			</p>
 			<p class="quiet">
 				{sealed.envelope.trainee.display_name}
@@ -833,32 +835,64 @@
 
 	<section class="panel">
 		<h2>Attribution</h2>
-		<ul class="history">
-			{#each view.events as event (event.id)}
-				<li>
-					<strong>{event.actor_display_name}</strong>
-					{eventLine(event.kind)}
-					{#if event.to_display_name}
-						<strong>{event.to_display_name}</strong>
-					{/if}
-					<span class="quiet-inline">{instant(event.recorded_at)}</span>
-				</li>
-			{/each}
-		</ul>
-		{#if view.decisions.length > 0}
-			<h3>Review decisions</h3>
+		{#if view.status === 'finalized' && sealed !== null}
+			<!-- Sealed identities: a contributor or reviewer renamed later
+			     keeps the name the record was finalized with (ADR 0011). -->
 			<ul class="history">
-				{#each view.decisions as decision (decision.id)}
+				{#each sealed.envelope.attribution as event, index (index)}
 					<li>
-						<strong>{decision.reviewer_display_name}</strong>
-						{decisionLabel(decision.decision)}
-						<span class="quiet-inline">{instant(decision.decided_at)}</span>
-						{#if decision.comment}
-							<p class="decision-comment">{decision.comment}</p>
+						<strong>{event.actor.display_name}</strong>
+						{eventLine(event.kind)}
+						{#if event.to}
+							<strong>{event.to.display_name}</strong>
 						{/if}
+						<span class="quiet-inline">{instant(event.recorded_at)}</span>
 					</li>
 				{/each}
 			</ul>
+			{#if sealed.envelope.review.length > 0}
+				<h3>Review decisions</h3>
+				<ul class="history">
+					{#each sealed.envelope.review as decision, index (index)}
+						<li>
+							<strong>{decision.reviewer.display_name}</strong>
+							{decisionLabel(decision.decision as ReviewDecisionKind)}
+							<span class="quiet-inline">{instant(decision.decided_at)}</span>
+							{#if decision.comment}
+								<p class="decision-comment">{decision.comment}</p>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		{:else}
+			<ul class="history">
+				{#each view.events as event (event.id)}
+					<li>
+						<strong>{event.actor_display_name}</strong>
+						{eventLine(event.kind)}
+						{#if event.to_display_name}
+							<strong>{event.to_display_name}</strong>
+						{/if}
+						<span class="quiet-inline">{instant(event.recorded_at)}</span>
+					</li>
+				{/each}
+			</ul>
+			{#if view.decisions.length > 0}
+				<h3>Review decisions</h3>
+				<ul class="history">
+					{#each view.decisions as decision (decision.id)}
+						<li>
+							<strong>{decision.reviewer_display_name}</strong>
+							{decisionLabel(decision.decision)}
+							<span class="quiet-inline">{instant(decision.decided_at)}</span>
+							{#if decision.comment}
+								<p class="decision-comment">{decision.comment}</p>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			{/if}
 		{/if}
 		{#if view.snapshots.length > 0}
 			<p class="quiet">
