@@ -86,6 +86,10 @@ may produce it, and how it verifies (#48; Milestone 5 slice 2).
   yet show them outside the packet — the packet is the trainee leaving
   with their records, and the record is theirs; the interface gap is
   tracked separately, not resolved by withholding it from the packet.
+- The read rules are evaluated inside the packet's own read
+  transaction, so permission and contents describe one committed state,
+  and that transaction's connection is the only one a packet request
+  holds while it runs.
 - Every packet is audited (`trainee_packet_exported`) with actor and
   trainee and never with content.
 

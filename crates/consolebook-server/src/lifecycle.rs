@@ -611,12 +611,24 @@ pub async fn record_phase_event(
 /// `assign_training` reads everything; `view_assigned_records` reads the
 /// enrollments the actor holds an active assignment for (PRINCIPLES.md 10).
 pub async fn may_read(pool: &SqlitePool, actor_user_id: i64, enrollment_id: i64) -> Result<bool> {
-    if capabilities::user_has(pool, actor_user_id, Capability::AssignTraining).await? {
+    let mut conn = pool.acquire().await.context("acquiring connection")?;
+    may_read_on(&mut conn, actor_user_id, enrollment_id).await
+}
+
+/// [`may_read`] on one connection, so a reader can evaluate the rule
+/// inside the same transaction as the history it reads.
+pub async fn may_read_on(
+    conn: &mut SqliteConnection,
+    actor_user_id: i64,
+    enrollment_id: i64,
+) -> Result<bool> {
+    if capabilities::user_has_on(&mut *conn, actor_user_id, Capability::AssignTraining).await? {
         return Ok(true);
     }
     Ok(
-        capabilities::user_has(pool, actor_user_id, Capability::ViewAssignedRecords).await?
-            && assignments::is_assigned(pool, actor_user_id, enrollment_id).await?,
+        capabilities::user_has_on(&mut *conn, actor_user_id, Capability::ViewAssignedRecords)
+            .await?
+            && assignments::is_assigned_on(&mut *conn, actor_user_id, enrollment_id).await?,
     )
 }
 

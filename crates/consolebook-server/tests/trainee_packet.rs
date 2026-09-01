@@ -1453,7 +1453,7 @@ async fn documents_keep_their_order_and_shape() {
     // Configured text the tables require, and the manifest's own
     // enrollment member.
     let report = forged(&listed, signoffs, |doc| {
-        doc[0]["prompt"] = serde_json::json!("");
+        doc[1]["prompt"] = serde_json::json!("");
     });
     assert!(
         matches!(
@@ -1463,7 +1463,7 @@ async fn documents_keep_their_order_and_shape() {
         "{report:?}"
     );
     let report = forged(&listed, signoffs, |doc| {
-        doc[0]["competency_name"] = serde_json::json!("");
+        doc[1]["competency_name"] = serde_json::json!("");
     });
     assert!(
         matches!(
@@ -1474,7 +1474,7 @@ async fn documents_keep_their_order_and_shape() {
         "{report:?}"
     );
     let report = forged(&listed, signoffs, |doc| {
-        doc[0]["program_version"]["version_number"] = serde_json::json!(0);
+        doc[1]["program_version"]["version_number"] = serde_json::json!(0);
     });
     assert!(
         matches!(
@@ -1506,6 +1506,30 @@ async fn documents_keep_their_order_and_shape() {
             .contains(&Finding::ManifestEnrollmentInvalid {
                 detail: "the trainee has an empty display name".to_owned()
             }),
+        "{report:?}"
+    );
+
+    // Two rows for one task describing it differently: the version,
+    // competency, and prompt are configuration the pinned version fixes.
+    let report = forged(&listed, signoffs, |doc| {
+        doc[1]["prompt"] = serde_json::json!("Processes some other invented call.");
+    });
+    assert!(
+        matches!(
+            &report.documents[3].findings[..],
+            [Finding::DocumentInvalid { detail, .. }]
+                if detail.contains("describes task") && detail.contains("differently from signoff")
+        ),
+        "{report:?}"
+    );
+    let report = forged(&listed, signoffs, |doc| {
+        doc[1]["program_version"]["version_number"] = serde_json::json!(2);
+    });
+    assert!(
+        matches!(
+            &report.documents[3].findings[..],
+            [Finding::DocumentInvalid { detail, .. }] if detail.contains("differently from signoff")
+        ),
         "{report:?}"
     );
 

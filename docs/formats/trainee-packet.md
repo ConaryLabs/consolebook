@@ -169,18 +169,23 @@ keeps each signoff's configuration provenance without the installation.
 be empty (uncategorized). `kind` is one of `observed`, `demonstrated`,
 `revoked`. Any signoff after the first for a task supersedes it and
 records a non-blank `reason`, and a revocation never opens a task's
-history: it has something to revoke.
+history: it has something to revoke. Every row for one `task_id`
+describes the task alike — its pinned version, competency, and prompt
+are configuration the version fixes — so a later row that differs is a
+finding.
 
 ## Determinism
 
 A packet is a pure function of the enrollment's rows and the export
 instant: the same enrollment packed at the same instant is byte-
 identical, for the same reasons the record export is. The producing
-installation reads the enrollment, its units, and every document inside
-one database transaction, so a packet describes one committed state: a
-finalization, acknowledgment, or signoff that lands while a packet is
-being produced is wholly in it or wholly absent, never listed by the
-manifest and missing from a document.
+installation reads the enrollment, the authorization that governs it,
+its units, and every document inside one database transaction, so a
+packet describes one committed state: a finalization, acknowledgment,
+signoff, or assignment change that lands while a packet is being
+produced is wholly in it or wholly absent, never listed by the manifest
+and missing from a document, and never read under permission that the
+same instant had already withdrawn.
 
 ## Verification
 
@@ -222,8 +227,8 @@ Document checks:
    gives a reason, a lifecycle event carries version references exactly
    when it is a version change, a phase event names the phases its kind
    requires and is not effective after it was recorded, a signoff
-   override records its reason, and a revocation is never a task's
-   first signoff;
+   override records its reason, a revocation is never a task's first
+   signoff, and every signoff for one task describes it alike;
 6. every acknowledgment names a (`record_id`, `version_number`) the
    packet carries, and every amendment's predecessor, and successor
    where present, does too — a reference the packet cannot resolve is

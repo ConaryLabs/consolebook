@@ -14,7 +14,7 @@
 //! training history, `export_records`); `export_verify` checks a packet
 //! from its bytes alone.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
@@ -429,21 +429,38 @@ pub struct SignoffDoc {
     pub signed_at: i64,
 }
 
+impl SignoffDoc {
+    /// Whether two rows describe their task alike: the pinned version,
+    /// competency, and prompt are configuration the version fixes, so
+    /// every row for one task carries the same description.
+    #[must_use]
+    pub fn describes_task_like(&self, other: &Self) -> bool {
+        self.task_id == other.task_id
+            && self.program_version == other.program_version
+            && self.competency_category == other.competency_category
+            && self.competency_name == other.competency_name
+            && self.prompt == other.prompt
+    }
+}
+
 /// The shape the format mandates of the signoff history beyond member
 /// types, mirroring `task_signoff`'s constraints and triggers and the
 /// configuration tables it joins: every signer has a name, every task
 /// prompt and competency name is non-empty, every program version is
-/// at least 1; in recorded order, any signoff after the first for a
-/// task supersedes it and records its reason, and a revocation has
-/// something to revoke.
+/// at least 1, every row for one task describes it alike; in recorded
+/// order, any signoff after the first for a task supersedes it and
+/// records its reason, and a revocation has something to revoke.
 #[must_use]
 pub fn signoff_shape_errors(signoffs: &[SignoffDoc]) -> Vec<String> {
-    let mut seen = BTreeSet::new();
+    let mut first_for_task: BTreeMap<i64, &SignoffDoc> = BTreeMap::new();
     signoffs
         .iter()
         .filter_map(|signoff| {
             let id = signoff.signoff_id;
-            let first = seen.insert(signoff.task_id);
+            let earlier = first_for_task.get(&signoff.task_id).copied();
+            if earlier.is_none() {
+                first_for_task.insert(signoff.task_id, signoff);
+            }
             if !signoff.signed_by.is_named() {
                 Some(format!("signoff {id} names its signer with an empty name"))
             } else if signoff.prompt.is_empty() {
@@ -452,12 +469,19 @@ pub fn signoff_shape_errors(signoffs: &[SignoffDoc]) -> Vec<String> {
                 Some(format!("signoff {id} carries an empty competency name"))
             } else if signoff.program_version.version_number < 1 {
                 Some(format!("signoff {id} names a program version below 1"))
-            } else if first && signoff.kind == SignoffKind::Revoked {
+            } else if let Some(earlier) = earlier
+                && !signoff.describes_task_like(earlier)
+            {
+                Some(format!(
+                    "signoff {id} describes task {} differently from signoff {}",
+                    signoff.task_id, earlier.signoff_id
+                ))
+            } else if earlier.is_none() && signoff.kind == SignoffKind::Revoked {
                 Some(format!(
                     "signoff {id} revokes task {} before any signoff",
                     signoff.task_id
                 ))
-            } else if !first && signoff.reason.trim().is_empty() {
+            } else if earlier.is_some() && signoff.reason.trim().is_empty() {
                 Some(format!(
                     "signoff {id} overrides task {} without a reason",
                     signoff.task_id
@@ -509,25 +533,25 @@ pub async fn export(
 /// transaction, so they describe one committed state — a finalization,
 /// acknowledgment, or signoff landing mid-pack is wholly in or wholly
 /// out, never in the manifest and missing from a document.
-/// Authorization runs first, on the pool, so no request holds the
-/// transaction's connection while waiting for another: the pool is
-/// bounded, and a packet must never be the reason it runs dry.
+/// The authorization that governs the packet is evaluated inside the
+/// same transaction, so permission and contents describe one committed
+/// state — an assignment ended mid-pack is wholly in or wholly out too —
+/// and the transaction's connection is the only one the request holds:
+/// the pool is bounded, and a packet must never be the reason it runs
+/// dry.
 pub async fn export_at(
     pool: &SqlitePool,
     actor_user_id: i64,
     enrollment_id: i64,
     exported_at: i64,
 ) -> Result<std::result::Result<Packet, PacketRefusal>> {
-    let Some(trainee_user_id) = trainee_of(pool, enrollment_id).await? else {
-        return Ok(Err(PacketRefusal::NoSuchEnrollment));
-    };
-    if !may_pack(pool, actor_user_id, enrollment_id, trainee_user_id).await? {
-        return Ok(Err(PacketRefusal::CapabilityRequired));
-    }
     let mut tx = pool.begin().await.context("beginning packet read")?;
     let Some(enrollment) = load_enrollment(&mut tx, enrollment_id).await? else {
         return Ok(Err(PacketRefusal::NoSuchEnrollment));
     };
+    if !may_pack(&mut tx, actor_user_id, enrollment_id, enrollment.trainee.id).await? {
+        return Ok(Err(PacketRefusal::CapabilityRequired));
+    }
     let installation_id = storage::installation_id(&mut *tx).await?;
     let rows = record_export::collect(&mut tx, Scope::Enrollment { enrollment_id }).await?;
     let units = record_export::unit_entries(&rows);
@@ -594,35 +618,26 @@ pub async fn export_at(
     }))
 }
 
-/// The enrollment's trainee, for authorization; `None` for an unknown
-/// enrollment.
-async fn trainee_of(pool: &SqlitePool, enrollment_id: i64) -> Result<Option<i64>> {
-    sqlx::query_scalar("SELECT user_id FROM enrollment WHERE id = ?1")
-        .bind(enrollment_id)
-        .fetch_optional(pool)
-        .await
-        .context("reading enrollment")
-}
-
 /// Who may pack an enrollment: whoever may read its training history,
 /// the trainee themselves on their own enrollment, or an
 /// `export_records` holder. Each is an existing read contract
-/// (ADR 0010); none is invented here.
+/// (ADR 0010); none is invented here. Evaluated on the packet's own
+/// connection, inside its snapshot.
 async fn may_pack(
-    pool: &SqlitePool,
+    conn: &mut SqliteConnection,
     actor_user_id: i64,
     enrollment_id: i64,
     trainee_user_id: i64,
 ) -> Result<bool> {
-    if lifecycle::may_read(pool, actor_user_id, enrollment_id).await? {
+    if lifecycle::may_read_on(&mut *conn, actor_user_id, enrollment_id).await? {
         return Ok(true);
     }
     if actor_user_id == trainee_user_id
-        && capabilities::user_has(pool, actor_user_id, Capability::ViewOwnRecords).await?
+        && capabilities::user_has_on(&mut *conn, actor_user_id, Capability::ViewOwnRecords).await?
     {
         return Ok(true);
     }
-    capabilities::user_has(pool, actor_user_id, Capability::ExportRecords).await
+    capabilities::user_has_on(conn, actor_user_id, Capability::ExportRecords).await
 }
 
 /// A stored discriminator, parsed into the closed set its table's
