@@ -63,7 +63,7 @@ packet/signoffs.json                the full task signoff history
 | `format_version` | integer | `1`; bumped by any change to the manifest or a document's shape, and by any new document kind |
 | `installation_id` | string | The exporting installation's identity |
 | `exported_at` | integer | The export instant, UTC unix seconds; identical in every unit manifest |
-| `enrollment` | object | The enrollment's identity, its pinned program version, and its trainee, each *as presented at export* |
+| `enrollment` | object | The enrollment's identity, its pinned program version, and its trainee, each *as presented at export*: positive identities, a non-empty username, display name, and program name, and a version number of at least 1 |
 | `units` | array | Every retained version of every record of the enrollment, exactly as the record export lists units; may be empty; every unit's predecessor is carried |
 | `documents` | array | The four documents, ascending by `path`, each with the SHA-256 of its bytes (lowercase hex) |
 
@@ -120,7 +120,7 @@ for a version change, which names two different versions and gives a
 reason, and `null` for every other kind. `phase_events` are the phase
 history in effective order — strictly ascending (`effective_at`,
 `event_id`) — with `kind` one of `advance`, `return`, `restart`,
-`pause`, `resume`, `complete`, phases by name: an advance names
+`pause`, `resume`, `complete`, phases by name (never empty): an advance names
 `to_phase`, a return or restart names both phases, and a pause, resume,
 or completion names only `from_phase`, the phase it happened in; nothing
 is effective after it was recorded. `actor` is `null` when no person
@@ -159,12 +159,17 @@ version that succeeds another has its amendment recorded.
 
 An array in recorded order — strictly ascending `signoff_id`, the
 installation's row identity — of `{signoff_id, task_id,
-competency_category, competency_name, prompt, kind, reason, signed_by,
-signed_at}`: every task signoff row, first signoffs and overrides alike,
-so the history is complete (ADR 0013). `kind` is one of `observed`,
-`demonstrated`, `revoked`. Any signoff after the first for a task
-supersedes it and records a non-blank `reason`, and a revocation never
-opens a task's history: it has something to revoke.
+program_version, competency_category, competency_name, prompt, kind,
+reason, signed_by, signed_at}`: every task signoff row, first signoffs
+and overrides alike, so the history is complete (ADR 0013).
+`program_version` is the `{version_number, label}` of the pinned
+version whose task was signed, so a history that spans a version change
+keeps each signoff's configuration provenance without the installation.
+`prompt` and `competency_name` are non-empty; `competency_category` may
+be empty (uncategorized). `kind` is one of `observed`, `demonstrated`,
+`revoked`. Any signoff after the first for a task supersedes it and
+records a non-blank `reason`, and a revocation never opens a task's
+history: it has something to revoke.
 
 ## Determinism
 
@@ -185,14 +190,16 @@ the same honest meaning: consistency with the stated fingerprints,
 never tamper-proofing or provenance. What it does not check (container
 metadata) is the same as for the record export.
 
-Archive checks are those of the record export, with three differences:
+Archive checks are those of the record export, with these differences:
 the unit list may be empty (an enrollment with no finalized version
 still has a history to leave with); the scope checked is the packet's
 trainee — every unit's envelope must name `enrollment.trainee.id`, or
-the unit is *outside scope*; and every unit's predecessor is carried —
-a packet carries every retained version, so a version whose predecessor
+the unit is *outside scope*; every unit's predecessor is carried — a
+packet carries every retained version, so a version whose predecessor
 is absent is a hole in the lineage (*predecessor not carried*), not a
-scope choice as it is for a record export.
+scope choice as it is for a record export; and the manifest's
+`enrollment` member is the shape the table above mandates (*manifest
+enrollment invalid*).
 
 Unit checks are exactly the record export's.
 
@@ -208,13 +215,15 @@ Document checks:
    the key its shape names above — so a reordered or duplicated row is
    a finding;
 5. the cross-member rules each shape states above hold: every named
-   person has a non-empty name, an acknowledgment's response and
-   speaker match its kind and its `user`
-   is the packet's trainee, an amendment gives a reason, a lifecycle
-   event carries version references exactly when it is a version
-   change, a phase event names the phases its kind requires and is not
-   effective after it was recorded, a signoff override records its
-   reason, and a revocation is never a task's first signoff;
+   person has a non-empty name, configured text the tables require is
+   non-empty (task prompts, competency names, phase names) and version
+   numbers are at least 1, an acknowledgment's response and speaker
+   match its kind and its `user` is the packet's trainee, an amendment
+   gives a reason, a lifecycle event carries version references exactly
+   when it is a version change, a phase event names the phases its kind
+   requires and is not effective after it was recorded, a signoff
+   override records its reason, and a revocation is never a task's
+   first signoff;
 6. every acknowledgment names a (`record_id`, `version_number`) the
    packet carries, and every amendment's predecessor, and successor
    where present, does too — a reference the packet cannot resolve is

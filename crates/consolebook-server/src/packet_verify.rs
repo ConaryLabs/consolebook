@@ -49,6 +49,11 @@ pub(crate) fn verify_packet(
     report.installation_id = Some(manifest.installation_id.clone());
     report.exported_at = Some(manifest.exported_at);
     report.enrollment_id = Some(manifest.enrollment.id);
+    if let Some(detail) = manifest.enrollment.shape_error() {
+        report
+            .findings
+            .push(Finding::ManifestEnrollmentInvalid { detail });
+    }
     let mut listed: BTreeSet<String> = BTreeSet::new();
     listed.insert(ARCHIVE_MANIFEST_PATH.to_owned());
     verify_units(

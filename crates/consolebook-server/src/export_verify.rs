@@ -164,6 +164,11 @@ pub enum Finding {
         path: String,
         detail: String,
     },
+    /// The packet manifest's enrollment member is not the shape the
+    /// format mandates.
+    ManifestEnrollmentInvalid {
+        detail: String,
+    },
 }
 
 impl fmt::Display for Finding {
@@ -270,6 +275,9 @@ impl fmt::Display for Finding {
             ),
             Self::DocumentLineage { path, detail } => {
                 write!(f, "{path} disagrees with the carried lineage: {detail}")
+            }
+            Self::ManifestEnrollmentInvalid { detail } => {
+                write!(f, "the manifest's enrollment is not the shape the format mandates: {detail}")
             }
             Self::PredecessorMismatch => {
                 f.write_str("the predecessor in this archive has a different content hash")

@@ -117,6 +117,35 @@ pub struct PacketEnrollment {
     pub trainee: PacketTrainee,
 }
 
+impl PacketEnrollment {
+    /// The shape the format mandates of the manifest's enrollment
+    /// member, mirroring the `enrollment`, `user`, and `program_version`
+    /// tables: positive identities, a username and a display name, a
+    /// program name, and a version number of at least 1.
+    #[must_use]
+    pub fn shape_error(&self) -> Option<String> {
+        if self.id <= 0 {
+            return Some("the enrollment id is not positive".to_owned());
+        }
+        if self.trainee.id <= 0 {
+            return Some("the trainee id is not positive".to_owned());
+        }
+        if self.trainee.username.is_empty() {
+            return Some("the trainee has an empty username".to_owned());
+        }
+        if self.trainee.display_name.is_empty() {
+            return Some("the trainee has an empty display name".to_owned());
+        }
+        if self.program.name.is_empty() {
+            return Some("the program has an empty name".to_owned());
+        }
+        if self.program.version_number < 1 {
+            return Some("the program version number is below 1".to_owned());
+        }
+        None
+    }
+}
+
 /// The packet manifest (`manifest.json` at the root).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -197,7 +226,11 @@ impl EnrollmentEventDoc {
         }
         match (self.kind, &self.from_version, &self.to_version) {
             (EnrollmentEventKind::VersionChange, Some(from), Some(to)) => {
-                if from.version_number == to.version_number {
+                if from.version_number < 1 || to.version_number < 1 {
+                    Some(format!(
+                        "event {id} ({kind}) names a program version below 1"
+                    ))
+                } else if from.version_number == to.version_number {
                     Some(format!("event {id} ({kind}) reaches the version it left"))
                 } else if self.reason.is_empty() {
                     Some(format!("event {id} ({kind}) gives no reason"))
@@ -246,6 +279,12 @@ impl PhaseEventDoc {
             return Some(format!(
                 "phase event {id} names its actor with an empty name"
             ));
+        }
+        if [&self.from_phase, &self.to_phase]
+            .iter()
+            .any(|phase| phase.as_deref() == Some(""))
+        {
+            return Some(format!("phase event {id} names an empty phase"));
         }
         let (from, to) = (self.from_phase.is_some(), self.to_phase.is_some());
         let shaped = match self.kind {
@@ -377,6 +416,10 @@ pub struct SignoffDoc {
     /// `signoff_id`.
     pub signoff_id: i64,
     pub task_id: i64,
+    /// The pinned program version whose task was signed: a history that
+    /// spans a version change keeps each signoff's configuration
+    /// provenance without the installation.
+    pub program_version: VersionRef,
     pub competency_category: String,
     pub competency_name: String,
     pub prompt: String,
@@ -387,31 +430,37 @@ pub struct SignoffDoc {
 }
 
 /// The shape the format mandates of the signoff history beyond member
-/// types, mirroring `task_signoff`'s constraints and triggers: every
-/// signer has a name; in recorded order, any signoff after the first
-/// for a task supersedes it and records its reason, and a revocation
-/// has something to revoke.
+/// types, mirroring `task_signoff`'s constraints and triggers and the
+/// configuration tables it joins: every signer has a name, every task
+/// prompt and competency name is non-empty, every program version is
+/// at least 1; in recorded order, any signoff after the first for a
+/// task supersedes it and records its reason, and a revocation has
+/// something to revoke.
 #[must_use]
 pub fn signoff_shape_errors(signoffs: &[SignoffDoc]) -> Vec<String> {
     let mut seen = BTreeSet::new();
     signoffs
         .iter()
         .filter_map(|signoff| {
+            let id = signoff.signoff_id;
             let first = seen.insert(signoff.task_id);
             if !signoff.signed_by.is_named() {
-                Some(format!(
-                    "signoff {} names its signer with an empty name",
-                    signoff.signoff_id
-                ))
+                Some(format!("signoff {id} names its signer with an empty name"))
+            } else if signoff.prompt.is_empty() {
+                Some(format!("signoff {id} carries an empty task prompt"))
+            } else if signoff.competency_name.is_empty() {
+                Some(format!("signoff {id} carries an empty competency name"))
+            } else if signoff.program_version.version_number < 1 {
+                Some(format!("signoff {id} names a program version below 1"))
             } else if first && signoff.kind == SignoffKind::Revoked {
                 Some(format!(
-                    "signoff {} revokes task {} before any signoff",
-                    signoff.signoff_id, signoff.task_id
+                    "signoff {id} revokes task {} before any signoff",
+                    signoff.task_id
                 ))
             } else if !first && signoff.reason.trim().is_empty() {
                 Some(format!(
-                    "signoff {} overrides task {} without a reason",
-                    signoff.signoff_id, signoff.task_id
+                    "signoff {id} overrides task {} without a reason",
+                    signoff.task_id
                 ))
             } else {
                 None
@@ -752,11 +801,13 @@ async fn amendments(conn: &mut SqliteConnection, enrollment_id: i64) -> Result<V
 
 async fn signoffs(conn: &mut SqliteConnection, enrollment_id: i64) -> Result<Vec<SignoffDoc>> {
     let rows = sqlx::query(
-        "SELECT s.id AS signoff_id, s.task_id, c.category, c.name, t.prompt, s.kind, s.reason,
+        "SELECT s.id AS signoff_id, s.task_id, pv.version_number, pv.label,
+                c.category, c.name, t.prompt, s.kind, s.reason,
                 s.signed_by, s.signed_by_display_name, s.signed_at
          FROM task_signoff s
          JOIN task t ON t.id = s.task_id
          JOIN competency c ON c.id = t.competency_id
+         JOIN program_version pv ON pv.id = t.program_version_id
          WHERE s.enrollment_id = ?1
          ORDER BY s.id",
     )
@@ -769,6 +820,10 @@ async fn signoffs(conn: &mut SqliteConnection, enrollment_id: i64) -> Result<Vec
             Ok(SignoffDoc {
                 signoff_id: row.get("signoff_id"),
                 task_id: row.get("task_id"),
+                program_version: VersionRef {
+                    version_number: row.get("version_number"),
+                    label: row.get("label"),
+                },
                 competency_category: row.get("category"),
                 competency_name: row.get("name"),
                 prompt: row.get("prompt"),

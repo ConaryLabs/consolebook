@@ -25,7 +25,7 @@ use consolebook_server::record_export::{self, ARCHIVE_MANIFEST_PATH, Scope};
 use consolebook_server::task_signoffs::{self, SignoffKind};
 use consolebook_server::trainee_packet::{
     self, AcknowledgmentDoc, Actor, AmendmentDoc, DocumentKind, EnrollmentDocument, PACKET_FORMAT,
-    PACKET_FORMAT_VERSION, PacketManifest, PacketRefusal, SignoffDoc,
+    PACKET_FORMAT_VERSION, PacketManifest, PacketRefusal, SignoffDoc, VersionRef,
 };
 use consolebook_server::training_sessions::{self, Disposition, SessionInput};
 use consolebook_server::{
@@ -647,6 +647,14 @@ async fn packet_carries_everything_retained() {
         serde_json::from_slice(entry(&listed, "packet/signoffs.json")).expect("signoffs");
     assert_eq!(signoffs.len(), 2, "first signoff and override alike");
     assert_eq!(signoffs[0].task_id, s.task_id);
+    assert_eq!(
+        signoffs[0].program_version,
+        VersionRef {
+            version_number: 1,
+            label: "2026 rev A".to_owned()
+        },
+        "the pinned version whose task was signed"
+    );
     assert_eq!(signoffs[0].kind, SignoffKind::Observed);
     assert_eq!(
         signoffs[0].signed_by,
@@ -1439,6 +1447,65 @@ async fn documents_keep_their_order_and_shape() {
             [Finding::DocumentInvalid { detail, .. }]
                 if detail.contains("actor with an empty name")
         ),
+        "{report:?}"
+    );
+
+    // Configured text the tables require, and the manifest's own
+    // enrollment member.
+    let report = forged(&listed, signoffs, |doc| {
+        doc[0]["prompt"] = serde_json::json!("");
+    });
+    assert!(
+        matches!(
+            &report.documents[3].findings[..],
+            [Finding::DocumentInvalid { detail, .. }] if detail.contains("empty task prompt")
+        ),
+        "{report:?}"
+    );
+    let report = forged(&listed, signoffs, |doc| {
+        doc[0]["competency_name"] = serde_json::json!("");
+    });
+    assert!(
+        matches!(
+            &report.documents[3].findings[..],
+            [Finding::DocumentInvalid { detail, .. }]
+                if detail.contains("empty competency name")
+        ),
+        "{report:?}"
+    );
+    let report = forged(&listed, signoffs, |doc| {
+        doc[0]["program_version"]["version_number"] = serde_json::json!(0);
+    });
+    assert!(
+        matches!(
+            &report.documents[3].findings[..],
+            [Finding::DocumentInvalid { detail, .. }]
+                if detail.contains("program version below 1")
+        ),
+        "{report:?}"
+    );
+    let report = forged(&listed, enrollment, |doc| {
+        doc["phase_events"] =
+            serde_json::json!([phase_event("advance", None, Some(""), 10, 10, 1)]);
+    });
+    assert!(
+        matches!(
+            &report.documents[2].findings[..],
+            [Finding::DocumentInvalid { detail, .. }]
+                if detail == "phase event 1 names an empty phase"
+        ),
+        "{report:?}"
+    );
+    let report = export_verify::verify_archive(&with_manifest(&listed, |manifest| {
+        manifest["enrollment"]["trainee"]["display_name"] = serde_json::json!("");
+    }));
+    assert!(!report.verified());
+    assert!(
+        report
+            .findings
+            .contains(&Finding::ManifestEnrollmentInvalid {
+                detail: "the trainee has an empty display name".to_owned()
+            }),
         "{report:?}"
     );
 
