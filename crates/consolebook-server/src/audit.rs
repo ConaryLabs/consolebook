@@ -48,6 +48,7 @@ pub enum EventKind {
     AcknowledgmentRecorded,
     AmendmentOpened,
     TaskSignoffRecorded,
+    RecordExported,
 }
 
 impl EventKind {
@@ -90,6 +91,7 @@ impl EventKind {
             Self::AcknowledgmentRecorded => "acknowledgment_recorded",
             Self::AmendmentOpened => "amendment_opened",
             Self::TaskSignoffRecorded => "task_signoff_recorded",
+            Self::RecordExported => "record_exported",
         }
     }
 }

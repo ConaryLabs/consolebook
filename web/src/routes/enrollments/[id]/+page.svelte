@@ -9,7 +9,9 @@
 		createDraft,
 		createSession,
 		dailyForms,
+		downloadExport,
 		endAssignment,
+		enrollmentExportPath,
 		getEnrollment,
 		getProgramVersions,
 		listSessions,
@@ -49,6 +51,23 @@
 	let detail: EnrollmentDetail | null = $state(null);
 	let error = $state('');
 	let busy = $state(false);
+
+	// Every finalized version of this enrollment's records leaves as one
+	// archive of the stored record bytes with manifests (ADR 0014).
+	let exportError = $state('');
+	let exported = $state('');
+	async function exportEnrollment() {
+		exportError = '';
+		exported = '';
+		busy = true;
+		try {
+			exported = await downloadExport(enrollmentExportPath(enrollmentId));
+		} catch (err) {
+			exportError = err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
 
 	async function reload() {
 		try {
@@ -822,6 +841,27 @@
 		{/if}
 		{#if sessionError}
 			<p class="error" role="alert">{sessionError}</p>
+		{/if}
+	</section>
+
+	<section class="panel">
+		<h2>Export</h2>
+		<p class="quiet">
+			Every finalized version of this enrollment's records — superseded
+			originals included — leaves as one archive of the stored record bytes
+			with manifests. Verify it anywhere with
+			<code>consolebook-server export verify</code>.
+		</p>
+		<div class="row">
+			<button type="button" class="secondary" disabled={busy} onclick={exportEnrollment}>
+				Export finalized records
+			</button>
+			{#if exported}
+				<span class="quiet" role="status">Downloaded {exported}.</span>
+			{/if}
+		</div>
+		{#if exportError}
+			<p class="error" role="alert">{exportError}</p>
 		{/if}
 	</section>
 
