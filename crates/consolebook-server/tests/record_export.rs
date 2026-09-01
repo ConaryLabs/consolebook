@@ -1166,6 +1166,19 @@ async fn verification_reads_envelopes_as_typed_records() {
         2,
     );
 
+    // Closed vocabularies are closed: a record type, a scale kind, or an
+    // attribution event kind no schema names is not a record, however
+    // well the rest of the document holds together.
+    let mut memo = genuine.clone();
+    memo["form"]["record_type"] = serde_json::json!("memo");
+    invalid(&canonical::canonical_bytes(&memo).expect("canonical"), 2);
+    let mut vibes = genuine.clone();
+    vibes["content"]["ratings"][0]["scale"]["kind"] = serde_json::json!("vibes");
+    invalid(&canonical::canonical_bytes(&vibes).expect("canonical"), 2);
+    let mut glanced = genuine.clone();
+    glanced["attribution"][0]["kind"] = serde_json::json!("glanced");
+    invalid(&canonical::canonical_bytes(&glanced).expect("canonical"), 2);
+
     // Identity is positive: a version 0 with a predecessor satisfies the
     // lineage rule's two sides trivially, so the range check has to be
     // its own finding — and it is the only objection.

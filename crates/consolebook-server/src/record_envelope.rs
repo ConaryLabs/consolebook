@@ -4,9 +4,10 @@
 //! `finalization::envelope` is the producing side and the one owner of
 //! what goes into a record. This is the reading side: the same member
 //! set, typed, with every object refusing members the schema does not
-//! name and every nullable member required to be present, so "these
-//! bytes are a schema-1 or schema-2 envelope" is a typed contract
-//! rather than a spot check of a few members. Export verification reads
+//! name, every nullable member required to be present, and every closed
+//! vocabulary (event kinds, decisions, scale kinds, record types) an
+//! enum, so "these bytes are a schema-1 or schema-2 envelope" is a
+//! typed contract rather than a spot check of a few members. Export verification reads
 //! through it; packets and rendering (Milestone 5) will too. A schema
 //! bump extends this shape and never reinterprets stored bytes.
 
@@ -15,6 +16,8 @@ use std::fmt;
 use serde::{Deserialize, Deserializer};
 
 use crate::canonical;
+use crate::draft_review::ReviewDecisionKind;
+use crate::programs::{RecordType, ScaleKind};
 
 /// A user as the envelope presents them: identity plus the names shown
 /// at finalization.
@@ -43,10 +46,22 @@ impl<'de> Deserialize<'de> for Attachment {
     }
 }
 
+/// The contributor-event vocabulary a record's attribution stream uses
+/// (ADR 0008; migration 0008's closed set).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContributorEventKind {
+    Created,
+    Contributed,
+    OwnershipTransferred,
+    SubmittedForReview,
+    ReviewDecided,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AttributionEvent {
-    pub kind: String,
+    pub kind: ContributorEventKind,
     pub actor: User,
     #[serde(deserialize_with = "nullable")]
     pub to: Option<User>,
@@ -93,7 +108,7 @@ pub struct Competency {
 #[serde(deny_unknown_fields)]
 pub struct Scale {
     pub name: String,
-    pub kind: String,
+    pub kind: ScaleKind,
     #[serde(deserialize_with = "nullable")]
     pub min_value: Option<i64>,
     #[serde(deserialize_with = "nullable")]
@@ -157,7 +172,7 @@ pub struct Policy {
 pub struct Form {
     pub name: String,
     pub instructions: String,
-    pub record_type: String,
+    pub record_type: RecordType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -183,7 +198,7 @@ pub struct RecordIdentity {
 #[serde(deny_unknown_fields)]
 pub struct ReviewDecision {
     pub reviewer: User,
-    pub decision: String,
+    pub decision: ReviewDecisionKind,
     pub comment: String,
     pub decided_at: i64,
 }
@@ -246,7 +261,7 @@ pub struct Envelope {
 
 /// A member that may be `null` but must be present: the producer always
 /// writes it, so a document without it is not an envelope.
-fn nullable<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(crate) fn nullable<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     T: Deserialize<'de>,
     D: Deserializer<'de>,

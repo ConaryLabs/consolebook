@@ -144,6 +144,10 @@ An Amendment links an original finalized version to its successor and records th
 
 A RecordExport is an archive of finalized EvaluationVersions as stored: each version's canonical bytes, unchanged, beside a manifest carrying the installation identity, record and version identity, record schema, both hashes, the predecessor's content hash, and the export instant (`docs/formats/record-export.md`, ADR 0014). Scopes are one version, one record, one enrollment, or the installation. Verifying an export needs nothing but the export; the verdict reports consistency with the stated fingerprints, never tamper-proofing. Every export is audited without record content.
 
+### TraineePacket
+
+A TraineePacket is everything retained about one enrollment as one archive (`docs/formats/trainee-packet.md`, ADR 0015): the record export's units for every retained version of every record, plus typed documents for the enrollment's lifecycle and phase history, every acknowledgment, every amendment, and the full task signoff history, named with hashes by one packet manifest. The trainee may produce their own; so may whoever reads the enrollment's training history and `export_records` holders. It verifies with the same verifier as a record export.
+
 ## Retention and disposition
 
 ### RetentionPolicy

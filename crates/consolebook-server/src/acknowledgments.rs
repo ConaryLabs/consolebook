@@ -82,6 +82,43 @@ impl AttestedKind {
     }
 }
 
+/// Every acknowledgment kind, as stored: the trainee's own kinds and the
+/// attested ones together (migration 0011's closed set). Readers that
+/// meet a stored kind — exports and packets — parse into this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AckKind {
+    Acknowledged,
+    AcknowledgedWithResponse,
+    Refused,
+    SupervisorAttestedRefusal,
+    Unavailable,
+}
+
+impl AckKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Acknowledged => "acknowledged",
+            Self::AcknowledgedWithResponse => "acknowledged_with_response",
+            Self::Refused => "refused",
+            Self::SupervisorAttestedRefusal => "supervisor_attested_refusal",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    /// Whether the kind is the trainee's own act, recorded by the
+    /// trainee, rather than someone else's statement about them
+    /// (migration 0011's who-speaks rule).
+    #[must_use]
+    pub fn spoken_by_trainee(self) -> bool {
+        matches!(
+            self,
+            Self::Acknowledged | Self::AcknowledgedWithResponse | Self::Refused
+        )
+    }
+}
+
 /// One recorded acknowledgment, presented.
 #[derive(Debug, Clone, Serialize)]
 pub struct AckView {

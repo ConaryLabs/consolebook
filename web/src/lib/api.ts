@@ -1247,3 +1247,25 @@ export async function downloadExport(path: string): Promise<string> {
 	setTimeout(() => URL.revokeObjectURL(url), 60_000);
 	return fileName;
 }
+
+// Trainee packets (Milestone 5 slice 2; docs/formats/trainee-packet.md;
+// ADR 0015): everything retained about one enrollment as one archive.
+
+export interface OwnEnrollment {
+	enrollment_id: number;
+	program_name: string;
+	version_number: number;
+	version_label: string;
+	enrolled_at: number;
+	status: EnrollmentStatus;
+	finalized_versions: number;
+}
+
+export function myEnrollments(): Promise<{ enrollments: OwnEnrollment[] }> {
+	return request('/api/my/enrollments');
+}
+
+/** Download path for an enrollment's trainee packet. */
+export function enrollmentPacketPath(enrollmentId: number): string {
+	return `/api/enrollments/${enrollmentId}/packet`;
+}

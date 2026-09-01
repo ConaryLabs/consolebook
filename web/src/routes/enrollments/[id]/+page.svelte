@@ -12,6 +12,7 @@
 		downloadExport,
 		endAssignment,
 		enrollmentExportPath,
+		enrollmentPacketPath,
 		getEnrollment,
 		getProgramVersions,
 		listSessions,
@@ -56,17 +57,26 @@
 	// archive of the stored record bytes with manifests (ADR 0014).
 	let exportError = $state('');
 	let exported = $state('');
-	async function exportEnrollment() {
+	async function exportArchive(path: string) {
 		exportError = '';
 		exported = '';
 		busy = true;
 		try {
-			exported = await downloadExport(enrollmentExportPath(enrollmentId));
+			exported = await downloadExport(path);
 		} catch (err) {
 			exportError = err instanceof ApiError ? err.message : 'the server could not be reached';
 		} finally {
 			busy = false;
 		}
+	}
+	function exportEnrollment() {
+		void exportArchive(enrollmentExportPath(enrollmentId));
+	}
+	// The packet is the trainee leaving with their records: the same
+	// units plus acknowledgments, amendments, signoff history, and the
+	// enrollment's own history (ADR 0015).
+	function exportPacket() {
+		void exportArchive(enrollmentPacketPath(enrollmentId));
 	}
 
 	async function reload() {
@@ -849,12 +859,16 @@
 		<p class="quiet">
 			Every finalized version of this enrollment's records — superseded
 			originals included — leaves as one archive of the stored record bytes
-			with manifests. Verify it anywhere with
-			<code>consolebook-server export verify</code>.
+			with manifests. The trainee packet adds the acknowledgments,
+			amendments, signoff history, and the enrollment's own history. Verify
+			either anywhere with <code>consolebook-server export verify</code>.
 		</p>
 		<div class="row">
 			<button type="button" class="secondary" disabled={busy} onclick={exportEnrollment}>
 				Export finalized records
+			</button>
+			<button type="button" class="secondary" disabled={busy} onclick={exportPacket}>
+				Download trainee packet
 			</button>
 			{#if exported}
 				<span class="quiet" role="status">Downloaded {exported}.</span>

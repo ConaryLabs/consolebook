@@ -123,11 +123,22 @@ pub async fn grant_bundle(
 
 /// Whether `user_id` holds `capability`.
 pub async fn user_has(pool: &SqlitePool, user_id: i64, capability: Capability) -> Result<bool> {
+    let mut conn = pool.acquire().await.context("acquiring connection")?;
+    user_has_on(&mut conn, user_id, capability).await
+}
+
+/// [`user_has`] on one connection, for a reader that must evaluate
+/// authorization inside the transaction whose data it governs.
+pub async fn user_has_on(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    capability: Capability,
+) -> Result<bool> {
     let held: Option<i64> =
         sqlx::query_scalar("SELECT 1 FROM capability_grant WHERE user_id = ?1 AND capability = ?2")
             .bind(user_id)
             .bind(capability.as_str())
-            .fetch_optional(pool)
+            .fetch_optional(&mut *conn)
             .await
             .context("checking capability")?;
     Ok(held.is_some())

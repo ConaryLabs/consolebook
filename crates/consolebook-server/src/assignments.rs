@@ -67,13 +67,24 @@ pub enum AssignRefusal {
 
 /// Whether `user_id` holds an active assignment on `enrollment_id`.
 pub async fn is_assigned(pool: &SqlitePool, user_id: i64, enrollment_id: i64) -> Result<bool> {
+    let mut conn = pool.acquire().await.context("acquiring connection")?;
+    is_assigned_on(&mut conn, user_id, enrollment_id).await
+}
+
+/// [`is_assigned`] on one connection, for a reader that must evaluate
+/// authorization inside the transaction whose data it governs.
+pub async fn is_assigned_on(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    enrollment_id: i64,
+) -> Result<bool> {
     let held: Option<i64> = sqlx::query_scalar(
         "SELECT 1 FROM training_assignment
          WHERE enrollment_id = ?1 AND trainer_user_id = ?2 AND ended_at IS NULL",
     )
     .bind(enrollment_id)
     .bind(user_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await
     .context("checking assignment")?;
     Ok(held.is_some())

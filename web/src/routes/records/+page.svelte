@@ -1,8 +1,12 @@
 <script lang="ts">
 	import {
 		ApiError,
+		downloadExport,
+		enrollmentPacketPath,
+		myEnrollments,
 		myRecords,
 		type AckKind,
+		type OwnEnrollment,
 		type TimelineRecord
 	} from '$lib/api';
 	import { instant } from '$lib/format';
@@ -35,6 +39,55 @@
 		);
 	});
 
+	// A packet is everything retained about one enrollment, as one archive
+	// the trainee can verify anywhere (ADR 0015).
+	let enrollments: OwnEnrollment[] = $state([]);
+	let enrollmentsLoaded = $state(false);
+	let enrollmentsError = $state('');
+	let packetError = $state('');
+	let packetDownloaded = $state('');
+	let packetBusy = $state(false);
+	$effect(() => {
+		if (!canViewOwn) {
+			enrollmentsLoaded = true;
+			return;
+		}
+		myEnrollments().then(
+			(body) => {
+				enrollments = body.enrollments;
+				enrollmentsLoaded = true;
+			},
+			(err: unknown) => {
+				// A failed request is a failure to show, never an empty list.
+				enrollmentsError =
+					err instanceof ApiError ? err.message : 'the server could not be reached';
+				enrollmentsLoaded = true;
+			}
+		);
+	});
+	async function downloadPacket(enrollment: OwnEnrollment) {
+		packetError = '';
+		packetDownloaded = '';
+		packetBusy = true;
+		try {
+			packetDownloaded = await downloadExport(enrollmentPacketPath(enrollment.enrollment_id));
+		} catch (err) {
+			packetError = err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			packetBusy = false;
+		}
+	}
+	function statusLabel(status: OwnEnrollment['status']): string {
+		switch (status) {
+			case 'active':
+				return 'Active';
+			case 'withdrawn':
+				return 'Withdrawn';
+			case 'completed':
+				return 'Completed';
+		}
+	}
+
 	function ackLabel(kind: AckKind | null): string {
 		switch (kind) {
 			case 'acknowledged':
@@ -62,6 +115,66 @@
 	Your finalized training records. Acknowledgment records receipt, not
 	agreement.
 </p>
+
+{#if canViewOwn}
+	<section class="panel">
+		<h2>My packets</h2>
+		<p class="quiet">
+			A packet is everything retained about one enrollment — every finalized
+			version of every record, acknowledgments, amendments, signoff history,
+			and the enrollment's own history — as one archive. Verify it anywhere
+			with <code>consolebook-server export verify</code>.
+		</p>
+		{#if !enrollmentsLoaded}
+			<p class="quiet">Loading…</p>
+		{:else if enrollmentsError}
+			<p class="error" role="alert">{enrollmentsError}</p>
+		{:else if enrollments.length === 0}
+			<p class="quiet">No enrollments.</p>
+		{:else}
+			<table class="grid">
+				<thead>
+					<tr>
+						<th>Program</th>
+						<th>Status</th>
+						<th>Finalized versions</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each enrollments as enrollment (enrollment.enrollment_id)}
+						<tr>
+							<td>
+								{enrollment.program_name} — v{enrollment.version_number}
+								{#if enrollment.version_label}
+									({enrollment.version_label})
+								{/if}
+							</td>
+							<td>{statusLabel(enrollment.status)}</td>
+							<td>{enrollment.finalized_versions}</td>
+							<td>
+								<button
+									type="button"
+									class="secondary"
+									disabled={packetBusy}
+									onclick={() => downloadPacket(enrollment)}
+								>
+									Download packet
+								</button>
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		{/if}
+		{#if packetDownloaded}
+			<p class="quiet" role="status">Downloaded {packetDownloaded}.</p>
+		{/if}
+		{#if packetError}
+			<p class="error" role="alert">{packetError}</p>
+		{/if}
+	</section>
+{/if}
 
 {#if !canViewOwn}
 	<p class="error" role="alert">This page is not available to this account.</p>
