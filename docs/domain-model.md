@@ -138,6 +138,12 @@ Acknowledgment means receipt, not agreement. A successor version requires a new 
 
 An Amendment links an original finalized version to its successor and records the reason, authority, author, and timestamps. The original remains readable and exportable while retained.
 
+## Exports
+
+### RecordExport
+
+A RecordExport is an archive of finalized EvaluationVersions as stored: each version's canonical bytes, unchanged, beside a manifest carrying the installation identity, record and version identity, record schema, both hashes, the predecessor's content hash, and the export instant (`docs/formats/record-export.md`, ADR 0014). Scopes are one version, one record, one enrollment, or the installation. Verifying an export needs nothing but the export; the verdict reports consistency with the stated fingerprints, never tamper-proofing. Every export is audited without record content.
+
 ## Retention and disposition
 
 ### RetentionPolicy

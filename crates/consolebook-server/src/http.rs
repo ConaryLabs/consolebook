@@ -55,6 +55,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::programs_http::routes())
         .merge(crate::training_http::routes())
         .merge(crate::drafts_http::routes())
+        .merge(crate::exports_http::routes())
         .fallback(crate::web_assets::serve)
         .with_state(state)
 }

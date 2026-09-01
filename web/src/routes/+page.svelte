@@ -6,8 +6,11 @@
 		createDraft,
 		createUser,
 		dailyForms,
+		downloadExport,
+		exportSummary,
 		getHealth,
 		getNotices,
+		installationExportPath,
 		issueResetCode,
 		logout,
 		markNoticeRead,
@@ -16,6 +19,7 @@
 		reviewQueue,
 		type AssignedTrainee,
 		type CreatedUser,
+		type ExportSummary,
 		type Health,
 		type MySession,
 		type Notice,
@@ -43,12 +47,16 @@
 	let canReview = $derived(
 		data.session?.capabilities.includes('review_evaluation') ?? false
 	);
+	let canExport = $derived(
+		data.session?.capabilities.includes('export_records') ?? false
+	);
 
 	let health: Health | null = $state(null);
 	let notices: Notice[] = $state([]);
 	let assigned: AssignedTrainee[] = $state([]);
 	let sessions: MySession[] = $state([]);
 	let queue: ReviewQueueRow[] = $state([]);
+	let summary: ExportSummary | null = $state(null);
 	$effect(() => {
 		getHealth().then(
 			(h) => (health = h),
@@ -74,6 +82,12 @@
 			reviewQueue().then(
 				(body) => (queue = body.drafts),
 				() => (queue = [])
+			);
+		}
+		if (canExport) {
+			exportSummary().then(
+				(body) => (summary = body),
+				() => (summary = null)
 			);
 		}
 	});
@@ -194,6 +208,25 @@
 			busy = false;
 		}
 	}
+
+	// The whole installation leaves as one archive: every finalized
+	// version as its stored bytes, verifiable from the archive alone
+	// (ADR 0014). This is the explicit export_records authority.
+	let exportError = $state('');
+	let exported = $state('');
+	async function exportInstallation() {
+		exportError = '';
+		exported = '';
+		busy = true;
+		try {
+			exported = await downloadExport(installationExportPath());
+		} catch (err) {
+			exportError =
+				err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
 </script>
 
 <h1>Installation status</h1>
@@ -238,6 +271,35 @@
 		</ul>
 	{/if}
 </section>
+
+{#if canExport}
+	<section class="card">
+		<h2>Record exports</h2>
+		{#if summary === null}
+			<p class="quiet">Checking finalized records…</p>
+		{:else if summary.version_count === 0}
+			<p class="quiet">No finalized records yet; there is nothing to export.</p>
+		{:else}
+			<p>
+				This installation holds {summary.version_count} finalized
+				{summary.version_count === 1 ? 'version' : 'versions'} across
+				{summary.record_count}
+				{summary.record_count === 1 ? 'record' : 'records'}. An export carries
+				every one as its stored canonical bytes beside a manifest and verifies
+				from the archive alone with <code>consolebook-server export verify</code>.
+			</p>
+			<button type="button" class="secondary" disabled={busy} onclick={exportInstallation}>
+				Export every finalized record
+			</button>
+			{#if exported}
+				<p class="quiet" role="status">Downloaded {exported}.</p>
+			{/if}
+		{/if}
+		{#if exportError}
+			<p class="error" role="alert">{exportError}</p>
+		{/if}
+	</section>
+{/if}
 
 {#if canViewAssigned}
 	<section class="card">

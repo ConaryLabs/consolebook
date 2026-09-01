@@ -5,12 +5,15 @@
 		acknowledgeRecord,
 		amendRecord,
 		attestRecord,
+		downloadExport,
 		finalizeDraft,
 		finalizedVersion,
 		finalizedVersionAt,
 		getAcknowledgment,
 		getDraft,
 		linkableDailies,
+		recordExportPath,
+		recordVersionExportPath,
 		addSummaryLink,
 		removeSummaryLink,
 		reviewDraft,
@@ -78,6 +81,30 @@
 	let verification: Verification | null = $state(null);
 	let ack: Acknowledgment | null = $state(null);
 	let versions: VersionHistoryRow[] = $state([]);
+
+	// An export is the sealed record leaving as it was stored: the
+	// canonical bytes verbatim beside a manifest, verifiable anywhere
+	// (ADR 0014).
+	let exportError = $state('');
+	let exported = $state('');
+	async function exportArchive(path: string) {
+		exportError = '';
+		exported = '';
+		busy = true;
+		try {
+			exported = await downloadExport(path);
+		} catch (err) {
+			exportError = err instanceof ApiError ? err.message : 'the server could not be reached';
+		} finally {
+			busy = false;
+		}
+	}
+	function exportSealedVersion() {
+		if (sealed === null) {
+			return;
+		}
+		void exportArchive(recordVersionExportPath(draftId, sealed.meta.version_number));
+	}
 	// The link picker for weekly summaries: the enrollment's finalized
 	// dailies not yet linked.
 	let linkable: SummaryLink[] = $state([]);
@@ -914,6 +941,34 @@
 				Verification proves this record reproduces consistently from what is
 				stored; it is not by itself proof against a writer with direct
 				database access.
+			</p>
+			<div class="row route">
+				<button
+					type="button"
+					class="secondary"
+					disabled={busy}
+					onclick={exportSealedVersion}
+				>
+					Export this version
+				</button>
+				<button
+					type="button"
+					class="secondary"
+					disabled={busy}
+					onclick={() => exportArchive(recordExportPath(draftId))}
+				>
+					Export all versions
+				</button>
+				{#if exported}
+					<span class="quiet-inline" role="status">Downloaded {exported}.</span>
+				{/if}
+				{#if exportError}
+					<span class="error" role="alert">{exportError}</span>
+				{/if}
+			</div>
+			<p class="quiet small-note">
+				An export carries the stored record bytes verbatim beside a manifest
+				and verifies anywhere with <code>consolebook-server export verify</code>.
 			</p>
 		</section>
 

@@ -12,7 +12,7 @@ use consolebook_server::doctor::Verdict;
 use consolebook_server::serve_lock::ServeLock;
 use consolebook_server::users::{IssueRefusal, ResetOrigin};
 use consolebook_server::{
-    VERSION, backup, doctor, http, restore, scheduler, setup, storage, users,
+    VERSION, backup, doctor, http, record_export, restore, scheduler, setup, storage, users,
 };
 
 #[derive(Parser)]
@@ -77,6 +77,11 @@ enum Command {
         /// Path to the snapshot to restore, usually in backups/.
         snapshot: PathBuf,
     },
+    /// Work with record exports (docs/formats/record-export.md).
+    Export {
+        #[command(subcommand)]
+        action: ExportAction,
+    },
     /// Print a fresh first-run setup code for an uninitialized installation.
     SetupCode,
     /// Issue a password reset code for a locked-out administrator.
@@ -87,6 +92,19 @@ enum Command {
         /// Username of the administrator account to recover.
         #[arg(long)]
         username: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExportAction {
+    /// Verify a record export archive from the file alone.
+    ///
+    /// Opens no data directory: the archive carries everything the
+    /// checks need, and the verdict is consistency with its stated
+    /// fingerprints.
+    Verify {
+        /// Path to the export archive (.zip).
+        archive: PathBuf,
     },
 }
 
@@ -114,6 +132,9 @@ async fn main() -> ExitCode {
         Command::Doctor => run_doctor(&cli.data_dir).await,
         Command::Backup { keep } => run_backup(&cli.data_dir, keep).await,
         Command::Restore { snapshot } => run_restore(&cli.data_dir, &snapshot).await,
+        Command::Export {
+            action: ExportAction::Verify { archive },
+        } => run_export_verify(&archive),
         Command::SetupCode => run_setup_code(&cli.data_dir).await,
         Command::Recover { username } => run_recover(&cli.data_dir, &username).await,
     };
@@ -273,4 +294,46 @@ async fn run_restore(data_dir: &std::path::Path, snapshot: &std::path::Path) -> 
         report.installation_id
     );
     Ok(ExitCode::SUCCESS)
+}
+
+fn run_export_verify(archive: &std::path::Path) -> Result<ExitCode> {
+    let bytes = std::fs::read(archive).with_context(|| format!("reading {}", archive.display()))?;
+    let report = record_export::verify_archive(&bytes);
+    if let Some(id) = &report.installation_id {
+        println!("installation  {id}");
+    }
+    if let Some(at) = report.exported_at_rfc3339() {
+        println!("exported at   {at}");
+    }
+    if let Some(scope) = report.scope {
+        println!("scope         {scope}");
+    }
+    for finding in &report.findings {
+        println!("FAIL  archive  {finding}");
+    }
+    for unit in &report.units {
+        let mark = if unit.verified() { "ok  " } else { "FAIL" };
+        println!(
+            "{mark}  {:<20} record {} version {} (schema {}); predecessor {}",
+            unit.path, unit.record_id, unit.version_number, unit.record_schema, unit.predecessor
+        );
+        for finding in &unit.findings {
+            println!("      {finding}");
+        }
+    }
+    let consistent = report.units.iter().filter(|unit| unit.verified()).count();
+    if report.verified() {
+        println!(
+            "verified {consistent} of {} units: the export is consistent with its stated fingerprints",
+            report.units.len()
+        );
+        Ok(ExitCode::SUCCESS)
+    } else {
+        println!(
+            "NOT VERIFIED: {consistent} of {} units consistent, {} archive finding(s)",
+            report.units.len(),
+            report.findings.len()
+        );
+        Ok(ExitCode::FAILURE)
+    }
 }

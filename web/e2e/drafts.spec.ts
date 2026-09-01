@@ -340,6 +340,19 @@ test('draft, collaborate, transfer, and submit a daily evaluation', async ({ pag
 	await expect(
 		page.getByText('Recomputed from the stored record: both fingerprints match.')
 	).toBeVisible();
+	// The sealed record leaves as it was stored: the browser download is
+	// an archive whose record bytes are the canonical bytes verbatim, and
+	// the CLI verifies it from the file alone (ADR 0014).
+	const downloadPromise = page.waitForEvent('download');
+	await page.getByRole('button', { name: 'Export this version' }).click();
+	const download = await downloadPromise;
+	expect(download.suggestedFilename()).toMatch(
+		/^consolebook-record-\d+-v1-\d{8}T\d{6}Z\.zip$/
+	);
+	const archivePath = await download.path();
+	const verified = await execFileAsync(BINARY, ['export', 'verify', archivePath]);
+	expect(verified.stdout).toContain('verified 1 of 1 units');
+	await expect(page.getByText(/^Downloaded consolebook-record-/)).toBeVisible();
 	// The sealed record takes no further decisions or edits.
 	await expect(page.getByRole('button', { name: 'Finalize record' })).toHaveCount(0);
 	await expect(page.getByLabel('Most acceptable performance.')).toHaveCount(0);
