@@ -27,6 +27,7 @@ pub mod notices;
 pub mod program_export;
 pub mod programs;
 pub mod programs_http;
+pub mod record_envelope;
 pub mod record_export;
 pub mod restore;
 pub mod scheduler;

@@ -20,6 +20,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::canonical;
+use crate::record_envelope;
 use crate::record_export::{
     ARCHIVE_FORMAT, ARCHIVE_MANIFEST_PATH, ArchiveManifest, FORMAT_VERSION, RECORD_FILE, Scope,
     UNIT_FORMAT, UNIT_MANIFEST_FILE, UnitEntry, UnitManifest, canonical_json, unit_path,
@@ -99,6 +100,11 @@ pub enum Finding {
     EnvelopeDisagrees {
         member: &'static str,
     },
+    /// The bytes are not an envelope of any known record schema: a
+    /// member missing, unnamed by the schema, or of the wrong type.
+    EnvelopeInvalid {
+        detail: String,
+    },
     ChainHashMismatch,
     /// A first version with a predecessor, or a later one without.
     LineageShape,
@@ -110,6 +116,9 @@ pub enum Finding {
 impl fmt::Display for Finding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::EnvelopeInvalid { detail } => {
+                write!(f, "the record bytes are not a valid envelope: {detail}")
+            }
             Self::NotAnArchive { detail } => write!(f, "not a readable ZIP archive: {detail}"),
             Self::ArchiveManifestMissing => f.write_str("the archive manifest is missing"),
             Self::ArchiveManifestUnreadable { detail } => {
@@ -424,41 +433,43 @@ fn verify_unit(
                 findings.push(Finding::ContentHashMismatch);
             }
             match serde_json::from_slice::<Value>(&bytes) {
+                Ok(document) => match canonical::canonical_bytes(&document) {
+                    Ok(again) if again == bytes => {}
+                    Ok(_) => findings.push(Finding::NotCanonical {
+                        detail: "re-serialization differs from the stored bytes".to_owned(),
+                    }),
+                    Err(err) => findings.push(Finding::NotCanonical {
+                        detail: err.to_string(),
+                    }),
+                },
+                Err(err) => findings.push(Finding::NotCanonical {
+                    detail: format!("not JSON: {err}"),
+                }),
+            }
+            // The bytes must be an envelope of a known record schema —
+            // every member the schema names, typed, and no other — before
+            // the identity they carry is compared with the manifest.
+            match record_envelope::parse(&bytes) {
                 Ok(envelope) => {
-                    match canonical::canonical_bytes(&envelope) {
-                        Ok(again) if again == bytes => {}
-                        Ok(_) => findings.push(Finding::NotCanonical {
-                            detail: "re-serialization differs from the stored bytes".to_owned(),
-                        }),
-                        Err(err) => findings.push(Finding::NotCanonical {
-                            detail: err.to_string(),
-                        }),
-                    }
-                    let predecessor = entry
-                        .predecessor_content_hash
-                        .as_ref()
-                        .map_or(Value::Null, |hash| Value::String(hash.clone()));
                     let disagreements: [(&'static str, bool); 6] = [
-                        ("record.id", envelope["record"]["id"] != entry.record_id),
+                        ("record.id", envelope.record.id != entry.record_id),
                         (
                             "record.version_number",
-                            envelope["record"]["version_number"] != entry.version_number,
+                            envelope.record.version_number != entry.version_number,
                         ),
                         (
                             "record.record_schema",
-                            envelope["record"]["record_schema"] != entry.record_schema,
+                            envelope.record.record_schema != entry.record_schema,
                         ),
                         (
                             "record.predecessor_content_hash",
-                            envelope["record"]["predecessor_content_hash"] != predecessor,
+                            envelope.record.predecessor_content_hash
+                                != entry.predecessor_content_hash,
                         ),
-                        (
-                            "instance",
-                            envelope["instance"] != manifest.installation_id.as_str(),
-                        ),
+                        ("instance", envelope.instance != manifest.installation_id),
                         (
                             "canonicalization",
-                            envelope["canonicalization"] != canonical::CANONICALIZATION,
+                            envelope.canonicalization != canonical::CANONICALIZATION,
                         ),
                     ];
                     for (member, disagrees) in disagreements {
@@ -467,8 +478,8 @@ fn verify_unit(
                         }
                     }
                 }
-                Err(err) => findings.push(Finding::NotCanonical {
-                    detail: format!("not JSON: {err}"),
+                Err(err) => findings.push(Finding::EnvelopeInvalid {
+                    detail: err.to_string(),
                 }),
             }
             match canonical::chain_hash_hex(entry.predecessor_content_hash.as_deref(), &bytes) {

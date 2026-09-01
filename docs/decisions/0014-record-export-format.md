@@ -51,8 +51,11 @@ may export, and what verification claims (#45; Milestone 5 slice 1).
 ### Verification from the export alone
 
 - The verifier recomputes the content hash over the bytes, proves the
-  bytes are canonical by re-serialization, cross-checks the envelope's
-  own `record` and `instance` members against the manifests,
+  bytes are canonical by re-serialization, reads them as a typed
+  envelope of their declared record schema (`record_envelope`, the
+  reading side of ADR 0011's shape: every named member, typed, and no
+  other), cross-checks the envelope's own `record` and `instance`
+  members against the manifests,
   recomputes the chain hash from the carried predecessor hash, links
   predecessors present in the same archive, checks the listed units
   against the declared scope as far as the archive allows, and walks

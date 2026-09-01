@@ -207,17 +207,21 @@ Unit checks, for every listed unit:
 3. `record.json` parses as JSON and re-serializing it under the
    canonical subset reproduces the identical bytes — the bytes are
    canonical, so the hash is over the specified representation;
-4. the envelope agrees with the manifest: `record.id`,
+4. `record.json` is an envelope of a known record schema: every member
+   ADR 0011 (schema 1) or ADR 0013 (schema 2) names, with its type,
+   every nullable member present, no member the schema does not name,
+   and `daily_reports` present exactly for schema 2;
+5. the envelope agrees with the manifest: `record.id`,
    `record.version_number`, `record.record_schema`,
    `record.predecessor_content_hash`, `instance`, and
    `canonicalization` (`jcs-v1`);
-5. `chain_hash` equals
+6. `chain_hash` equals
    `SHA-256("consolebook-version-v1" || 0x00 || predecessor || bytes)`
    with `predecessor` the raw 32 bytes of `predecessor_content_hash`,
    or 32 zero bytes when it is `null`;
-6. `predecessor_content_hash` is `null` exactly when `version_number`
+7. `predecessor_content_hash` is `null` exactly when `version_number`
    is 1; and
-7. when the archive also lists (`record_id`, `version_number - 1`),
+8. when the archive also lists (`record_id`, `version_number - 1`),
    that unit's `content_hash` equals this unit's
    `predecessor_content_hash` — reported as *linked*; a predecessor the
    archive does not carry is reported as *not in export*, which is not

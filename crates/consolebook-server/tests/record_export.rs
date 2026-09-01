@@ -488,6 +488,41 @@ fn handmade_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     out
 }
 
+/// A single-unit archive whose record bytes are replaced and whose
+/// manifests are rehashed and relabeled to match: the honest way to
+/// forge a unit, leaving only the envelope's own shape to object.
+fn rehashed_unit(
+    listed: &[(String, Vec<u8>)],
+    unit: &str,
+    bytes: &[u8],
+    predecessor: Option<&str>,
+    record_schema: i64,
+) -> Vec<u8> {
+    let content_hash = canonical::content_hash_hex(bytes);
+    let chain_hash = canonical::chain_hash_hex(predecessor, bytes).expect("chain");
+    let relabel = |manifest: &mut serde_json::Value| {
+        manifest["content_hash"] = serde_json::Value::String(content_hash.clone());
+        manifest["chain_hash"] = serde_json::Value::String(chain_hash.clone());
+        manifest["record_schema"] = serde_json::Value::from(record_schema);
+    };
+    let entries: Vec<(String, Vec<u8>)> = listed
+        .iter()
+        .map(|(name, content)| {
+            let content = if *name == format!("{unit}/record.json") {
+                bytes.to_vec()
+            } else if name == ARCHIVE_MANIFEST_PATH {
+                edit_json(content, |manifest| relabel(&mut manifest["units"][0]))
+            } else if *name == format!("{unit}/manifest.json") {
+                edit_json(content, relabel)
+            } else {
+                content.clone()
+            };
+            (name.clone(), content)
+        })
+        .collect();
+    repack(&entries)
+}
+
 fn edit_json(bytes: &[u8], edit: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
     let mut value: serde_json::Value = serde_json::from_slice(bytes).expect("json");
     edit(&mut value);
@@ -1004,6 +1039,126 @@ async fn verification_names_every_finding() {
 
     // The untouched original still verifies after all that.
     assert!(export_verify::verify_archive(&original).verified());
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn verification_reads_envelopes_as_typed_records() {
+    let fx = Fixture::new().await;
+    let s = seed(&fx, "typed").await;
+    let installation_id = storage::installation_id(&fx.pool).await.expect("id");
+    let (_, v1_content, _) = fx.version_row(s.record_id, 1).await;
+    let original = export(
+        &fx,
+        s.casey_id,
+        Scope::Version {
+            record_id: s.record_id,
+            version_number: 2,
+        },
+    )
+    .await;
+    let listed = entries(&original);
+    let unit = format!("records/{}/v2", s.record_id);
+    let genuine: serde_json::Value =
+        serde_json::from_slice(entry(&listed, &format!("{unit}/record.json"))).expect("json");
+    let invalid = |bytes: &[u8], record_schema: i64| {
+        let report = export_verify::verify_archive(&rehashed_unit(
+            &listed,
+            &unit,
+            bytes,
+            Some(&v1_content),
+            record_schema,
+        ));
+        assert!(!report.verified(), "{report:?}");
+        let findings = &report.units[0].findings;
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f, Finding::EnvelopeInvalid { .. })),
+            "{findings:?}"
+        );
+        assert!(
+            !findings.contains(&Finding::ContentHashMismatch)
+                && !findings.contains(&Finding::ChainHashMismatch)
+                && !findings
+                    .iter()
+                    .any(|f| matches!(f, Finding::NotCanonical { .. })),
+            "the forgery is otherwise self-consistent: {findings:?}"
+        );
+    };
+
+    // A canonical, correctly hashed document carrying only the members
+    // the identity cross-check reads is not a record.
+    let counterfeit = canonical::canonical_bytes(&serde_json::json!({
+        "canonicalization": canonical::CANONICALIZATION,
+        "instance": installation_id,
+        "record": {
+            "id": s.record_id,
+            "version_number": 2,
+            "record_schema": 2,
+            "predecessor_content_hash": v1_content,
+        },
+    }))
+    .expect("canonical");
+    invalid(&counterfeit, 2);
+
+    // Nor is a schema-2 envelope missing its daily_reports member, one
+    // carrying a member no schema names, one with a mistyped member, one
+    // whose nullable member is absent instead of null, or one declaring
+    // a schema this build does not know.
+    let mut without = genuine.clone();
+    without
+        .as_object_mut()
+        .expect("object")
+        .remove("daily_reports");
+    invalid(&canonical::canonical_bytes(&without).expect("canonical"), 2);
+    let mut extra = genuine.clone();
+    extra["annotations"] = serde_json::json!([]);
+    invalid(&canonical::canonical_bytes(&extra).expect("canonical"), 2);
+    let mut retyped = genuine.clone();
+    retyped["finalization"]["finalized_at"] = serde_json::json!("yesterday");
+    invalid(&canonical::canonical_bytes(&retyped).expect("canonical"), 2);
+    let mut absent = genuine.clone();
+    absent["content"]["narratives"][0]
+        .as_object_mut()
+        .expect("object")
+        .remove("text");
+    invalid(&canonical::canonical_bytes(&absent).expect("canonical"), 2);
+    let mut unknown_schema = genuine.clone();
+    unknown_schema["record"]["record_schema"] = serde_json::json!(7);
+    invalid(
+        &canonical::canonical_bytes(&unknown_schema).expect("canonical"),
+        7,
+    );
+
+    // The same content shaped as schema 1 — no daily_reports, schema 1
+    // declared throughout — is a valid record of its own schema.
+    let mut schema1 = without;
+    schema1["record"]["record_schema"] = serde_json::json!(1);
+    let report = export_verify::verify_archive(&rehashed_unit(
+        &listed,
+        &unit,
+        &canonical::canonical_bytes(&schema1).expect("canonical"),
+        Some(&v1_content),
+        1,
+    ));
+    assert!(report.verified(), "{report:?}");
+    assert_eq!(report.units[0].record_schema, 1);
+
+    // And the genuine bytes read as the typed envelope they are.
+    let envelope =
+        consolebook_server::record_envelope::parse(entry(&listed, &format!("{unit}/record.json")))
+            .expect("typed envelope");
+    assert_eq!(envelope.record.version_number, 2);
+    assert_eq!(envelope.trainee.display_name, "Taylor Trainee");
+    assert_eq!(
+        envelope.content.narratives[0].text.as_deref(),
+        Some("Corrected the invented rating with context.")
+    );
+    assert!(matches!(
+        envelope.daily_reports,
+        consolebook_server::record_envelope::DailyReports::Present(ref links) if links.is_empty()
+    ));
 }
 
 #[tokio::test]
