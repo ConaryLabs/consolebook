@@ -236,6 +236,15 @@ Unit checks, for every listed unit:
 prints one line per unit and every finding, and exits non-zero unless
 the verdict is `verified`. It opens no data directory.
 
+Verification deliberately does not check the container's entry order,
+modification times, or permissions. Those are production rules: they
+make a fresh export deterministic, and they carry no record content.
+An archive whose entries and manifests are intact is still a verified
+export after a tool has repacked it, which is what an operator asking
+"are these records intact?" needs to hear. Proving an archive is
+byte-identical to a fresh export is a byte comparison, not a
+verification finding.
+
 ## What the archive does not carry
 
 - **Drafts.** An unfinalized record is not a record; scopes contain
