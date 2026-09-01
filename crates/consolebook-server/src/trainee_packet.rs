@@ -358,9 +358,9 @@ pub struct SignoffDoc {
 }
 
 /// The shape the format mandates of the signoff history beyond member
-/// types, mirroring `task_signoff`'s trigger: in recorded order, any
+/// types, mirroring `task_signoff`'s triggers: in recorded order, any
 /// signoff after the first for a task supersedes it and records its
-/// reason.
+/// reason, and a revocation has something to revoke.
 #[must_use]
 pub fn signoff_shape_errors(signoffs: &[SignoffDoc]) -> Vec<String> {
     let mut seen = BTreeSet::new();
@@ -368,12 +368,19 @@ pub fn signoff_shape_errors(signoffs: &[SignoffDoc]) -> Vec<String> {
         .iter()
         .filter_map(|signoff| {
             let first = seen.insert(signoff.task_id);
-            (!first && signoff.reason.trim().is_empty()).then(|| {
-                format!(
+            if first && signoff.kind == SignoffKind::Revoked {
+                Some(format!(
+                    "signoff {} revokes task {} before any signoff",
+                    signoff.signoff_id, signoff.task_id
+                ))
+            } else if !first && signoff.reason.trim().is_empty() {
+                Some(format!(
                     "signoff {} overrides task {} without a reason",
                     signoff.signoff_id, signoff.task_id
-                )
-            })
+                ))
+            } else {
+                None
+            }
         })
         .collect()
 }

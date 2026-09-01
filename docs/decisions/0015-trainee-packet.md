@@ -71,9 +71,10 @@ may produce it, and how it verifies (#48; Milestone 5 slice 2).
   packet's checks: the record export's unit checks unchanged, the
   documents present and hashing to the manifest, canonical and typed,
   references from acknowledgments and amendments resolving to carried
-  units, every unit's envelope naming the packet's trainee, and
-  nothing unlisted. The verdict keeps ADR 0014's honest meaning:
-  consistency with the stated fingerprints.
+  units, the amendments agreeing with the lineage the units establish
+  both ways, every unit's predecessor carried, every unit's envelope
+  naming the packet's trainee, and nothing unlisted. The verdict keeps
+  ADR 0014's honest meaning: consistency with the stated fingerprints.
 
 ### Production follows read rules that already exist
 

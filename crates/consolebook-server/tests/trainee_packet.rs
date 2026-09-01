@@ -15,7 +15,7 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use consolebook_server::acknowledgments::{self, AckKind, TraineeAckKind};
 use consolebook_server::capabilities::RoleBundle;
 use consolebook_server::draft_content::{self, DraftContent, NarrativeEntry, RatingEntry};
-use consolebook_server::export_verify::{self, ArchiveKind, Finding};
+use consolebook_server::export_verify::{self, ArchiveKind, Finding, PredecessorLink};
 use consolebook_server::lifecycle::{self, EnrollmentEventKind, EnrollmentStatus};
 use consolebook_server::programs::{
     self, AnchorDef, CompetencyDef, FormCompetencyDef, FormDef, NarrativeDef, PolicyDef,
@@ -783,7 +783,10 @@ async fn packet_verification_names_findings() {
     assert!(
         matches!(
             &report.documents[1].findings[..],
-            [Finding::DocumentReference { detail, .. }] if detail.contains("successor")
+            [
+                Finding::DocumentReference { detail, .. },
+                Finding::DocumentLineage { .. }
+            ] if detail.contains("successor")
         ),
         "{report:?}"
     );
@@ -1380,8 +1383,122 @@ async fn documents_keep_their_order_and_shape() {
         "{report:?}"
     );
 
+    let report = forged(&listed, signoffs, |doc| {
+        doc[0]["kind"] = serde_json::json!("revoked");
+    });
+    assert!(
+        matches!(
+            &report.documents[3].findings[..],
+            [Finding::DocumentInvalid { detail, .. }]
+                if detail.contains("revokes task") && detail.contains("before any signoff")
+        ),
+        "{report:?}"
+    );
+
     // The genuine packet passes every one of these.
     assert!(export_verify::verify_archive(&original).verified());
+}
+
+/// A packet carries every retained version, and its amendments agree
+/// with the lineage the units establish both ways: the verifier refuses
+/// an amendment that contradicts the carried successor, a correction
+/// the document does not record, and a hole in the lineage itself.
+#[tokio::test]
+async fn packets_agree_with_their_lineage() {
+    let fx = Fixture::new().await;
+    let s = seed(&fx, "lineage").await;
+    let original = pack(&fx, s.casey_id, s.enrollment_id).await;
+    let listed = entries(&original);
+    let amendments = DocumentKind::Amendments;
+
+    // An amendment still in progress while its successor is carried.
+    let report = forged(&listed, amendments, |doc| {
+        doc[0]["successor_version_number"] = serde_json::Value::Null;
+    });
+    assert!(
+        matches!(
+            &report.documents[1].findings[..],
+            [Finding::DocumentLineage { detail, .. }]
+                if detail.contains("still in progress")
+                    && detail.contains("version 2, which succeeds version 1")
+        ),
+        "{report:?}"
+    );
+
+    // An amendment naming a carried version that does not succeed the
+    // version it corrected.
+    let report = forged(&listed, amendments, |doc| {
+        doc[0]["successor_version_number"] = serde_json::json!(1);
+    });
+    assert!(
+        matches!(
+            &report.documents[1].findings[..],
+            [Finding::DocumentLineage { detail, .. }]
+                if detail.contains("names version 1 as its successor")
+                    && detail.contains("version 2 succeeds version 1")
+        ),
+        "{report:?}"
+    );
+
+    // A correction the document does not record.
+    let report = export_verify::verify_archive(&with_document(&listed, amendments, b"[]", true));
+    assert!(
+        matches!(
+            &report.documents[1].findings[..],
+            [Finding::DocumentLineage { detail, .. }]
+                if detail.contains("version 2") && detail.contains("no amendment records the correction")
+        ),
+        "{report:?}"
+    );
+
+    // A packet that omits version 1 while carrying version 2, with the
+    // documents trimmed to match: the lineage has a hole, whatever the
+    // documents say, because a packet carries every retained version.
+    let v1 = format!("records/{}/v1/", s.record_id);
+    let empty = canonical::content_hash_hex(b"[]");
+    let trimmed: Vec<(String, Vec<u8>)> = listed
+        .iter()
+        .filter(|(name, _)| !name.starts_with(&v1))
+        .map(|(name, content)| {
+            if name == ARCHIVE_MANIFEST_PATH {
+                let edited = edit_json(content, |manifest| {
+                    manifest["units"]
+                        .as_array_mut()
+                        .expect("units")
+                        .retain(|unit| unit["version_number"] != 1);
+                    for document in manifest["documents"].as_array_mut().expect("documents") {
+                        if document["kind"] == "acknowledgments" || document["kind"] == "amendments"
+                        {
+                            document["sha256"] = serde_json::Value::String(empty.clone());
+                        }
+                    }
+                });
+                (name.clone(), edited)
+            } else if *name == DocumentKind::Acknowledgments.path()
+                || *name == DocumentKind::Amendments.path()
+            {
+                (name.clone(), b"[]".to_vec())
+            } else {
+                (name.clone(), content.clone())
+            }
+        })
+        .collect();
+    let report = export_verify::verify_archive(&repack(&trimmed));
+    assert!(!report.verified());
+    assert_eq!(report.units.len(), 1, "{report:?}");
+    assert_eq!(report.units[0].predecessor, PredecessorLink::NotInExport);
+    assert_eq!(
+        report.units[0].findings,
+        vec![Finding::PredecessorNotCarried],
+        "{report:?}"
+    );
+    assert!(
+        report
+            .documents
+            .iter()
+            .all(export_verify::DocumentReport::verified),
+        "the documents alone cannot tell: {report:?}"
+    );
 }
 
 /// Authorization runs before the packet's read transaction, so a packet

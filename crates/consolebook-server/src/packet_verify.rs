@@ -8,14 +8,14 @@
 //! mandated order, obeying the cross-member rules the stored tables
 //! impose, and referring only to versions the packet carries.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
 use crate::canonical;
 use crate::export_verify::{
-    ArchiveKind, ArchiveReport, DocumentReport, Finding, is_lowercase_hex_hash, unlisted_entries,
-    verify_units,
+    ArchiveKind, ArchiveReport, DocumentReport, Finding, PredecessorLink, is_lowercase_hex_hash,
+    unlisted_entries, verify_units,
 };
 use crate::record_envelope;
 use crate::record_export::{ARCHIVE_MANIFEST_PATH, RECORD_FILE, UnitEntry, canonical_json};
@@ -69,6 +69,13 @@ pub(crate) fn verify_packet(
                 .push(Finding::UnitOutsideScope {
                     path: entry.path.clone(),
                 });
+        }
+    }
+    // A packet carries every retained version: a unit whose predecessor
+    // is not carried is a hole in the lineage, not a scope choice.
+    for unit in &mut report.units {
+        if unit.predecessor == PredecessorLink::NotInExport {
+            unit.findings.push(Finding::PredecessorNotCarried);
         }
     }
     verify_documents(archive, &manifest, &mut listed, report);
@@ -178,7 +185,7 @@ fn check_document(
             }
         }
         DocumentKind::Amendments => match serde_json::from_slice::<Vec<AmendmentDoc>>(bytes) {
-            Ok(amendments) => check_amendments(path, &amendments, carried),
+            Ok(amendments) => check_amendments(path, &amendments, manifest, carried),
             Err(err) => vec![unparsed(path, &err)],
         },
         DocumentKind::Enrollment => match serde_json::from_slice::<EnrollmentDocument>(bytes) {
@@ -275,9 +282,48 @@ fn check_acknowledgments(
     findings
 }
 
+/// The lineage the carried units establish, from the manifest's own
+/// hashes: which carried version succeeds which. The unit checks hold
+/// those hashes to the bytes; this reads them as the record of
+/// succession the amendments document must agree with.
+struct Lineage {
+    /// (`record_id`, `version_number`) → the carried version that
+    /// succeeds it.
+    successor: BTreeMap<(i64, i64), i64>,
+}
+
+impl Lineage {
+    fn of(units: &[UnitEntry]) -> Self {
+        let by_hash: BTreeMap<(i64, &str), i64> = units
+            .iter()
+            .map(|unit| {
+                (
+                    (unit.record_id, unit.content_hash.as_str()),
+                    unit.version_number,
+                )
+            })
+            .collect();
+        let mut successor = BTreeMap::new();
+        for unit in units {
+            if let Some(hash) = unit.predecessor_content_hash.as_deref()
+                && let Some(&earlier) = by_hash.get(&(unit.record_id, hash))
+            {
+                successor.insert((unit.record_id, earlier), unit.version_number);
+            }
+        }
+        Self { successor }
+    }
+}
+
+/// Amendments in their order, giving reasons, referring only to carried
+/// versions, and agreeing with the carried lineage both ways: a sealed
+/// amendment names the version that succeeds the one it corrected, an
+/// amendment in progress has no carried successor, and every carried
+/// successor has its amendment recorded.
 fn check_amendments(
     path: &str,
     amendments: &[AmendmentDoc],
+    manifest: &PacketManifest,
     carried: &BTreeSet<(i64, i64)>,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
@@ -288,27 +334,59 @@ fn check_amendments(
         "(record_id, predecessor_version_number)",
         |amendment| (amendment.record_id, amendment.predecessor_version_number),
     ));
+    let lineage = Lineage::of(&manifest.units);
+    let disagrees = |detail: String| Finding::DocumentLineage {
+        path: path.to_owned(),
+        detail,
+    };
     for amendment in amendments {
-        if !carried.contains(&(amendment.record_id, amendment.predecessor_version_number)) {
+        let (record_id, predecessor) = (amendment.record_id, amendment.predecessor_version_number);
+        if let Some(detail) = amendment.shape_error() {
+            findings.push(misshapen(path, detail));
+        }
+        if !carried.contains(&(record_id, predecessor)) {
             findings.push(dangling(
                 path,
                 "an amendment's predecessor",
-                amendment.record_id,
-                amendment.predecessor_version_number,
+                record_id,
+                predecessor,
             ));
+            continue;
         }
-        if let Some(successor) = amendment.successor_version_number
-            && !carried.contains(&(amendment.record_id, successor))
+        let named = amendment.successor_version_number;
+        if let Some(named) = named
+            && !carried.contains(&(record_id, named))
         {
-            findings.push(dangling(
-                path,
-                "an amendment's successor",
-                amendment.record_id,
-                successor,
-            ));
+            findings.push(dangling(path, "an amendment's successor", record_id, named));
         }
-        if let Some(detail) = amendment.shape_error() {
-            findings.push(misshapen(path, detail));
+        let what = format!("the amendment of record {record_id} version {predecessor}");
+        match (named, lineage.successor.get(&(record_id, predecessor)).copied()) {
+            (None, None) => {}
+            (Some(named), Some(actual)) if named == actual => {}
+            (None, Some(actual)) => findings.push(disagrees(format!(
+                "{what} is still in progress, but the packet carries version {actual}, which succeeds version {predecessor}"
+            ))),
+            (Some(named), Some(actual)) => findings.push(disagrees(format!(
+                "{what} names version {named} as its successor, but version {actual} succeeds version {predecessor}"
+            ))),
+            (Some(named), None) => {
+                if carried.contains(&(record_id, named)) {
+                    findings.push(disagrees(format!(
+                        "{what} names version {named} as its successor, but version {named} does not succeed version {predecessor}"
+                    )));
+                }
+            }
+        }
+    }
+    let recorded: BTreeSet<(i64, i64)> = amendments
+        .iter()
+        .map(|amendment| (amendment.record_id, amendment.predecessor_version_number))
+        .collect();
+    for (&(record_id, predecessor), &successor) in &lineage.successor {
+        if !recorded.contains(&(record_id, predecessor)) {
+            findings.push(disagrees(format!(
+                "version {successor} of record {record_id} succeeds version {predecessor}, but no amendment records the correction"
+            )));
         }
     }
     findings

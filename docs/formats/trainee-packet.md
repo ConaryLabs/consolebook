@@ -64,7 +64,7 @@ packet/signoffs.json                the full task signoff history
 | `installation_id` | string | The exporting installation's identity |
 | `exported_at` | integer | The export instant, UTC unix seconds; identical in every unit manifest |
 | `enrollment` | object | The enrollment's identity, its pinned program version, and its trainee, each *as presented at export* |
-| `units` | array | Every retained version of every record of the enrollment, exactly as the record export lists units; may be empty |
+| `units` | array | Every retained version of every record of the enrollment, exactly as the record export lists units; may be empty; every unit's predecessor is carried |
 | `documents` | array | The four documents, ascending by `path`, each with the SHA-256 of its bytes (lowercase hex) |
 
 The manifest is canonical JSON under the record format's JCS subset,
@@ -148,7 +148,11 @@ An array, strictly ascending by (`record_id`,
 `{record_id, predecessor_version_number, successor_version_number,
 reason, opened_by, opened_at}`. `reason` is non-blank.
 `successor_version_number` is `null` while the correction is still in
-progress; a sealed correction names the version it produced.
+progress; a sealed correction names the version it produced. The
+document and the carried lineage agree both ways: a named successor is
+the carried version whose predecessor is the amended version, an
+amendment in progress has no carried successor, and every carried
+version that succeeds another has its amendment recorded.
 
 ### `packet/signoffs.json`
 
@@ -158,7 +162,8 @@ competency_category, competency_name, prompt, kind, reason, signed_by,
 signed_at}`: every task signoff row, first signoffs and overrides alike,
 so the history is complete (ADR 0013). `kind` is one of `observed`,
 `demonstrated`, `revoked`. Any signoff after the first for a task
-supersedes it and records a non-blank `reason`.
+supersedes it and records a non-blank `reason`, and a revocation never
+opens a task's history: it has something to revoke.
 
 ## Determinism
 
@@ -179,11 +184,14 @@ the same honest meaning: consistency with the stated fingerprints,
 never tamper-proofing or provenance. What it does not check (container
 metadata) is the same as for the record export.
 
-Archive checks are those of the record export, with two differences:
+Archive checks are those of the record export, with three differences:
 the unit list may be empty (an enrollment with no finalized version
-still has a history to leave with), and the scope checked is the
-packet's trainee — every unit's envelope must name
-`enrollment.trainee.id`, or the unit is *outside scope*.
+still has a history to leave with); the scope checked is the packet's
+trainee — every unit's envelope must name `enrollment.trainee.id`, or
+the unit is *outside scope*; and every unit's predecessor is carried —
+a packet carries every retained version, so a version whose predecessor
+is absent is a hole in the lineage (*predecessor not carried*), not a
+scope choice as it is for a record export.
 
 Unit checks are exactly the record export's.
 
@@ -203,13 +211,17 @@ Document checks:
    is the packet's trainee, an amendment gives a reason, a lifecycle
    event carries version references exactly when it is a version
    change, a phase event names the phases its kind requires and is not
-   effective after it was recorded, and a signoff override records its
-   reason;
+   effective after it was recorded, a signoff override records its
+   reason, and a revocation is never a task's first signoff;
 6. every acknowledgment names a (`record_id`, `version_number`) the
    packet carries, and every amendment's predecessor, and successor
    where present, does too — a reference the packet cannot resolve is
-   a finding; and
-7. `enrollment.json` names the manifest's `enrollment.id`.
+   a finding;
+7. the amendments agree with the carried lineage both ways, as their
+   shape states above — an amendment contradicting the carried
+   successor, or a carried successor without its amendment, is a
+   finding; and
+8. `enrollment.json` names the manifest's `enrollment.id`.
 
 `consolebook-server export verify <packet>` prints one line per unit
 and per document and exits non-zero unless the verdict is `verified`.

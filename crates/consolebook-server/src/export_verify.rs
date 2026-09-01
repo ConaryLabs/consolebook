@@ -155,9 +155,20 @@ pub enum Finding {
     /// The predecessor is in the archive and its content hash is not
     /// what this unit's chain was computed over.
     PredecessorMismatch,
+    /// A packet carries every retained version, so a unit whose
+    /// predecessor is not carried is a hole in the lineage.
+    PredecessorNotCarried,
+    /// A packet document disagrees with the lineage the carried units
+    /// establish.
+    DocumentLineage {
+        path: String,
+        detail: String,
+    },
 }
 
 impl fmt::Display for Finding {
+    // One arm per finding: the list is as long as the format's vocabulary.
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DocumentHashMismatch { path } => {
@@ -253,6 +264,12 @@ impl fmt::Display for Finding {
             }
             Self::LineageShape => {
                 f.write_str("a predecessor hash is present exactly for versions after the first")
+            }
+            Self::PredecessorNotCarried => f.write_str(
+                "the predecessor this version names is not carried; a packet carries every retained version",
+            ),
+            Self::DocumentLineage { path, detail } => {
+                write!(f, "{path} disagrees with the carried lineage: {detail}")
             }
             Self::PredecessorMismatch => {
                 f.write_str("the predecessor in this archive has a different content hash")
