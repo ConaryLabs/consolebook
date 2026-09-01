@@ -13,6 +13,7 @@ use axum::routing::get;
 
 use crate::http::{ApiError, AppState, CurrentUser};
 use crate::record_export::{self, ExportRefusal, Scope};
+use crate::trainee_packet::{self, PacketRefusal};
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -24,6 +25,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/enrollments/{id}/export", get(export_enrollment))
         .route("/api/exports/records", get(export_installation))
         .route("/api/exports/summary", get(export_summary))
+        .route("/api/enrollments/{id}/packet", get(export_packet))
+        .route("/api/my/enrollments", get(my_enrollments))
 }
 
 fn export_refusal(refusal: ExportRefusal) -> ApiError {
@@ -118,5 +121,58 @@ async fn export_summary(
     match record_export::summary(&state.pool, current.user.id).await? {
         Ok(summary) => Ok(Json(summary).into_response()),
         Err(refusal) => Err(export_refusal(refusal)),
+    }
+}
+
+// ------------------------------------------------------- trainee packets
+
+fn packet_refusal(refusal: PacketRefusal) -> ApiError {
+    match refusal {
+        PacketRefusal::NoSuchEnrollment => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "no_such_enrollment",
+            "no such enrollment",
+        ),
+        PacketRefusal::CapabilityRequired => ApiError::new(
+            StatusCode::FORBIDDEN,
+            "capability_required",
+            "a packet takes the enrollment's training-history read authority, the trainee's own view_own_records, or export_records",
+        ),
+    }
+}
+
+async fn export_packet(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(enrollment_id): Path<i64>,
+) -> Result<Response, ApiError> {
+    match trainee_packet::export(&state.pool, current.user.id, enrollment_id).await? {
+        Ok(packet) => {
+            let disposition = format!("attachment; filename=\"{}\"", packet.file_name);
+            Ok((
+                [
+                    (header::CONTENT_TYPE, "application/zip".to_owned()),
+                    (header::CONTENT_DISPOSITION, disposition),
+                ],
+                packet.bytes,
+            )
+                .into_response())
+        }
+        Err(refusal) => Err(packet_refusal(refusal)),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct MyEnrollmentsBody {
+    enrollments: Vec<trainee_packet::OwnEnrollment>,
+}
+
+async fn my_enrollments(
+    State(state): State<AppState>,
+    current: CurrentUser,
+) -> Result<Response, ApiError> {
+    match trainee_packet::own_enrollments(&state.pool, current.user.id).await? {
+        Ok(enrollments) => Ok(Json(MyEnrollmentsBody { enrollments }).into_response()),
+        Err(refusal) => Err(packet_refusal(refusal)),
     }
 }

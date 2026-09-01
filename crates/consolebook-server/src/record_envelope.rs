@@ -246,7 +246,7 @@ pub struct Envelope {
 
 /// A member that may be `null` but must be present: the producer always
 /// writes it, so a document without it is not an envelope.
-fn nullable<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(crate) fn nullable<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     T: Deserialize<'de>,
     D: Deserializer<'de>,

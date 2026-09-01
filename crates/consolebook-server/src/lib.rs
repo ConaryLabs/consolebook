@@ -24,6 +24,7 @@ pub mod finalization;
 pub mod http;
 pub mod lifecycle;
 pub mod notices;
+pub mod packet_verify;
 pub mod program_export;
 pub mod programs;
 pub mod programs_http;
@@ -40,10 +41,12 @@ pub mod setup;
 pub mod storage;
 pub mod summaries;
 pub mod task_signoffs;
+pub mod trainee_packet;
 pub mod training_http;
 pub mod training_sessions;
 pub mod users;
 pub mod web_assets;
+pub mod zip_container;
 
 /// Version of the running build, as reported by `/api/health` and `doctor`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -390,6 +390,18 @@ test('draft, collaborate, transfer, and submit a daily evaluation', async ({ pag
 	// One acknowledgment per version: the controls leave with the act.
 	await expect(page.getByRole('button', { name: 'Record acknowledgment' })).toHaveCount(0);
 	await page.getByRole('link', { name: 'My records' }).click();
+	// The trainee leaves with their records: the packet downloads from
+	// their own page and verifies from the file alone (ADR 0015).
+	await expect(page.getByRole('heading', { name: 'My packets' })).toBeVisible();
+	const packetPromise = page.waitForEvent('download');
+	await page.getByRole('button', { name: 'Download packet' }).click();
+	const packet = await packetPromise;
+	expect(packet.suggestedFilename()).toMatch(
+		/^consolebook-packet-enrollment-\d+-\d{8}T\d{6}Z\.zip$/
+	);
+	const packetVerified = await execFileAsync(BINARY, ['export', 'verify', await packet.path()]);
+	expect(packetVerified.stdout).toContain('kind          trainee packet');
+	expect(packetVerified.stdout).toContain('verified 1 of 1 units and 4 of 4 documents');
 	await expect(page.getByText('Acknowledged with response')).toBeVisible();
 
 	// A correction is an amendment, never an edit: the coordinator

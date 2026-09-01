@@ -299,8 +299,14 @@ async fn run_restore(data_dir: &std::path::Path, snapshot: &std::path::Path) -> 
 fn run_export_verify(archive: &std::path::Path) -> Result<ExitCode> {
     let bytes = std::fs::read(archive).with_context(|| format!("reading {}", archive.display()))?;
     let report = export_verify::verify_archive(&bytes);
+    if let Some(kind) = report.kind {
+        println!("kind          {kind}");
+    }
     if let Some(id) = &report.installation_id {
         println!("installation  {id}");
+    }
+    if let Some(id) = report.enrollment_id {
+        println!("enrollment    {id}");
     }
     if let Some(at) = report.exported_at_rfc3339() {
         println!("exported at   {at}");
@@ -321,16 +327,44 @@ fn run_export_verify(archive: &std::path::Path) -> Result<ExitCode> {
             println!("      {finding}");
         }
     }
+    for document in &report.documents {
+        let mark = if document.verified() { "ok  " } else { "FAIL" };
+        println!(
+            "{mark}  {:<28} {} document",
+            document.path,
+            document.kind.as_str()
+        );
+        for finding in &document.findings {
+            println!("      {finding}");
+        }
+    }
     let consistent = report.units.iter().filter(|unit| unit.verified()).count();
+    let documents = if report.documents.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " and {} of {} documents",
+            report
+                .documents
+                .iter()
+                .filter(|document| document.verified())
+                .count(),
+            report.documents.len()
+        )
+    };
+    let what = match report.kind {
+        Some(export_verify::ArchiveKind::TraineePacket) => "packet",
+        _ => "export",
+    };
     if report.verified() {
         println!(
-            "verified {consistent} of {} units: the export is consistent with its stated fingerprints",
+            "verified {consistent} of {} units{documents}: the {what} is consistent with its stated fingerprints",
             report.units.len()
         );
         Ok(ExitCode::SUCCESS)
     } else {
         println!(
-            "NOT VERIFIED: {consistent} of {} units consistent, {} archive finding(s)",
+            "NOT VERIFIED: {consistent} of {} units consistent{documents}, {} archive finding(s)",
             report.units.len(),
             report.findings.len()
         );

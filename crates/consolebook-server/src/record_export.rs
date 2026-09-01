@@ -305,14 +305,14 @@ async fn authorize(
 }
 
 /// One stored version, exactly as the archive carries it.
-struct VersionRow {
-    record_id: i64,
-    version_number: i64,
-    record_schema: i64,
-    bytes: Vec<u8>,
-    content_hash: String,
-    chain_hash: String,
-    predecessor_content_hash: Option<String>,
+pub(crate) struct VersionRow {
+    pub(crate) record_id: i64,
+    pub(crate) version_number: i64,
+    pub(crate) record_schema: i64,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) content_hash: String,
+    pub(crate) chain_hash: String,
+    pub(crate) predecessor_content_hash: Option<String>,
 }
 
 /// The stored rows of a scope in archive order: ascending record id,
@@ -334,7 +334,7 @@ macro_rules! unit_query {
     };
 }
 
-async fn collect(pool: &SqlitePool, scope: Scope) -> Result<Vec<VersionRow>> {
+pub(crate) async fn collect(pool: &SqlitePool, scope: Scope) -> Result<Vec<VersionRow>> {
     let rows = match scope {
         Scope::Version {
             record_id,
@@ -377,6 +377,21 @@ async fn collect(pool: &SqlitePool, scope: Scope) -> Result<Vec<VersionRow>> {
         .collect())
 }
 
+/// The unit list for `rows`, in archive order.
+pub(crate) fn unit_entries(rows: &[VersionRow]) -> Vec<UnitEntry> {
+    rows.iter()
+        .map(|row| UnitEntry {
+            path: unit_path(row.record_id, row.version_number),
+            record_id: row.record_id,
+            version_number: row.version_number,
+            record_schema: row.record_schema,
+            content_hash: row.content_hash.clone(),
+            chain_hash: row.chain_hash.clone(),
+            predecessor_content_hash: row.predecessor_content_hash.clone(),
+        })
+        .collect()
+}
+
 /// Writes the container exactly as docs/formats/record-export.md lays
 /// it out: manifest first, then units in order, stored entries, the
 /// export instant as every entry's modification time, `0644`. Rows are
@@ -388,18 +403,7 @@ fn build_archive(
     scope: Scope,
     rows: Vec<VersionRow>,
 ) -> Result<Vec<u8>> {
-    let units: Vec<UnitEntry> = rows
-        .iter()
-        .map(|row| UnitEntry {
-            path: unit_path(row.record_id, row.version_number),
-            record_id: row.record_id,
-            version_number: row.version_number,
-            record_schema: row.record_schema,
-            content_hash: row.content_hash.clone(),
-            chain_hash: row.chain_hash.clone(),
-            predecessor_content_hash: row.predecessor_content_hash.clone(),
-        })
-        .collect();
+    let units = unit_entries(&rows);
     let manifest = ArchiveManifest {
         format: ARCHIVE_FORMAT.to_owned(),
         format_version: FORMAT_VERSION,
@@ -408,60 +412,79 @@ fn build_archive(
         scope,
         units,
     };
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Stored)
-        .last_modified_time(dos_time(exported_at)?)
-        .unix_permissions(0o644);
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
-    add_entry(
-        &mut writer,
-        ARCHIVE_MANIFEST_PATH,
-        &canonical_json(&manifest)?,
-        options,
-    )?;
-    for (row, entry) in rows.into_iter().zip(&manifest.units) {
-        add_entry(
-            &mut writer,
-            &format!("{}/{RECORD_FILE}", entry.path),
-            &row.bytes,
-            options,
-        )?;
-        let unit = UnitManifest {
-            format: UNIT_FORMAT.to_owned(),
-            format_version: FORMAT_VERSION,
-            installation_id: installation_id.to_owned(),
-            exported_at,
-            record_id: entry.record_id,
-            version_number: entry.version_number,
-            record_schema: entry.record_schema,
-            content_hash: entry.content_hash.clone(),
-            chain_hash: entry.chain_hash.clone(),
-            predecessor_content_hash: entry.predecessor_content_hash.clone(),
-        };
-        add_entry(
-            &mut writer,
-            &format!("{}/{UNIT_MANIFEST_FILE}", entry.path),
-            &canonical_json(&unit)?,
-            options,
-        )?;
-    }
-    let cursor = writer.finish().context("finishing the export archive")?;
-    Ok(cursor.into_inner())
+    let mut writer = ArchiveWriter::new(exported_at)?;
+    writer.add(ARCHIVE_MANIFEST_PATH, &canonical_json(&manifest)?)?;
+    writer.add_units(installation_id, exported_at, rows, &manifest.units)?;
+    writer.finish()
 }
 
-fn add_entry(
-    writer: &mut ZipWriter<Cursor<Vec<u8>>>,
-    name: &str,
-    bytes: &[u8],
+/// The container writer every export shares: stored entries, the export
+/// instant as each entry's modification time, `0644`, entries in the
+/// order they are added.
+pub(crate) struct ArchiveWriter {
+    writer: ZipWriter<Cursor<Vec<u8>>>,
     options: SimpleFileOptions,
-) -> Result<()> {
-    writer
-        .start_file(name, options)
-        .with_context(|| format!("starting archive entry {name}"))?;
-    writer
-        .write_all(bytes)
-        .with_context(|| format!("writing archive entry {name}"))?;
-    Ok(())
+}
+
+impl ArchiveWriter {
+    pub(crate) fn new(exported_at: i64) -> Result<Self> {
+        Ok(Self {
+            writer: ZipWriter::new(Cursor::new(Vec::new())),
+            options: SimpleFileOptions::default()
+                .compression_method(CompressionMethod::Stored)
+                .last_modified_time(dos_time(exported_at)?)
+                .unix_permissions(0o644),
+        })
+    }
+
+    pub(crate) fn add(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
+        self.writer
+            .start_file(name, self.options)
+            .with_context(|| format!("starting archive entry {name}"))?;
+        self.writer
+            .write_all(bytes)
+            .with_context(|| format!("writing archive entry {name}"))?;
+        Ok(())
+    }
+
+    /// Adds every unit — `record.json` then `manifest.json` — consuming
+    /// the rows so each version's bytes are released once written.
+    pub(crate) fn add_units(
+        &mut self,
+        installation_id: &str,
+        exported_at: i64,
+        rows: Vec<VersionRow>,
+        units: &[UnitEntry],
+    ) -> Result<()> {
+        for (row, entry) in rows.into_iter().zip(units) {
+            self.add(&format!("{}/{RECORD_FILE}", entry.path), &row.bytes)?;
+            let unit = UnitManifest {
+                format: UNIT_FORMAT.to_owned(),
+                format_version: FORMAT_VERSION,
+                installation_id: installation_id.to_owned(),
+                exported_at,
+                record_id: entry.record_id,
+                version_number: entry.version_number,
+                record_schema: entry.record_schema,
+                content_hash: entry.content_hash.clone(),
+                chain_hash: entry.chain_hash.clone(),
+                predecessor_content_hash: entry.predecessor_content_hash.clone(),
+            };
+            self.add(
+                &format!("{}/{UNIT_MANIFEST_FILE}", entry.path),
+                &canonical_json(&unit)?,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> Result<Vec<u8>> {
+        let cursor = self
+            .writer
+            .finish()
+            .context("finishing the export archive")?;
+        Ok(cursor.into_inner())
+    }
 }
 
 /// Manifests are canonical JSON under the record format's subset, so
@@ -484,13 +507,18 @@ fn dos_time(exported_at: i64) -> Result<zip::DateTime> {
     .map_err(|_| anyhow!("export instant {exported_at} is outside the ZIP date range"))
 }
 
-fn file_name(scope: Scope, exported_at: i64) -> Result<String> {
-    let stamp = OffsetDateTime::from_unix_timestamp(exported_at)
+/// The download-name stamp for an export instant: `YYYYMMDDTHHMMSSZ`.
+pub(crate) fn stamp(exported_at: i64) -> Result<String> {
+    OffsetDateTime::from_unix_timestamp(exported_at)
         .context("export instant")?
         .format(&time::macros::format_description!(
             "[year][month][day]T[hour][minute][second]Z"
         ))
-        .context("formatting export instant")?;
+        .context("formatting export instant")
+}
+
+fn file_name(scope: Scope, exported_at: i64) -> Result<String> {
+    let stamp = stamp(exported_at)?;
     let scope_part = match scope {
         Scope::Version {
             record_id,

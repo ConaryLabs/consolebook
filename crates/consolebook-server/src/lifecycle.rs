@@ -622,7 +622,7 @@ pub async fn may_read(pool: &SqlitePool, actor_user_id: i64, enrollment_id: i64)
 
 /// The enrollment's lifecycle events, oldest first, with presentation
 /// fields resolved.
-async fn list_events(
+pub(crate) async fn list_events(
     conn: &mut SqliteConnection,
     enrollment_id: i64,
 ) -> Result<Vec<EnrollmentEvent>> {
@@ -664,7 +664,7 @@ async fn list_events(
 
 /// The enrollment's phase history in effective order, with presentation
 /// fields resolved.
-async fn list_phase_events(
+pub(crate) async fn list_phase_events(
     conn: &mut SqliteConnection,
     enrollment_id: i64,
 ) -> Result<Vec<PhaseEvent>> {

@@ -6,15 +6,17 @@
 //! container walk (including the central directory, which the `zip`
 //! reader collapses by name), and the normative check list of the
 //! format document. The verdict is consistency with the stated
-//! fingerprints, never tamper-proofing (ADR 0010, ADR 0011). Split out
-//! of `record_export` when that module crossed the reorganization
-//! threshold (AGENTS.md).
+//! fingerprints, never tamper-proofing (ADR 0010, ADR 0011). The
+//! container's raw reading lives in `zip_container` and the trainee
+//! packet's document checks in `packet_verify`; this module owns the
+//! findings, the reports, the format dispatch, and the unit checks every
+//! format shares.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -25,12 +27,40 @@ use crate::record_export::{
     ARCHIVE_FORMAT, ARCHIVE_MANIFEST_PATH, ArchiveManifest, FORMAT_VERSION, RECORD_FILE, Scope,
     UNIT_FORMAT, UNIT_MANIFEST_FILE, UnitEntry, UnitManifest, canonical_json, unit_path,
 };
+use crate::trainee_packet::{DocumentKind, PACKET_FORMAT, PACKET_FORMAT_VERSION};
+use crate::zip_container::{Archive, central_directory_names, read_entry};
 
 /// One thing a verifier found wrong. The verdict derives from the
 /// absence of findings; wording is presentation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Finding {
+    /// A packet document's bytes do not hash to the manifest's `sha256`.
+    DocumentHashMismatch {
+        path: String,
+    },
+    /// A packet document is not canonical JSON of its kind's shape.
+    DocumentInvalid {
+        path: String,
+        detail: String,
+    },
+    /// A packet document disagrees with the manifest on a member.
+    DocumentDisagrees {
+        path: String,
+        member: &'static str,
+    },
+    /// A packet document refers to a version the packet does not list.
+    DocumentReference {
+        path: String,
+        detail: String,
+    },
+    /// A version-1 packet lists each document kind exactly once, in path
+    /// order.
+    DocumentsIncomplete,
+    DocumentPathUnexpected {
+        path: String,
+        expected: String,
+    },
     NotAnArchive {
         detail: String,
     },
@@ -124,6 +154,24 @@ pub enum Finding {
 impl fmt::Display for Finding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DocumentHashMismatch { path } => {
+                write!(f, "{path} does not hash to the manifest's sha256")
+            }
+            Self::DocumentInvalid { path, detail } => {
+                write!(f, "{path} is not a valid document: {detail}")
+            }
+            Self::DocumentDisagrees { path, member } => {
+                write!(f, "{path} disagrees with the manifest on {member}")
+            }
+            Self::DocumentReference { path, detail } => {
+                write!(f, "{path} refers outside the packet: {detail}")
+            }
+            Self::DocumentsIncomplete => f.write_str(
+                "the packet lists its document kinds incompletely, twice, or out of order",
+            ),
+            Self::DocumentPathUnexpected { path, expected } => {
+                write!(f, "document path {path} should be {expected}")
+            }
             Self::HashNotCanonical { member } => {
                 write!(f, "{member} is not 64 lowercase hex characters")
             }
@@ -245,22 +293,61 @@ impl UnitReport {
     }
 }
 
+/// Which format the archive declared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveKind {
+    RecordExport,
+    TraineePacket,
+}
+
+impl fmt::Display for ArchiveKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::RecordExport => "record export",
+            Self::TraineePacket => "trainee packet",
+        })
+    }
+}
+
+/// One packet document's verification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DocumentReport {
+    pub path: String,
+    pub kind: DocumentKind,
+    pub findings: Vec<Finding>,
+}
+
+impl DocumentReport {
+    #[must_use]
+    pub fn verified(&self) -> bool {
+        self.findings.is_empty()
+    }
+}
+
 /// The whole archive's verification. `verified` when nothing was found
 /// wrong anywhere: internally consistent with its stated fingerprints,
 /// which is what the format can prove.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ArchiveReport {
+    pub kind: Option<ArchiveKind>,
     pub installation_id: Option<String>,
     pub exported_at: Option<i64>,
+    /// A record export's declared scope.
     pub scope: Option<Scope>,
+    /// A trainee packet's enrollment.
+    pub enrollment_id: Option<i64>,
     pub units: Vec<UnitReport>,
+    pub documents: Vec<DocumentReport>,
     pub findings: Vec<Finding>,
 }
 
 impl ArchiveReport {
     #[must_use]
     pub fn verified(&self) -> bool {
-        self.findings.is_empty() && self.units.iter().all(UnitReport::verified)
+        self.findings.is_empty()
+            && self.units.iter().all(UnitReport::verified)
+            && self.documents.iter().all(DocumentReport::verified)
     }
 
     /// The export instant as RFC 3339, for presentation.
@@ -275,17 +362,18 @@ impl ArchiveReport {
     }
 }
 
-type Archive<'a> = zip::ZipArchive<Cursor<&'a [u8]>>;
-
 /// Verifies an archive from its bytes alone, per the normative checks
 /// in docs/formats/record-export.md.
 #[must_use]
 pub fn verify_archive(bytes: &[u8]) -> ArchiveReport {
     let mut report = ArchiveReport {
+        kind: None,
         installation_id: None,
         exported_at: None,
         scope: None,
+        enrollment_id: None,
         units: Vec::new(),
+        documents: Vec::new(),
         findings: Vec::new(),
     };
     let mut archive = match zip::ZipArchive::new(Cursor::new(bytes)) {
@@ -313,8 +401,10 @@ pub fn verify_archive(bytes: &[u8]) -> ArchiveReport {
             return report;
         }
     };
-    let manifest: ArchiveManifest = match serde_json::from_slice(&manifest_bytes) {
-        Ok(manifest) => manifest,
+    // The manifest names its own format; everything else follows from
+    // that name and version, never from guessing at the members.
+    let probe: FormatProbe = match serde_json::from_slice(&manifest_bytes) {
+        Ok(probe) => probe,
         Err(err) => {
             report.findings.push(Finding::ArchiveManifestUnreadable {
                 detail: err.to_string(),
@@ -322,14 +412,45 @@ pub fn verify_archive(bytes: &[u8]) -> ArchiveReport {
             return report;
         }
     };
-    if manifest.format != ARCHIVE_FORMAT || manifest.format_version != FORMAT_VERSION {
-        report.findings.push(Finding::UnsupportedFormat {
-            format: manifest.format.clone(),
-            format_version: manifest.format_version,
-        });
-        return report;
+    match (probe.format.as_str(), probe.format_version) {
+        (ARCHIVE_FORMAT, FORMAT_VERSION) => {
+            verify_export(&mut archive, &names, &manifest_bytes, &mut report);
+        }
+        (PACKET_FORMAT, PACKET_FORMAT_VERSION) => {
+            crate::packet_verify::verify_packet(&mut archive, &names, &manifest_bytes, &mut report);
+        }
+        _ => report.findings.push(Finding::UnsupportedFormat {
+            format: probe.format,
+            format_version: probe.format_version,
+        }),
     }
-    if canonical_json(&manifest).ok().as_deref() != Some(manifest_bytes.as_slice()) {
+    report
+}
+
+/// The two members every manifest of every known format carries.
+#[derive(Deserialize)]
+struct FormatProbe {
+    format: String,
+    format_version: i64,
+}
+
+fn verify_export(
+    archive: &mut Archive<'_>,
+    names: &[String],
+    manifest_bytes: &[u8],
+    report: &mut ArchiveReport,
+) {
+    report.kind = Some(ArchiveKind::RecordExport);
+    let manifest: ArchiveManifest = match serde_json::from_slice(manifest_bytes) {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            report.findings.push(Finding::ArchiveManifestUnreadable {
+                detail: err.to_string(),
+            });
+            return;
+        }
+    };
+    if canonical_json(&manifest).ok().as_deref() != Some(manifest_bytes) {
         report.findings.push(Finding::ManifestNotCanonical {
             path: ARCHIVE_MANIFEST_PATH.to_owned(),
         });
@@ -337,17 +458,37 @@ pub fn verify_archive(bytes: &[u8]) -> ArchiveReport {
     report.installation_id = Some(manifest.installation_id.clone());
     report.exported_at = Some(manifest.exported_at);
     report.scope = Some(manifest.scope);
+    report.findings.extend(scope_findings(&manifest));
+    let mut listed: BTreeSet<String> = BTreeSet::new();
+    listed.insert(ARCHIVE_MANIFEST_PATH.to_owned());
+    verify_units(
+        archive,
+        &manifest.installation_id,
+        manifest.exported_at,
+        &manifest.units,
+        &mut listed,
+        report,
+    );
+    unlisted_entries(names, &listed, report);
+}
 
-    let ordered = manifest.units.windows(2).all(|pair| {
+/// The unit checks shared by every format: order, derived paths, and
+/// each unit's own verification.
+pub(crate) fn verify_units(
+    archive: &mut Archive<'_>,
+    installation_id: &str,
+    exported_at: i64,
+    units: &[UnitEntry],
+    listed: &mut BTreeSet<String>,
+    report: &mut ArchiveReport,
+) {
+    let ordered = units.windows(2).all(|pair| {
         (pair[0].record_id, pair[0].version_number) < (pair[1].record_id, pair[1].version_number)
     });
     if !ordered {
         report.findings.push(Finding::UnitsOutOfOrder);
     }
-    report.findings.extend(scope_findings(&manifest));
-    let mut listed: BTreeSet<String> = BTreeSet::new();
-    listed.insert(ARCHIVE_MANIFEST_PATH.to_owned());
-    for entry in &manifest.units {
+    for entry in units {
         let expected = unit_path(entry.record_id, entry.version_number);
         if entry.path != expected {
             report.findings.push(Finding::UnitPathUnexpected {
@@ -358,30 +499,40 @@ pub fn verify_archive(bytes: &[u8]) -> ArchiveReport {
         listed.insert(format!("{}/{RECORD_FILE}", entry.path));
         listed.insert(format!("{}/{UNIT_MANIFEST_FILE}", entry.path));
     }
-    for name in &names {
+    let by_identity: BTreeMap<(i64, i64), &UnitEntry> = units
+        .iter()
+        .map(|entry| ((entry.record_id, entry.version_number), entry))
+        .collect();
+    for entry in units {
+        report.units.push(verify_unit(
+            archive,
+            installation_id,
+            exported_at,
+            entry,
+            &by_identity,
+        ));
+    }
+}
+
+pub(crate) fn unlisted_entries(
+    names: &[String],
+    listed: &BTreeSet<String>,
+    report: &mut ArchiveReport,
+) {
+    for name in names {
         if !listed.contains(name) {
             report
                 .findings
                 .push(Finding::UnlistedEntry { path: name.clone() });
         }
     }
-    let by_identity: BTreeMap<(i64, i64), &UnitEntry> = manifest
-        .units
-        .iter()
-        .map(|entry| ((entry.record_id, entry.version_number), entry))
-        .collect();
-    for entry in &manifest.units {
-        report
-            .units
-            .push(verify_unit(&mut archive, &manifest, entry, &by_identity));
-    }
-    report
 }
 
 #[allow(clippy::too_many_lines)]
 fn verify_unit(
     archive: &mut Archive<'_>,
-    manifest: &ArchiveManifest,
+    installation_id: &str,
+    exported_at: i64,
     entry: &UnitEntry,
     by_identity: &BTreeMap<(i64, i64), &UnitEntry>,
 ) -> UnitReport {
@@ -404,11 +555,8 @@ fn verify_unit(
                     });
                 }
                 let disagreements: [(&'static str, bool); 8] = [
-                    (
-                        "installation_id",
-                        unit.installation_id != manifest.installation_id,
-                    ),
-                    ("exported_at", unit.exported_at != manifest.exported_at),
+                    ("installation_id", unit.installation_id != installation_id),
+                    ("exported_at", unit.exported_at != exported_at),
                     ("record_id", unit.record_id != entry.record_id),
                     (
                         "version_number",
@@ -480,7 +628,7 @@ fn verify_unit(
                             envelope.record.predecessor_content_hash
                                 != entry.predecessor_content_hash,
                         ),
-                        ("instance", envelope.instance != manifest.installation_id),
+                        ("instance", envelope.instance != installation_id),
                         (
                             "canonicalization",
                             envelope.canonicalization != canonical::CANONICALIZATION,
@@ -635,99 +783,9 @@ fn duplicate_entry_findings(bytes: &[u8]) -> Vec<Finding> {
     }
 }
 
-/// Every entry name in the central directory, duplicates included, in
-/// directory order. The `zip` reader indexes entries by name and keeps
-/// one per name, so a name written twice — which extraction tools
-/// resolve differently — is visible only here. The walk follows
-/// APPNOTE 6.3: the end-of-central-directory record (the last record,
-/// followed by at most a 65535-byte comment), the ZIP64 locator and
-/// record when the classic fields overflow, then the fixed 46-byte
-/// central headers with their variable name, extra, and comment parts.
-fn central_directory_names(bytes: &[u8]) -> std::result::Result<Vec<String>, String> {
-    const EOCD: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
-    const ZIP64_LOCATOR: [u8; 4] = [0x50, 0x4b, 0x06, 0x07];
-    const ZIP64_EOCD: [u8; 4] = [0x50, 0x4b, 0x06, 0x06];
-    const CENTRAL_HEADER: [u8; 4] = [0x50, 0x4b, 0x01, 0x02];
-    let eocd = (0..=bytes.len().saturating_sub(22))
-        .rev()
-        .take(usize::from(u16::MAX) + 1)
-        .find(|&at| bytes.get(at..at + 4) == Some(&EOCD[..]))
-        .ok_or("no end-of-central-directory record")?;
-    let mut count = u64::from(le_u16(bytes, eocd + 10)?);
-    let mut start = u64::from(le_u32(bytes, eocd + 16)?);
-    if count == u64::from(u16::MAX) || start == u64::from(u32::MAX) {
-        let locator = eocd
-            .checked_sub(20)
-            .filter(|&at| bytes.get(at..at + 4) == Some(&ZIP64_LOCATOR[..]))
-            .ok_or("ZIP64 fields without a ZIP64 locator")?;
-        let zip64 = usize::try_from(le_u64(bytes, locator + 8)?)
-            .map_err(|_| "ZIP64 record offset out of range".to_owned())?;
-        if bytes.get(zip64..zip64 + 4) != Some(&ZIP64_EOCD[..]) {
-            return Err("ZIP64 locator points at no ZIP64 record".to_owned());
-        }
-        count = le_u64(bytes, zip64 + 32)?;
-        start = le_u64(bytes, zip64 + 48)?;
-    }
-    let mut at = usize::try_from(start).map_err(|_| "central directory offset out of range")?;
-    let mut names = Vec::new();
-    for _ in 0..count {
-        if bytes.get(at..at + 4) != Some(&CENTRAL_HEADER[..]) {
-            return Err(format!("no central directory header at offset {at}"));
-        }
-        let name_len = usize::from(le_u16(bytes, at + 28)?);
-        let extra_len = usize::from(le_u16(bytes, at + 30)?);
-        let comment_len = usize::from(le_u16(bytes, at + 32)?);
-        let name = bytes
-            .get(at + 46..at + 46 + name_len)
-            .ok_or("truncated central directory header")?;
-        names.push(String::from_utf8_lossy(name).into_owned());
-        at += 46 + name_len + extra_len + comment_len;
-    }
-    Ok(names)
-}
-
-fn le_u16(bytes: &[u8], at: usize) -> std::result::Result<u16, String> {
-    bytes
-        .get(at..at + 2)
-        .map(|b| u16::from_le_bytes([b[0], b[1]]))
-        .ok_or_else(|| format!("truncated record at offset {at}"))
-}
-
-fn le_u32(bytes: &[u8], at: usize) -> std::result::Result<u32, String> {
-    bytes
-        .get(at..at + 4)
-        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-        .ok_or_else(|| format!("truncated record at offset {at}"))
-}
-
-fn le_u64(bytes: &[u8], at: usize) -> std::result::Result<u64, String> {
-    bytes
-        .get(at..at + 8)
-        .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
-        .ok_or_else(|| format!("truncated record at offset {at}"))
-}
-
-fn is_lowercase_hex_hash(hex: &str) -> bool {
+pub(crate) fn is_lowercase_hex_hash(hex: &str) -> bool {
     hex.len() == 64
         && hex
             .bytes()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-}
-
-/// Reads one entry: `Ok(None)` when absent, `Err(detail)` when the
-/// container cannot deliver it (a CRC mismatch included).
-fn read_entry(
-    archive: &mut Archive<'_>,
-    name: &str,
-) -> std::result::Result<Option<Vec<u8>>, String> {
-    match archive.by_name(name) {
-        Ok(mut file) => {
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)
-                .map_err(|err| err.to_string())?;
-            Ok(Some(bytes))
-        }
-        Err(zip::result::ZipError::FileNotFound) => Ok(None),
-        Err(err) => Err(err.to_string()),
-    }
 }
