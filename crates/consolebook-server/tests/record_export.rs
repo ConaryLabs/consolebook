@@ -408,6 +408,85 @@ fn repack(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
     writer.finish().expect("finish").into_inner()
 }
 
+/// CRC-32 (IEEE), bitwise, for the hand-assembled container below.
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFF_u32;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+fn le16(out: &mut Vec<u8>, value: usize) {
+    out.extend_from_slice(&u16::try_from(value).expect("fits u16").to_le_bytes());
+}
+
+fn le32(out: &mut Vec<u8>, value: usize) {
+    out.extend_from_slice(&u32::try_from(value).expect("fits u32").to_le_bytes());
+}
+
+/// A ZIP assembled by hand (APPNOTE 6.3, stored entries) so a name can
+/// be written twice — the `zip` writer refuses to, and the `zip` reader
+/// keeps one entry per name, which is exactly what the verifier must
+/// see through.
+fn handmade_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut central = Vec::new();
+    for (name, data) in entries {
+        let offset = out.len();
+        let crc = crc32(data);
+        // Local file header.
+        out.extend_from_slice(&[0x50, 0x4b, 0x03, 0x04]);
+        le16(&mut out, 20); // version needed
+        le16(&mut out, 0); // flags
+        le16(&mut out, 0); // stored
+        le16(&mut out, 0); // time
+        le16(&mut out, 0x21); // date: 1980-01-01
+        out.extend_from_slice(&crc.to_le_bytes());
+        le32(&mut out, data.len());
+        le32(&mut out, data.len());
+        le16(&mut out, name.len());
+        le16(&mut out, 0); // extra
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(data);
+        // Central directory header.
+        central.extend_from_slice(&[0x50, 0x4b, 0x01, 0x02]);
+        le16(&mut central, 0x031E); // made by: Unix, 3.0
+        le16(&mut central, 20);
+        le16(&mut central, 0);
+        le16(&mut central, 0);
+        le16(&mut central, 0);
+        le16(&mut central, 0x21);
+        central.extend_from_slice(&crc.to_le_bytes());
+        le32(&mut central, data.len());
+        le32(&mut central, data.len());
+        le16(&mut central, name.len());
+        le16(&mut central, 0); // extra
+        le16(&mut central, 0); // comment
+        le16(&mut central, 0); // disk
+        le16(&mut central, 0); // internal attributes
+        central.extend_from_slice(&(0o100_644_u32 << 16).to_le_bytes());
+        le32(&mut central, offset);
+        central.extend_from_slice(name.as_bytes());
+    }
+    let directory_offset = out.len();
+    out.extend_from_slice(&central);
+    // End of central directory.
+    out.extend_from_slice(&[0x50, 0x4b, 0x05, 0x06]);
+    le16(&mut out, 0);
+    le16(&mut out, 0);
+    le16(&mut out, entries.len());
+    le16(&mut out, entries.len());
+    le32(&mut out, central.len());
+    le32(&mut out, directory_offset);
+    le16(&mut out, 0);
+    out
+}
+
 fn edit_json(bytes: &[u8], edit: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
     let mut value: serde_json::Value = serde_json::from_slice(bytes).expect("json");
     edit(&mut value);
@@ -823,6 +902,104 @@ async fn verification_names_every_finding() {
         "{findings:?}"
     );
     assert_eq!(report.units[1].predecessor, PredecessorLink::None);
+
+    // The declared scope is checked against the listed units as far as
+    // the archive allows: no units at all, a version scope with two
+    // units (one of them outside it), a record scope naming another
+    // record.
+    let hollow = repack(&with_entry(&listed, ARCHIVE_MANIFEST_PATH, |bytes| {
+        Some(edit_json(bytes, |manifest| {
+            manifest["units"] = serde_json::Value::Array(Vec::new());
+        }))
+    }));
+    let report = record_export::verify_archive(&hollow);
+    assert!(!report.verified());
+    assert!(report.findings.contains(&Finding::NoUnits), "{report:?}");
+    let mislabeled = repack(&with_entry(&listed, ARCHIVE_MANIFEST_PATH, |bytes| {
+        Some(edit_json(bytes, |manifest| {
+            manifest["scope"] = serde_json::json!({
+                "kind": "version",
+                "record_id": s.record_id,
+                "version_number": 2,
+            });
+        }))
+    }));
+    let report = record_export::verify_archive(&mislabeled);
+    assert!(!report.verified());
+    assert!(
+        report.findings.contains(&Finding::ScopeCardinality {
+            expected: 1,
+            listed: 2
+        }),
+        "{report:?}"
+    );
+    assert!(
+        report
+            .findings
+            .contains(&Finding::UnitOutsideScope { path: v1.clone() }),
+        "{report:?}"
+    );
+    assert!(
+        !report
+            .findings
+            .contains(&Finding::UnitOutsideScope { path: v2.clone() }),
+        "{report:?}"
+    );
+    let foreign = repack(&with_entry(&listed, ARCHIVE_MANIFEST_PATH, |bytes| {
+        Some(edit_json(bytes, |manifest| {
+            manifest["scope"]["record_id"] = serde_json::Value::from(9999);
+        }))
+    }));
+    let report = record_export::verify_archive(&foreign);
+    assert!(!report.verified());
+    assert!(
+        report
+            .findings
+            .contains(&Finding::UnitOutsideScope { path: v1.clone() }),
+        "{report:?}"
+    );
+    assert!(
+        report
+            .findings
+            .contains(&Finding::UnitOutsideScope { path: v2.clone() }),
+        "{report:?}"
+    );
+
+    // A name written twice: the reader resolves the genuine copy, so
+    // every per-unit check passes, and only the central directory shows
+    // the alternate record bytes another tool might extract instead.
+    let plain: Vec<(&str, &[u8])> = listed
+        .iter()
+        .map(|(name, content)| (name.as_str(), content.as_slice()))
+        .collect();
+    let handmade = handmade_zip(&plain);
+    assert!(
+        record_export::verify_archive(&handmade).verified(),
+        "a hand-assembled container of the same entries verifies"
+    );
+    let alternate = String::from_utf8(entry(&listed, &format!("{v2}/record.json")).to_vec())
+        .expect("utf-8")
+        .replace("Corrected the invented", "Corrected the inveNted")
+        .into_bytes();
+    let mut doubled: Vec<(&str, &[u8])> = Vec::new();
+    for (name, content) in &plain {
+        if *name == format!("{v2}/record.json") {
+            doubled.push((name, alternate.as_slice()));
+        }
+        doubled.push((name, content));
+    }
+    let report = record_export::verify_archive(&handmade_zip(&doubled));
+    assert!(!report.verified());
+    assert!(
+        report.findings.contains(&Finding::DuplicateEntry {
+            path: format!("{v2}/record.json")
+        }),
+        "{report:?}"
+    );
+    assert!(
+        report.units.iter().all(record_export::UnitReport::verified),
+        "the reader saw the genuine copy: {report:?}"
+    );
 
     // The untouched original still verifies after all that.
     assert!(record_export::verify_archive(&original).verified());

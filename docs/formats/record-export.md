@@ -163,8 +163,9 @@ so that a unit directory stands on its own; the two must agree.
   installation holds.
 
 The scope is the exporter's statement of intent. Verification checks
-the archive against itself; it cannot know whether an installation held
-versions the archive omits.
+the archive against itself — a `version` scope must be exactly its one
+unit, a `record` scope must hold only that record's versions — but it
+cannot know whether an installation held versions the archive omits.
 
 ## Verification
 
@@ -178,14 +179,22 @@ the checks are not tamper-proofing against whoever produced the file.
 
 Archive checks:
 
-1. the container is a readable ZIP archive;
+1. the container is a readable ZIP archive whose central directory names
+   each entry once — a name written twice is a finding, because
+   extraction tools disagree on which copy they take;
 2. `manifest.json` exists, parses, and carries a known `format` and
    `format_version`;
-3. `units` is ascending by (`record_id`, `version_number`) with no
-   duplicate identity, and each `path` equals the derived form;
-4. every entry in the container is `manifest.json` or one of a listed
+3. `units` lists at least one unit, ascending by (`record_id`,
+   `version_number`) with no duplicate identity, and each `path` equals
+   the derived form;
+4. the listed units fit the declared scope as far as the archive can
+   tell: a `version` scope lists exactly one unit with that identity, a
+   `record` scope lists only units of that record; an `enrollment` or
+   `installation` scope states nothing the archive can confirm on its
+   own;
+5. every entry in the container is `manifest.json` or one of a listed
    unit's two files — an unlisted entry is a finding; and
-5. both files of every listed unit exist.
+6. both files of every listed unit exist.
 
 Unit checks, for every listed unit:
 

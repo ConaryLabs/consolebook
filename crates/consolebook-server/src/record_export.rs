@@ -529,6 +529,26 @@ pub enum Finding {
     },
     /// Units are not strictly ascending by (record, version).
     UnitsOutOfOrder,
+    /// The manifest lists no unit; the format refuses empty exports.
+    NoUnits,
+    /// The declared scope calls for a different number of units.
+    ScopeCardinality {
+        expected: usize,
+        listed: usize,
+    },
+    /// A listed unit's identity contradicts the declared scope.
+    UnitOutsideScope {
+        path: String,
+    },
+    /// The container's central directory could not be walked.
+    CentralDirectoryUnreadable {
+        detail: String,
+    },
+    /// The central directory names one entry more than once; extraction
+    /// tools disagree on which copy they take.
+    DuplicateEntry {
+        path: String,
+    },
     UnitPathUnexpected {
         path: String,
         expected: String,
@@ -585,6 +605,23 @@ impl fmt::Display for Finding {
             }
             Self::UnitsOutOfOrder => {
                 f.write_str("units are not strictly ascending by record and version")
+            }
+            Self::NoUnits => f.write_str("the manifest lists no unit"),
+            Self::ScopeCardinality { expected, listed } => write!(
+                f,
+                "the declared scope calls for {expected} unit(s); the manifest lists {listed}"
+            ),
+            Self::UnitOutsideScope { path } => {
+                write!(f, "unit {path} is outside the declared scope")
+            }
+            Self::CentralDirectoryUnreadable { detail } => {
+                write!(f, "the central directory could not be walked: {detail}")
+            }
+            Self::DuplicateEntry { path } => {
+                write!(
+                    f,
+                    "entry {path} appears more than once in the central directory"
+                )
             }
             Self::UnitPathUnexpected { path, expected } => {
                 write!(f, "unit path {path} should be {expected}")
@@ -719,6 +756,7 @@ pub fn verify_archive(bytes: &[u8]) -> ArchiveReport {
         }
     };
     let names: Vec<String> = archive.file_names().map(str::to_owned).collect();
+    report.findings.extend(duplicate_entry_findings(bytes));
     let manifest_bytes = match read_entry(&mut archive, ARCHIVE_MANIFEST_PATH) {
         Ok(Some(bytes)) => bytes,
         Ok(None) => {
@@ -764,6 +802,7 @@ pub fn verify_archive(bytes: &[u8]) -> ArchiveReport {
     if !ordered {
         report.findings.push(Finding::UnitsOutOfOrder);
     }
+    report.findings.extend(scope_findings(&manifest));
     let mut listed: BTreeSet<String> = BTreeSet::new();
     listed.insert(ARCHIVE_MANIFEST_PATH.to_owned());
     for entry in &manifest.units {
@@ -955,6 +994,141 @@ fn verify_unit(
         predecessor,
         findings,
     }
+}
+
+/// The declared scope checked as far as the archive itself allows: no
+/// scope is empty, a version scope is exactly its one unit, and a
+/// record scope holds only that record's versions. Enrollment and
+/// installation scopes state nothing the bytes can confirm.
+fn scope_findings(manifest: &ArchiveManifest) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    if manifest.units.is_empty() {
+        findings.push(Finding::NoUnits);
+    }
+    match manifest.scope {
+        Scope::Version {
+            record_id,
+            version_number,
+        } => {
+            if manifest.units.len() != 1 {
+                findings.push(Finding::ScopeCardinality {
+                    expected: 1,
+                    listed: manifest.units.len(),
+                });
+            }
+            for entry in &manifest.units {
+                if (entry.record_id, entry.version_number) != (record_id, version_number) {
+                    findings.push(Finding::UnitOutsideScope {
+                        path: entry.path.clone(),
+                    });
+                }
+            }
+        }
+        Scope::Record { record_id } => {
+            for entry in &manifest.units {
+                if entry.record_id != record_id {
+                    findings.push(Finding::UnitOutsideScope {
+                        path: entry.path.clone(),
+                    });
+                }
+            }
+        }
+        Scope::Enrollment { .. } | Scope::Installation => {}
+    }
+    findings
+}
+
+/// The reader keeps one entry per name; only the central directory
+/// itself says whether a name was written twice.
+fn duplicate_entry_findings(bytes: &[u8]) -> Vec<Finding> {
+    match central_directory_names(bytes) {
+        Ok(directory) => {
+            let mut occurrences: BTreeMap<&str, usize> = BTreeMap::new();
+            for name in &directory {
+                *occurrences.entry(name.as_str()).or_default() += 1;
+            }
+            occurrences
+                .into_iter()
+                .filter(|(_, count)| *count > 1)
+                .map(|(name, _)| Finding::DuplicateEntry {
+                    path: name.to_owned(),
+                })
+                .collect()
+        }
+        Err(detail) => vec![Finding::CentralDirectoryUnreadable { detail }],
+    }
+}
+
+/// Every entry name in the central directory, duplicates included, in
+/// directory order. The `zip` reader indexes entries by name and keeps
+/// one per name, so a name written twice — which extraction tools
+/// resolve differently — is visible only here. The walk follows
+/// APPNOTE 6.3: the end-of-central-directory record (the last record,
+/// followed by at most a 65535-byte comment), the ZIP64 locator and
+/// record when the classic fields overflow, then the fixed 46-byte
+/// central headers with their variable name, extra, and comment parts.
+fn central_directory_names(bytes: &[u8]) -> std::result::Result<Vec<String>, String> {
+    const EOCD: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
+    const ZIP64_LOCATOR: [u8; 4] = [0x50, 0x4b, 0x06, 0x07];
+    const ZIP64_EOCD: [u8; 4] = [0x50, 0x4b, 0x06, 0x06];
+    const CENTRAL_HEADER: [u8; 4] = [0x50, 0x4b, 0x01, 0x02];
+    let eocd = (0..=bytes.len().saturating_sub(22))
+        .rev()
+        .take(usize::from(u16::MAX) + 1)
+        .find(|&at| bytes.get(at..at + 4) == Some(&EOCD[..]))
+        .ok_or("no end-of-central-directory record")?;
+    let mut count = u64::from(le_u16(bytes, eocd + 10)?);
+    let mut start = u64::from(le_u32(bytes, eocd + 16)?);
+    if count == u64::from(u16::MAX) || start == u64::from(u32::MAX) {
+        let locator = eocd
+            .checked_sub(20)
+            .filter(|&at| bytes.get(at..at + 4) == Some(&ZIP64_LOCATOR[..]))
+            .ok_or("ZIP64 fields without a ZIP64 locator")?;
+        let zip64 = usize::try_from(le_u64(bytes, locator + 8)?)
+            .map_err(|_| "ZIP64 record offset out of range".to_owned())?;
+        if bytes.get(zip64..zip64 + 4) != Some(&ZIP64_EOCD[..]) {
+            return Err("ZIP64 locator points at no ZIP64 record".to_owned());
+        }
+        count = le_u64(bytes, zip64 + 32)?;
+        start = le_u64(bytes, zip64 + 48)?;
+    }
+    let mut at = usize::try_from(start).map_err(|_| "central directory offset out of range")?;
+    let mut names = Vec::new();
+    for _ in 0..count {
+        if bytes.get(at..at + 4) != Some(&CENTRAL_HEADER[..]) {
+            return Err(format!("no central directory header at offset {at}"));
+        }
+        let name_len = usize::from(le_u16(bytes, at + 28)?);
+        let extra_len = usize::from(le_u16(bytes, at + 30)?);
+        let comment_len = usize::from(le_u16(bytes, at + 32)?);
+        let name = bytes
+            .get(at + 46..at + 46 + name_len)
+            .ok_or("truncated central directory header")?;
+        names.push(String::from_utf8_lossy(name).into_owned());
+        at += 46 + name_len + extra_len + comment_len;
+    }
+    Ok(names)
+}
+
+fn le_u16(bytes: &[u8], at: usize) -> std::result::Result<u16, String> {
+    bytes
+        .get(at..at + 2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .ok_or_else(|| format!("truncated record at offset {at}"))
+}
+
+fn le_u32(bytes: &[u8], at: usize) -> std::result::Result<u32, String> {
+    bytes
+        .get(at..at + 4)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .ok_or_else(|| format!("truncated record at offset {at}"))
+}
+
+fn le_u64(bytes: &[u8], at: usize) -> std::result::Result<u64, String> {
+    bytes
+        .get(at..at + 8)
+        .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+        .ok_or_else(|| format!("truncated record at offset {at}"))
 }
 
 /// Reads one entry: `Ok(None)` when absent, `Err(detail)` when the

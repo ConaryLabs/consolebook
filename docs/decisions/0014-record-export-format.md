@@ -53,10 +53,13 @@ may export, and what verification claims (#45; Milestone 5 slice 1).
 - The verifier recomputes the content hash over the bytes, proves the
   bytes are canonical by re-serialization, cross-checks the envelope's
   own `record` and `instance` members against the manifests,
-  recomputes the chain hash from the carried predecessor hash, and
-  links predecessors present in the same archive. It reports per unit
-  and per archive with typed findings; the verdict is `verified` only
-  when every check passes.
+  recomputes the chain hash from the carried predecessor hash, links
+  predecessors present in the same archive, checks the listed units
+  against the declared scope as far as the archive allows, and walks
+  the container's central directory itself so an entry name written
+  twice is a finding rather than whichever copy one reader happens to
+  pick. It reports per unit and per archive with typed findings; the
+  verdict is `verified` only when every check passes.
 - It ships as a library function and as
   `consolebook-server export verify <archive>`, which opens no data
   directory — the artifact is checked wherever it landed.
