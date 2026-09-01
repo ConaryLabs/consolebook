@@ -121,8 +121,10 @@ may export, and what verification claims (#45; Milestone 5 slice 1).
   exported successor without its predecessor verifies its own chain
   hash but cannot prove the predecessor's bytes — reported as *not in
   export*, never inferred; and
-- streaming exports means nothing on disk to dispose of, and nothing
-  to resume: a very large installation export is a single response.
+- on-demand exports mean nothing on disk to dispose of and nothing to
+  resume: an installation export is one response, assembled in memory
+  while it is produced, so a very large history costs memory in
+  proportion until exports stream (tracked separately).
 
 ## Rejected alternatives
 

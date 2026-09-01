@@ -183,7 +183,8 @@ pub async fn export_at(
         }));
     }
     let installation_id = storage::installation_id(pool).await?;
-    let bytes = build_archive(&installation_id, exported_at, scope, &rows)?;
+    let unit_count = rows.len();
+    let bytes = build_archive(&installation_id, exported_at, scope, rows)?;
     // The export is audited once it exists: actor and subject, never
     // content (docs/records-integrity.md).
     match audited.subject {
@@ -203,7 +204,7 @@ pub async fn export_at(
         file_name: file_name(scope, exported_at)?,
         bytes,
         exported_at,
-        unit_count: rows.len(),
+        unit_count,
     }))
 }
 
@@ -378,12 +379,14 @@ async fn collect(pool: &SqlitePool, scope: Scope) -> Result<Vec<VersionRow>> {
 
 /// Writes the container exactly as docs/formats/record-export.md lays
 /// it out: manifest first, then units in order, stored entries, the
-/// export instant as every entry's modification time, `0644`.
+/// export instant as every entry's modification time, `0644`. Rows are
+/// consumed so each version's bytes are released once written; the
+/// archive is the one copy held to the end (#47 tracks streaming it).
 fn build_archive(
     installation_id: &str,
     exported_at: i64,
     scope: Scope,
-    rows: &[VersionRow],
+    rows: Vec<VersionRow>,
 ) -> Result<Vec<u8>> {
     let units: Vec<UnitEntry> = rows
         .iter()
@@ -416,7 +419,7 @@ fn build_archive(
         &canonical_json(&manifest)?,
         options,
     )?;
-    for (row, entry) in rows.iter().zip(&manifest.units) {
+    for (row, entry) in rows.into_iter().zip(&manifest.units) {
         add_entry(
             &mut writer,
             &format!("{}/{RECORD_FILE}", entry.path),

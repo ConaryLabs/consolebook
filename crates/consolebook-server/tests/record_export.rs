@@ -504,6 +504,10 @@ fn rehashed_unit(
         manifest["content_hash"] = serde_json::Value::String(content_hash.clone());
         manifest["chain_hash"] = serde_json::Value::String(chain_hash.clone());
         manifest["record_schema"] = serde_json::Value::from(record_schema);
+        manifest["predecessor_content_hash"] = predecessor
+            .map_or(serde_json::Value::Null, |hash| {
+                serde_json::Value::String(hash.to_owned())
+            });
     };
     let entries: Vec<(String, Vec<u8>)> = listed
         .iter()
@@ -1130,6 +1134,29 @@ async fn verification_reads_envelopes_as_typed_records() {
         &canonical::canonical_bytes(&unknown_schema).expect("canonical"),
         7,
     );
+    // Hashes are lowercase hex by the format. An uppercase predecessor
+    // hash, consistent across both manifests and the envelope, decodes
+    // to the same bytes, so the chain recomputes — and nothing else
+    // objects for a lone successor whose predecessor is not present.
+    let shouted = v1_content.to_uppercase();
+    let mut loud = genuine.clone();
+    loud["record"]["predecessor_content_hash"] = serde_json::Value::String(shouted.clone());
+    let report = export_verify::verify_archive(&rehashed_unit(
+        &listed,
+        &unit,
+        &canonical::canonical_bytes(&loud).expect("canonical"),
+        Some(&shouted),
+        2,
+    ));
+    assert!(!report.verified());
+    assert_eq!(
+        report.units[0].findings,
+        vec![Finding::HashNotCanonical {
+            member: "predecessor_content_hash"
+        }],
+        "{report:?}"
+    );
+
     // Attachments exist in no known schema: an element of any shape,
     // even an empty object, is not a record.
     let mut attached = genuine.clone();

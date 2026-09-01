@@ -203,7 +203,9 @@ Unit checks, for every listed unit:
    `format_version`, and agrees with the archive entry and the archive
    manifest on every shared member (`installation_id`, `exported_at`,
    identity, schema, hashes);
-2. `content_hash` equals SHA-256 over the bytes of `record.json`;
+2. `content_hash`, `chain_hash`, and a non-null
+   `predecessor_content_hash` are each 64 lowercase hex characters, and
+   `content_hash` equals SHA-256 over the bytes of `record.json`;
 3. `record.json` parses as JSON and re-serializing it under the
    canonical subset reproduces the identical bytes — the bytes are
    canonical, so the hash is over the specified representation;

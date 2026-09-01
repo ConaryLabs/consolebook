@@ -106,6 +106,10 @@ pub enum Finding {
         detail: String,
     },
     ChainHashMismatch,
+    /// A hash member is not 64 lowercase hex characters.
+    HashNotCanonical {
+        member: &'static str,
+    },
     /// A first version with a predecessor, or a later one without.
     LineageShape,
     /// `record_id` and `version_number` are positive integers.
@@ -120,6 +124,9 @@ pub enum Finding {
 impl fmt::Display for Finding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::HashNotCanonical { member } => {
+                write!(f, "{member} is not 64 lowercase hex characters")
+            }
             Self::IdentityOutOfRange { member } => {
                 write!(f, "{member} is not a positive integer")
             }
@@ -503,6 +510,25 @@ fn verify_unit(
         }),
     }
 
+    // Hashes are 64 lowercase hex characters by the format. The chain
+    // recomputation decodes hex case-insensitively, so without this an
+    // uppercase predecessor hash would pass for a lone successor and
+    // then fail to link once its lowercase predecessor joined it.
+    let hash_members: [(&'static str, Option<&str>); 3] = [
+        ("content_hash", Some(entry.content_hash.as_str())),
+        ("chain_hash", Some(entry.chain_hash.as_str())),
+        (
+            "predecessor_content_hash",
+            entry.predecessor_content_hash.as_deref(),
+        ),
+    ];
+    for (member, value) in hash_members {
+        if let Some(hex) = value
+            && !is_lowercase_hex_hash(hex)
+        {
+            findings.push(Finding::HashNotCanonical { member });
+        }
+    }
     // Identity is positive by the format: the database assigns record
     // ids from 1 and version numbers start at 1, so a zero or negative
     // number is not an identity the lineage rule below can reason about.
@@ -679,6 +705,13 @@ fn le_u64(bytes: &[u8], at: usize) -> std::result::Result<u64, String> {
         .get(at..at + 8)
         .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
         .ok_or_else(|| format!("truncated record at offset {at}"))
+}
+
+fn is_lowercase_hex_hash(hex: &str) -> bool {
+    hex.len() == 64
+        && hex
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Reads one entry: `Ok(None)` when absent, `Err(detail)` when the
