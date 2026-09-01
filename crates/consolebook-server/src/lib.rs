@@ -18,6 +18,7 @@ pub mod draft_review;
 pub mod drafts_http;
 pub mod enrollments;
 pub mod evaluation_drafts;
+pub mod export_verify;
 pub mod exports_http;
 pub mod finalization;
 pub mod http;

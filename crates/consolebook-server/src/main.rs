@@ -12,7 +12,7 @@ use consolebook_server::doctor::Verdict;
 use consolebook_server::serve_lock::ServeLock;
 use consolebook_server::users::{IssueRefusal, ResetOrigin};
 use consolebook_server::{
-    VERSION, backup, doctor, http, record_export, restore, scheduler, setup, storage, users,
+    VERSION, backup, doctor, export_verify, http, restore, scheduler, setup, storage, users,
 };
 
 #[derive(Parser)]
@@ -298,7 +298,7 @@ async fn run_restore(data_dir: &std::path::Path, snapshot: &std::path::Path) -> 
 
 fn run_export_verify(archive: &std::path::Path) -> Result<ExitCode> {
     let bytes = std::fs::read(archive).with_context(|| format!("reading {}", archive.display()))?;
-    let report = record_export::verify_archive(&bytes);
+    let report = export_verify::verify_archive(&bytes);
     if let Some(id) = &report.installation_id {
         println!("installation  {id}");
     }

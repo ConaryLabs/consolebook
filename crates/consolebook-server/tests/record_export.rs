@@ -12,13 +12,14 @@ use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, Request, StatusCode};
 use consolebook_server::capabilities::RoleBundle;
 use consolebook_server::draft_content::{self, DraftContent, NarrativeEntry, RatingEntry};
+use consolebook_server::export_verify::{self, Finding, PredecessorLink, UnitReport};
 use consolebook_server::programs::{
     self, AnchorDef, CompetencyDef, FormCompetencyDef, FormDef, NarrativeDef, PolicyDef,
     RecordType, ScaleDef, ScaleKind, VersionContent,
 };
 use consolebook_server::record_export::{
     self, ARCHIVE_FORMAT, ARCHIVE_MANIFEST_PATH, ArchiveManifest, ExportRefusal, FORMAT_VERSION,
-    Finding, PredecessorLink, Scope, UNIT_FORMAT, UnitManifest,
+    Scope, UNIT_FORMAT, UnitManifest,
 };
 use consolebook_server::training_sessions::{self, Disposition, SessionInput};
 use consolebook_server::{
@@ -605,7 +606,7 @@ async fn exports_carry_stored_bytes_verbatim_and_verify() {
     // Verification from the archive alone: the chain hash recomputes
     // from the carried predecessor hash, and the predecessor itself is
     // honestly reported as not in this export.
-    let report = record_export::verify_archive(&exported.bytes);
+    let report = export_verify::verify_archive(&exported.bytes);
     assert!(report.verified(), "{report:?}");
     assert_eq!(
         report.installation_id.as_deref(),
@@ -646,7 +647,7 @@ async fn exports_carry_stored_bytes_verbatim_and_verify() {
     assert_eq!(manifest.units[0].chain_hash, v1_chain);
     assert_eq!(manifest.units[0].predecessor_content_hash, None);
     assert_eq!(manifest.units[1].version_number, 2);
-    let report = record_export::verify_archive(&bytes);
+    let report = export_verify::verify_archive(&bytes);
     assert!(report.verified(), "{report:?}");
     assert_eq!(report.units[0].predecessor, PredecessorLink::None);
     assert_eq!(report.units[1].predecessor, PredecessorLink::Linked);
@@ -661,10 +662,10 @@ async fn exports_carry_stored_bytes_verbatim_and_verify() {
         },
     )
     .await;
-    assert!(record_export::verify_archive(&bytes).verified());
+    assert!(export_verify::verify_archive(&bytes).verified());
     assert_eq!(fx.audit_count(Some("enrollment")).await, 1);
     let bytes = export(&fx, fx.admin_id, Scope::Installation).await;
-    let report = record_export::verify_archive(&bytes);
+    let report = export_verify::verify_archive(&bytes);
     assert!(report.verified(), "{report:?}");
     assert_eq!(report.scope, Some(Scope::Installation));
     assert_eq!(report.units.len(), 2);
@@ -698,7 +699,7 @@ async fn verification_names_every_finding() {
     let (v1_bytes, _, _) = fx.version_row(s.record_id, 1).await;
 
     // Not an archive at all.
-    let report = record_export::verify_archive(b"not a zip archive");
+    let report = export_verify::verify_archive(b"not a zip archive");
     assert!(!report.verified());
     assert!(matches!(report.findings[0], Finding::NotAnArchive { .. }));
 
@@ -715,7 +716,7 @@ async fn verification_names_every_finding() {
             )
         },
     ));
-    let report = record_export::verify_archive(&altered);
+    let report = export_verify::verify_archive(&altered);
     assert!(!report.verified());
     assert!(report.findings.is_empty(), "{report:?}");
     assert!(report.units[0].verified());
@@ -744,7 +745,7 @@ async fn verification_names_every_finding() {
         .position(|window| window == needle)
         .expect("record text in the archive");
     flipped[at] ^= 0x20;
-    assert!(!record_export::verify_archive(&flipped).verified());
+    assert!(!export_verify::verify_archive(&flipped).verified());
 
     // The archive manifest claims a different content hash for version
     // 1: the bytes disagree, the unit manifest disagrees, and version
@@ -755,7 +756,7 @@ async fn verification_names_every_finding() {
             manifest["units"][0]["content_hash"] = serde_json::Value::String(other_hash.clone());
         }))
     }));
-    let report = record_export::verify_archive(&swapped);
+    let report = export_verify::verify_archive(&swapped);
     assert!(!report.verified());
     assert!(report.findings.is_empty(), "{report:?}");
     let findings = &report.units[0].findings;
@@ -785,7 +786,7 @@ async fn verification_names_every_finding() {
     let replaced = repack(&with_entry(&listed, &format!("{v2}/record.json"), |_| {
         Some(v1_bytes.clone())
     }));
-    let report = record_export::verify_archive(&replaced);
+    let report = export_verify::verify_archive(&replaced);
     let findings = &report.units[1].findings;
     assert!(
         findings.contains(&Finding::ContentHashMismatch),
@@ -806,7 +807,7 @@ async fn verification_names_every_finding() {
 
     // Missing and unlisted entries.
     let missing = repack(&with_entry(&listed, &format!("{v1}/record.json"), |_| None));
-    let report = record_export::verify_archive(&missing);
+    let report = export_verify::verify_archive(&missing);
     assert!(
         report.units[0].findings.contains(&Finding::MissingEntry {
             path: format!("{v1}/record.json")
@@ -815,7 +816,7 @@ async fn verification_names_every_finding() {
     );
     let mut extra = listed.clone();
     extra.push(("README.txt".to_owned(), b"nothing to see here".to_vec()));
-    let report = record_export::verify_archive(&repack(&extra));
+    let report = export_verify::verify_archive(&repack(&extra));
     assert!(!report.verified());
     assert!(
         report.findings.contains(&Finding::UnlistedEntry {
@@ -823,7 +824,7 @@ async fn verification_names_every_finding() {
         }),
         "{report:?}"
     );
-    assert!(report.units.iter().all(record_export::UnitReport::verified));
+    assert!(report.units.iter().all(UnitReport::verified));
 
     // A manifest that parses but is not canonical (pretty-printed) is a
     // finding: the format fixes the bytes, not only the members.
@@ -835,7 +836,7 @@ async fn verification_names_every_finding() {
             Some(serde_json::to_vec_pretty(&value).expect("pretty"))
         },
     ));
-    let report = record_export::verify_archive(&pretty);
+    let report = export_verify::verify_archive(&pretty);
     assert!(
         report.units[1]
             .findings
@@ -851,7 +852,7 @@ async fn verification_names_every_finding() {
             manifest["format_version"] = serde_json::Value::from(2);
         }))
     }));
-    let report = record_export::verify_archive(&future);
+    let report = export_verify::verify_archive(&future);
     assert!(!report.verified());
     assert!(
         report.findings.contains(&Finding::UnsupportedFormat {
@@ -869,7 +870,7 @@ async fn verification_names_every_finding() {
             units.swap(0, 1);
         }))
     }));
-    let report = record_export::verify_archive(&reordered);
+    let report = export_verify::verify_archive(&reordered);
     assert!(
         report.findings.contains(&Finding::UnitsOutOfOrder),
         "{report:?}"
@@ -879,7 +880,7 @@ async fn verification_names_every_finding() {
             manifest["units"][1]["path"] = serde_json::Value::String("records/elsewhere".into());
         }))
     }));
-    let report = record_export::verify_archive(&renamed);
+    let report = export_verify::verify_archive(&renamed);
     assert!(
         report.findings.contains(&Finding::UnitPathUnexpected {
             path: "records/elsewhere".to_owned(),
@@ -894,7 +895,7 @@ async fn verification_names_every_finding() {
             manifest["units"][1]["predecessor_content_hash"] = serde_json::Value::Null;
         }))
     }));
-    let report = record_export::verify_archive(&orphan);
+    let report = export_verify::verify_archive(&orphan);
     let findings = &report.units[1].findings;
     assert!(findings.contains(&Finding::LineageShape), "{findings:?}");
     assert!(
@@ -912,7 +913,7 @@ async fn verification_names_every_finding() {
             manifest["units"] = serde_json::Value::Array(Vec::new());
         }))
     }));
-    let report = record_export::verify_archive(&hollow);
+    let report = export_verify::verify_archive(&hollow);
     assert!(!report.verified());
     assert!(report.findings.contains(&Finding::NoUnits), "{report:?}");
     let mislabeled = repack(&with_entry(&listed, ARCHIVE_MANIFEST_PATH, |bytes| {
@@ -924,7 +925,7 @@ async fn verification_names_every_finding() {
             });
         }))
     }));
-    let report = record_export::verify_archive(&mislabeled);
+    let report = export_verify::verify_archive(&mislabeled);
     assert!(!report.verified());
     assert!(
         report.findings.contains(&Finding::ScopeCardinality {
@@ -950,7 +951,7 @@ async fn verification_names_every_finding() {
             manifest["scope"]["record_id"] = serde_json::Value::from(9999);
         }))
     }));
-    let report = record_export::verify_archive(&foreign);
+    let report = export_verify::verify_archive(&foreign);
     assert!(!report.verified());
     assert!(
         report
@@ -974,7 +975,7 @@ async fn verification_names_every_finding() {
         .collect();
     let handmade = handmade_zip(&plain);
     assert!(
-        record_export::verify_archive(&handmade).verified(),
+        export_verify::verify_archive(&handmade).verified(),
         "a hand-assembled container of the same entries verifies"
     );
     let alternate = String::from_utf8(entry(&listed, &format!("{v2}/record.json")).to_vec())
@@ -988,7 +989,7 @@ async fn verification_names_every_finding() {
         }
         doubled.push((name, content));
     }
-    let report = record_export::verify_archive(&handmade_zip(&doubled));
+    let report = export_verify::verify_archive(&handmade_zip(&doubled));
     assert!(!report.verified());
     assert!(
         report.findings.contains(&Finding::DuplicateEntry {
@@ -997,12 +998,12 @@ async fn verification_names_every_finding() {
         "{report:?}"
     );
     assert!(
-        report.units.iter().all(record_export::UnitReport::verified),
+        report.units.iter().all(UnitReport::verified),
         "the reader saw the genuine copy: {report:?}"
     );
 
     // The untouched original still verifies after all that.
-    assert!(record_export::verify_archive(&original).verified());
+    assert!(export_verify::verify_archive(&original).verified());
 }
 
 #[tokio::test]
@@ -1030,7 +1031,7 @@ async fn scopes_follow_the_read_rules() {
     // outside the scope is refused.
     for actor in [s.jordan_id, s.casey_id, s.taylor_id] {
         let bytes = export(&fx, actor, record).await;
-        let report = record_export::verify_archive(&bytes);
+        let report = export_verify::verify_archive(&bytes);
         assert!(report.verified());
         assert_eq!(report.units.len(), 2, "actor {actor} sees both versions");
         export(&fx, actor, version).await;
@@ -1180,7 +1181,7 @@ async fn export_api_delivers_the_documented_bytes() {
         )) && disposition.ends_with("Z.zip\""),
         "got: {disposition}"
     );
-    let report = record_export::verify_archive(&bytes);
+    let report = export_verify::verify_archive(&bytes);
     assert!(report.verified(), "{report:?}");
     assert_eq!(report.units.len(), 1);
 
@@ -1191,7 +1192,7 @@ async fn export_api_delivers_the_documented_bytes() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(record_export::verify_archive(&bytes).units.len(), 2);
+    assert_eq!(export_verify::verify_archive(&bytes).units.len(), 2);
     let (status, _, bytes) = raw_get(
         fx.app(),
         &format!("/api/enrollments/{}/export", s.enrollment_id),
@@ -1199,7 +1200,7 @@ async fn export_api_delivers_the_documented_bytes() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(record_export::verify_archive(&bytes).verified());
+    assert!(export_verify::verify_archive(&bytes).verified());
 
     // The installation scope answers to export_records only.
     let (status, _, body) = raw_get(fx.app(), "/api/exports/records", &casey).await;
@@ -1208,7 +1209,7 @@ async fn export_api_delivers_the_documented_bytes() {
     assert_eq!(body["error"], "capability_required");
     let (status, _, bytes) = raw_get(fx.app(), "/api/exports/records", &admin).await;
     assert_eq!(status, StatusCode::OK);
-    let report = record_export::verify_archive(&bytes);
+    let report = export_verify::verify_archive(&bytes);
     assert!(report.verified());
     assert_eq!(report.scope, Some(Scope::Installation));
     let (status, _, body) = raw_get(fx.app(), "/api/exports/summary", &admin).await;

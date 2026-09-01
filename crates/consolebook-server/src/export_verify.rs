@@ -1,0 +1,669 @@
+//! Verification of record export archives from their bytes alone
+//! (ADR 0014; docs/formats/record-export.md; #45).
+//!
+//! `record_export` produces archives; this module owns the independent
+//! check: typed findings, per-unit and per-archive reports, the
+//! container walk (including the central directory, which the `zip`
+//! reader collapses by name), and the normative check list of the
+//! format document. The verdict is consistency with the stated
+//! fingerprints, never tamper-proofing (ADR 0010, ADR 0011). Split out
+//! of `record_export` when that module crossed the reorganization
+//! threshold (AGENTS.md).
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::io::{Cursor, Read};
+
+use serde::Serialize;
+use serde_json::Value;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
+
+use crate::canonical;
+use crate::record_export::{
+    ARCHIVE_FORMAT, ARCHIVE_MANIFEST_PATH, ArchiveManifest, FORMAT_VERSION, RECORD_FILE, Scope,
+    UNIT_FORMAT, UNIT_MANIFEST_FILE, UnitEntry, UnitManifest, canonical_json, unit_path,
+};
+
+/// One thing a verifier found wrong. The verdict derives from the
+/// absence of findings; wording is presentation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Finding {
+    NotAnArchive {
+        detail: String,
+    },
+    ArchiveManifestMissing,
+    ArchiveManifestUnreadable {
+        detail: String,
+    },
+    UnsupportedFormat {
+        format: String,
+        format_version: i64,
+    },
+    /// A manifest's bytes are not the canonical serialization of what
+    /// they parse to: a member is missing, reordered, or reformatted.
+    ManifestNotCanonical {
+        path: String,
+    },
+    /// Units are not strictly ascending by (record, version).
+    UnitsOutOfOrder,
+    /// The manifest lists no unit; the format refuses empty exports.
+    NoUnits,
+    /// The declared scope calls for a different number of units.
+    ScopeCardinality {
+        expected: usize,
+        listed: usize,
+    },
+    /// A listed unit's identity contradicts the declared scope.
+    UnitOutsideScope {
+        path: String,
+    },
+    /// The container's central directory could not be walked.
+    CentralDirectoryUnreadable {
+        detail: String,
+    },
+    /// The central directory names one entry more than once; extraction
+    /// tools disagree on which copy they take.
+    DuplicateEntry {
+        path: String,
+    },
+    UnitPathUnexpected {
+        path: String,
+        expected: String,
+    },
+    /// The container holds an entry the manifest does not name.
+    UnlistedEntry {
+        path: String,
+    },
+    MissingEntry {
+        path: String,
+    },
+    EntryUnreadable {
+        path: String,
+        detail: String,
+    },
+    UnitManifestUnreadable {
+        detail: String,
+    },
+    /// The unit manifest and the archive manifest disagree on a member.
+    UnitManifestDisagrees {
+        member: &'static str,
+    },
+    ContentHashMismatch,
+    /// `record.json` is not canonical bytes (or not JSON at all).
+    NotCanonical {
+        detail: String,
+    },
+    /// The envelope's own identity members disagree with the manifest.
+    EnvelopeDisagrees {
+        member: &'static str,
+    },
+    ChainHashMismatch,
+    /// A first version with a predecessor, or a later one without.
+    LineageShape,
+    /// The predecessor is in the archive and its content hash is not
+    /// what this unit's chain was computed over.
+    PredecessorMismatch,
+}
+
+impl fmt::Display for Finding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotAnArchive { detail } => write!(f, "not a readable ZIP archive: {detail}"),
+            Self::ArchiveManifestMissing => f.write_str("the archive manifest is missing"),
+            Self::ArchiveManifestUnreadable { detail } => {
+                write!(f, "the archive manifest is unreadable: {detail}")
+            }
+            Self::UnsupportedFormat {
+                format,
+                format_version,
+            } => write!(f, "unsupported format '{format}' version {format_version}"),
+            Self::ManifestNotCanonical { path } => {
+                write!(f, "{path} is not canonical JSON")
+            }
+            Self::UnitsOutOfOrder => {
+                f.write_str("units are not strictly ascending by record and version")
+            }
+            Self::NoUnits => f.write_str("the manifest lists no unit"),
+            Self::ScopeCardinality { expected, listed } => write!(
+                f,
+                "the declared scope calls for {expected} unit(s); the manifest lists {listed}"
+            ),
+            Self::UnitOutsideScope { path } => {
+                write!(f, "unit {path} is outside the declared scope")
+            }
+            Self::CentralDirectoryUnreadable { detail } => {
+                write!(f, "the central directory could not be walked: {detail}")
+            }
+            Self::DuplicateEntry { path } => {
+                write!(
+                    f,
+                    "entry {path} appears more than once in the central directory"
+                )
+            }
+            Self::UnitPathUnexpected { path, expected } => {
+                write!(f, "unit path {path} should be {expected}")
+            }
+            Self::UnlistedEntry { path } => write!(f, "entry {path} is not listed by the manifest"),
+            Self::MissingEntry { path } => write!(f, "entry {path} is missing"),
+            Self::EntryUnreadable { path, detail } => {
+                write!(f, "entry {path} is unreadable: {detail}")
+            }
+            Self::UnitManifestUnreadable { detail } => {
+                write!(f, "the unit manifest is unreadable: {detail}")
+            }
+            Self::UnitManifestDisagrees { member } => {
+                write!(
+                    f,
+                    "the unit manifest disagrees with the archive on {member}"
+                )
+            }
+            Self::ContentHashMismatch => {
+                f.write_str("the content hash does not match the record bytes")
+            }
+            Self::NotCanonical { detail } => {
+                write!(f, "the record bytes are not canonical: {detail}")
+            }
+            Self::EnvelopeDisagrees { member } => {
+                write!(f, "the record's own {member} disagrees with the manifest")
+            }
+            Self::ChainHashMismatch => {
+                f.write_str("the chain hash does not match the predecessor hash and record bytes")
+            }
+            Self::LineageShape => {
+                f.write_str("a predecessor hash is present exactly for versions after the first")
+            }
+            Self::PredecessorMismatch => {
+                f.write_str("the predecessor in this archive has a different content hash")
+            }
+        }
+    }
+}
+
+/// Whether a unit's predecessor was checked against the archive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PredecessorLink {
+    /// A first version.
+    None,
+    /// The predecessor is in the archive and its content hash matches.
+    Linked,
+    /// The archive does not carry the predecessor; the chain hash was
+    /// still recomputed from the carried predecessor hash.
+    NotInExport,
+}
+
+impl fmt::Display for PredecessorLink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::None => "none (first version)",
+            Self::Linked => "linked",
+            Self::NotInExport => "not in export",
+        })
+    }
+}
+
+/// One unit's verification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnitReport {
+    pub path: String,
+    pub record_id: i64,
+    pub version_number: i64,
+    pub record_schema: i64,
+    pub predecessor: PredecessorLink,
+    pub findings: Vec<Finding>,
+}
+
+impl UnitReport {
+    #[must_use]
+    pub fn verified(&self) -> bool {
+        self.findings.is_empty()
+    }
+}
+
+/// The whole archive's verification. `verified` when nothing was found
+/// wrong anywhere: internally consistent with its stated fingerprints,
+/// which is what the format can prove.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ArchiveReport {
+    pub installation_id: Option<String>,
+    pub exported_at: Option<i64>,
+    pub scope: Option<Scope>,
+    pub units: Vec<UnitReport>,
+    pub findings: Vec<Finding>,
+}
+
+impl ArchiveReport {
+    #[must_use]
+    pub fn verified(&self) -> bool {
+        self.findings.is_empty() && self.units.iter().all(UnitReport::verified)
+    }
+
+    /// The export instant as RFC 3339, for presentation.
+    #[must_use]
+    pub fn exported_at_rfc3339(&self) -> Option<String> {
+        self.exported_at.and_then(|at| {
+            OffsetDateTime::from_unix_timestamp(at)
+                .ok()?
+                .format(&Rfc3339)
+                .ok()
+        })
+    }
+}
+
+type Archive<'a> = zip::ZipArchive<Cursor<&'a [u8]>>;
+
+/// Verifies an archive from its bytes alone, per the normative checks
+/// in docs/formats/record-export.md.
+#[must_use]
+pub fn verify_archive(bytes: &[u8]) -> ArchiveReport {
+    let mut report = ArchiveReport {
+        installation_id: None,
+        exported_at: None,
+        scope: None,
+        units: Vec::new(),
+        findings: Vec::new(),
+    };
+    let mut archive = match zip::ZipArchive::new(Cursor::new(bytes)) {
+        Ok(archive) => archive,
+        Err(err) => {
+            report.findings.push(Finding::NotAnArchive {
+                detail: err.to_string(),
+            });
+            return report;
+        }
+    };
+    let names: Vec<String> = archive.file_names().map(str::to_owned).collect();
+    report.findings.extend(duplicate_entry_findings(bytes));
+    let manifest_bytes = match read_entry(&mut archive, ARCHIVE_MANIFEST_PATH) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            report.findings.push(Finding::ArchiveManifestMissing);
+            return report;
+        }
+        Err(detail) => {
+            report.findings.push(Finding::EntryUnreadable {
+                path: ARCHIVE_MANIFEST_PATH.to_owned(),
+                detail,
+            });
+            return report;
+        }
+    };
+    let manifest: ArchiveManifest = match serde_json::from_slice(&manifest_bytes) {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            report.findings.push(Finding::ArchiveManifestUnreadable {
+                detail: err.to_string(),
+            });
+            return report;
+        }
+    };
+    if manifest.format != ARCHIVE_FORMAT || manifest.format_version != FORMAT_VERSION {
+        report.findings.push(Finding::UnsupportedFormat {
+            format: manifest.format.clone(),
+            format_version: manifest.format_version,
+        });
+        return report;
+    }
+    if canonical_json(&manifest).ok().as_deref() != Some(manifest_bytes.as_slice()) {
+        report.findings.push(Finding::ManifestNotCanonical {
+            path: ARCHIVE_MANIFEST_PATH.to_owned(),
+        });
+    }
+    report.installation_id = Some(manifest.installation_id.clone());
+    report.exported_at = Some(manifest.exported_at);
+    report.scope = Some(manifest.scope);
+
+    let ordered = manifest.units.windows(2).all(|pair| {
+        (pair[0].record_id, pair[0].version_number) < (pair[1].record_id, pair[1].version_number)
+    });
+    if !ordered {
+        report.findings.push(Finding::UnitsOutOfOrder);
+    }
+    report.findings.extend(scope_findings(&manifest));
+    let mut listed: BTreeSet<String> = BTreeSet::new();
+    listed.insert(ARCHIVE_MANIFEST_PATH.to_owned());
+    for entry in &manifest.units {
+        let expected = unit_path(entry.record_id, entry.version_number);
+        if entry.path != expected {
+            report.findings.push(Finding::UnitPathUnexpected {
+                path: entry.path.clone(),
+                expected,
+            });
+        }
+        listed.insert(format!("{}/{RECORD_FILE}", entry.path));
+        listed.insert(format!("{}/{UNIT_MANIFEST_FILE}", entry.path));
+    }
+    for name in &names {
+        if !listed.contains(name) {
+            report
+                .findings
+                .push(Finding::UnlistedEntry { path: name.clone() });
+        }
+    }
+    let by_identity: BTreeMap<(i64, i64), &UnitEntry> = manifest
+        .units
+        .iter()
+        .map(|entry| ((entry.record_id, entry.version_number), entry))
+        .collect();
+    for entry in &manifest.units {
+        report
+            .units
+            .push(verify_unit(&mut archive, &manifest, entry, &by_identity));
+    }
+    report
+}
+
+#[allow(clippy::too_many_lines)]
+fn verify_unit(
+    archive: &mut Archive<'_>,
+    manifest: &ArchiveManifest,
+    entry: &UnitEntry,
+    by_identity: &BTreeMap<(i64, i64), &UnitEntry>,
+) -> UnitReport {
+    let mut findings = Vec::new();
+    let record_path = format!("{}/{RECORD_FILE}", entry.path);
+    let manifest_path = format!("{}/{UNIT_MANIFEST_FILE}", entry.path);
+
+    match read_entry(archive, &manifest_path) {
+        Ok(Some(bytes)) => match serde_json::from_slice::<UnitManifest>(&bytes) {
+            Ok(unit) => {
+                if unit.format != UNIT_FORMAT || unit.format_version != FORMAT_VERSION {
+                    findings.push(Finding::UnsupportedFormat {
+                        format: unit.format.clone(),
+                        format_version: unit.format_version,
+                    });
+                }
+                if canonical_json(&unit).ok().as_deref() != Some(bytes.as_slice()) {
+                    findings.push(Finding::ManifestNotCanonical {
+                        path: manifest_path.clone(),
+                    });
+                }
+                let disagreements: [(&'static str, bool); 8] = [
+                    (
+                        "installation_id",
+                        unit.installation_id != manifest.installation_id,
+                    ),
+                    ("exported_at", unit.exported_at != manifest.exported_at),
+                    ("record_id", unit.record_id != entry.record_id),
+                    (
+                        "version_number",
+                        unit.version_number != entry.version_number,
+                    ),
+                    ("record_schema", unit.record_schema != entry.record_schema),
+                    ("content_hash", unit.content_hash != entry.content_hash),
+                    ("chain_hash", unit.chain_hash != entry.chain_hash),
+                    (
+                        "predecessor_content_hash",
+                        unit.predecessor_content_hash != entry.predecessor_content_hash,
+                    ),
+                ];
+                for (member, disagrees) in disagreements {
+                    if disagrees {
+                        findings.push(Finding::UnitManifestDisagrees { member });
+                    }
+                }
+            }
+            Err(err) => findings.push(Finding::UnitManifestUnreadable {
+                detail: err.to_string(),
+            }),
+        },
+        Ok(None) => findings.push(Finding::MissingEntry {
+            path: manifest_path.clone(),
+        }),
+        Err(detail) => findings.push(Finding::EntryUnreadable {
+            path: manifest_path.clone(),
+            detail,
+        }),
+    }
+
+    match read_entry(archive, &record_path) {
+        Ok(Some(bytes)) => {
+            if canonical::content_hash_hex(&bytes) != entry.content_hash {
+                findings.push(Finding::ContentHashMismatch);
+            }
+            match serde_json::from_slice::<Value>(&bytes) {
+                Ok(envelope) => {
+                    match canonical::canonical_bytes(&envelope) {
+                        Ok(again) if again == bytes => {}
+                        Ok(_) => findings.push(Finding::NotCanonical {
+                            detail: "re-serialization differs from the stored bytes".to_owned(),
+                        }),
+                        Err(err) => findings.push(Finding::NotCanonical {
+                            detail: err.to_string(),
+                        }),
+                    }
+                    let predecessor = entry
+                        .predecessor_content_hash
+                        .as_ref()
+                        .map_or(Value::Null, |hash| Value::String(hash.clone()));
+                    let disagreements: [(&'static str, bool); 6] = [
+                        ("record.id", envelope["record"]["id"] != entry.record_id),
+                        (
+                            "record.version_number",
+                            envelope["record"]["version_number"] != entry.version_number,
+                        ),
+                        (
+                            "record.record_schema",
+                            envelope["record"]["record_schema"] != entry.record_schema,
+                        ),
+                        (
+                            "record.predecessor_content_hash",
+                            envelope["record"]["predecessor_content_hash"] != predecessor,
+                        ),
+                        (
+                            "instance",
+                            envelope["instance"] != manifest.installation_id.as_str(),
+                        ),
+                        (
+                            "canonicalization",
+                            envelope["canonicalization"] != canonical::CANONICALIZATION,
+                        ),
+                    ];
+                    for (member, disagrees) in disagreements {
+                        if disagrees {
+                            findings.push(Finding::EnvelopeDisagrees { member });
+                        }
+                    }
+                }
+                Err(err) => findings.push(Finding::NotCanonical {
+                    detail: format!("not JSON: {err}"),
+                }),
+            }
+            match canonical::chain_hash_hex(entry.predecessor_content_hash.as_deref(), &bytes) {
+                Ok(chain) if chain == entry.chain_hash => {}
+                _ => findings.push(Finding::ChainHashMismatch),
+            }
+        }
+        Ok(None) => findings.push(Finding::MissingEntry {
+            path: record_path.clone(),
+        }),
+        Err(detail) => findings.push(Finding::EntryUnreadable {
+            path: record_path.clone(),
+            detail,
+        }),
+    }
+
+    if (entry.version_number == 1) != entry.predecessor_content_hash.is_none() {
+        findings.push(Finding::LineageShape);
+    }
+    let predecessor = match &entry.predecessor_content_hash {
+        None => PredecessorLink::None,
+        Some(hash) => match entry
+            .version_number
+            .checked_sub(1)
+            .and_then(|number| by_identity.get(&(entry.record_id, number)))
+        {
+            Some(previous) => {
+                if previous.content_hash != *hash {
+                    findings.push(Finding::PredecessorMismatch);
+                }
+                PredecessorLink::Linked
+            }
+            None => PredecessorLink::NotInExport,
+        },
+    };
+
+    UnitReport {
+        path: entry.path.clone(),
+        record_id: entry.record_id,
+        version_number: entry.version_number,
+        record_schema: entry.record_schema,
+        predecessor,
+        findings,
+    }
+}
+
+/// The declared scope checked as far as the archive itself allows: no
+/// scope is empty, a version scope is exactly its one unit, and a
+/// record scope holds only that record's versions. Enrollment and
+/// installation scopes state nothing the bytes can confirm.
+fn scope_findings(manifest: &ArchiveManifest) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    if manifest.units.is_empty() {
+        findings.push(Finding::NoUnits);
+    }
+    match manifest.scope {
+        Scope::Version {
+            record_id,
+            version_number,
+        } => {
+            if manifest.units.len() != 1 {
+                findings.push(Finding::ScopeCardinality {
+                    expected: 1,
+                    listed: manifest.units.len(),
+                });
+            }
+            for entry in &manifest.units {
+                if (entry.record_id, entry.version_number) != (record_id, version_number) {
+                    findings.push(Finding::UnitOutsideScope {
+                        path: entry.path.clone(),
+                    });
+                }
+            }
+        }
+        Scope::Record { record_id } => {
+            for entry in &manifest.units {
+                if entry.record_id != record_id {
+                    findings.push(Finding::UnitOutsideScope {
+                        path: entry.path.clone(),
+                    });
+                }
+            }
+        }
+        Scope::Enrollment { .. } | Scope::Installation => {}
+    }
+    findings
+}
+
+/// The reader keeps one entry per name; only the central directory
+/// itself says whether a name was written twice.
+fn duplicate_entry_findings(bytes: &[u8]) -> Vec<Finding> {
+    match central_directory_names(bytes) {
+        Ok(directory) => {
+            let mut occurrences: BTreeMap<&str, usize> = BTreeMap::new();
+            for name in &directory {
+                *occurrences.entry(name.as_str()).or_default() += 1;
+            }
+            occurrences
+                .into_iter()
+                .filter(|(_, count)| *count > 1)
+                .map(|(name, _)| Finding::DuplicateEntry {
+                    path: name.to_owned(),
+                })
+                .collect()
+        }
+        Err(detail) => vec![Finding::CentralDirectoryUnreadable { detail }],
+    }
+}
+
+/// Every entry name in the central directory, duplicates included, in
+/// directory order. The `zip` reader indexes entries by name and keeps
+/// one per name, so a name written twice — which extraction tools
+/// resolve differently — is visible only here. The walk follows
+/// APPNOTE 6.3: the end-of-central-directory record (the last record,
+/// followed by at most a 65535-byte comment), the ZIP64 locator and
+/// record when the classic fields overflow, then the fixed 46-byte
+/// central headers with their variable name, extra, and comment parts.
+fn central_directory_names(bytes: &[u8]) -> std::result::Result<Vec<String>, String> {
+    const EOCD: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
+    const ZIP64_LOCATOR: [u8; 4] = [0x50, 0x4b, 0x06, 0x07];
+    const ZIP64_EOCD: [u8; 4] = [0x50, 0x4b, 0x06, 0x06];
+    const CENTRAL_HEADER: [u8; 4] = [0x50, 0x4b, 0x01, 0x02];
+    let eocd = (0..=bytes.len().saturating_sub(22))
+        .rev()
+        .take(usize::from(u16::MAX) + 1)
+        .find(|&at| bytes.get(at..at + 4) == Some(&EOCD[..]))
+        .ok_or("no end-of-central-directory record")?;
+    let mut count = u64::from(le_u16(bytes, eocd + 10)?);
+    let mut start = u64::from(le_u32(bytes, eocd + 16)?);
+    if count == u64::from(u16::MAX) || start == u64::from(u32::MAX) {
+        let locator = eocd
+            .checked_sub(20)
+            .filter(|&at| bytes.get(at..at + 4) == Some(&ZIP64_LOCATOR[..]))
+            .ok_or("ZIP64 fields without a ZIP64 locator")?;
+        let zip64 = usize::try_from(le_u64(bytes, locator + 8)?)
+            .map_err(|_| "ZIP64 record offset out of range".to_owned())?;
+        if bytes.get(zip64..zip64 + 4) != Some(&ZIP64_EOCD[..]) {
+            return Err("ZIP64 locator points at no ZIP64 record".to_owned());
+        }
+        count = le_u64(bytes, zip64 + 32)?;
+        start = le_u64(bytes, zip64 + 48)?;
+    }
+    let mut at = usize::try_from(start).map_err(|_| "central directory offset out of range")?;
+    let mut names = Vec::new();
+    for _ in 0..count {
+        if bytes.get(at..at + 4) != Some(&CENTRAL_HEADER[..]) {
+            return Err(format!("no central directory header at offset {at}"));
+        }
+        let name_len = usize::from(le_u16(bytes, at + 28)?);
+        let extra_len = usize::from(le_u16(bytes, at + 30)?);
+        let comment_len = usize::from(le_u16(bytes, at + 32)?);
+        let name = bytes
+            .get(at + 46..at + 46 + name_len)
+            .ok_or("truncated central directory header")?;
+        names.push(String::from_utf8_lossy(name).into_owned());
+        at += 46 + name_len + extra_len + comment_len;
+    }
+    Ok(names)
+}
+
+fn le_u16(bytes: &[u8], at: usize) -> std::result::Result<u16, String> {
+    bytes
+        .get(at..at + 2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .ok_or_else(|| format!("truncated record at offset {at}"))
+}
+
+fn le_u32(bytes: &[u8], at: usize) -> std::result::Result<u32, String> {
+    bytes
+        .get(at..at + 4)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .ok_or_else(|| format!("truncated record at offset {at}"))
+}
+
+fn le_u64(bytes: &[u8], at: usize) -> std::result::Result<u64, String> {
+    bytes
+        .get(at..at + 8)
+        .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+        .ok_or_else(|| format!("truncated record at offset {at}"))
+}
+
+/// Reads one entry: `Ok(None)` when absent, `Err(detail)` when the
+/// container cannot deliver it (a CRC mismatch included).
+fn read_entry(
+    archive: &mut Archive<'_>,
+    name: &str,
+) -> std::result::Result<Option<Vec<u8>>, String> {
+    match archive.by_name(name) {
+        Ok(mut file) => {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)
+                .map_err(|err| err.to_string())?;
+            Ok(Some(bytes))
+        }
+        Err(zip::result::ZipError::FileNotFound) => Ok(None),
+        Err(err) => Err(err.to_string()),
+    }
+}

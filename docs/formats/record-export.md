@@ -2,10 +2,11 @@
 
 Portable, verifiable exports of finalized evaluation versions (ADR 0014;
 `docs/records-integrity.md`; #44 decision 1).
-`consolebook-server/src/record_export.rs` implements it;
+`consolebook-server/src/record_export.rs` produces exports and
+`consolebook-server/src/export_verify.rs` verifies them;
 `tests/record_export.rs` proves the round trip, determinism, and every
-verification finding. This document
-is normative: the implementation follows it, not the other way around.
+verification finding. This document is normative: the implementation
+follows it, not the other way around.
 
 An export never re-serializes a record. The stored canonical bytes of
 each version (ADR 0011, ADR 0013) travel byte for byte, beside a
