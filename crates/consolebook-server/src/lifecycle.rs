@@ -152,6 +152,12 @@ pub struct PhaseEvent {
     pub actor_user_id: Option<i64>,
     pub actor_display_name: Option<String>,
     pub reason: String,
+    /// The version change that opened the pin epoch this event was
+    /// recorded under; `None` under the enrollment's original pin.
+    pub version_change_event_id: Option<i64>,
+    /// The pinned version whose phase the event names.
+    pub program_version_number: i64,
+    pub program_version_label: String,
 }
 
 /// A phase of the pinned version, for the interface's target pickers.
@@ -684,11 +690,16 @@ pub(crate) async fn list_phase_events(
         "SELECT pe.id, pe.kind, pe.from_phase_id, fp.name AS from_phase_name,
                 pe.to_phase_id, tp.name AS to_phase_name,
                 pe.effective_at, pe.recorded_at, pe.actor_user_id,
-                u.display_name AS actor_display_name, pe.reason
+                u.display_name AS actor_display_name, pe.reason,
+                pe.version_change_event_id,
+                pv.version_number AS program_version_number,
+                pv.label AS program_version_label
          FROM phase_event pe
          LEFT JOIN phase fp ON fp.id = pe.from_phase_id
          LEFT JOIN phase tp ON tp.id = pe.to_phase_id
          LEFT JOIN user u ON u.id = pe.actor_user_id
+         JOIN phase np ON np.id = COALESCE(pe.to_phase_id, pe.from_phase_id)
+         JOIN program_version pv ON pv.id = np.program_version_id
          WHERE pe.enrollment_id = ?1
          ORDER BY pe.effective_at, pe.id",
     )
@@ -709,6 +720,9 @@ pub(crate) async fn list_phase_events(
         actor_user_id: row.get("actor_user_id"),
         actor_display_name: row.get("actor_display_name"),
         reason: row.get("reason"),
+        version_change_event_id: row.get("version_change_event_id"),
+        program_version_number: row.get("program_version_number"),
+        program_version_label: row.get("program_version_label"),
     })
     .collect())
 }

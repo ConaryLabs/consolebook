@@ -255,6 +255,12 @@ pub struct PhaseEventDoc {
     /// (`effective_at`, `event_id`).
     pub event_id: i64,
     pub kind: PhaseEventKind,
+    /// The pinned version whose phase the event names.
+    pub program_version: VersionRef,
+    /// The `event_id` of the version change that opened the pin epoch
+    /// the event was recorded under; `null` under the original pin.
+    #[serde(deserialize_with = "nullable")]
+    pub version_change_event_id: Option<i64>,
     pub effective_at: i64,
     pub recorded_at: i64,
     #[serde(deserialize_with = "nullable")]
@@ -279,6 +285,9 @@ impl PhaseEventDoc {
             return Some(format!(
                 "phase event {id} names its actor with an empty name"
             ));
+        }
+        if self.program_version.version_number < 1 {
+            return Some(format!("phase event {id} names a program version below 1"));
         }
         if [&self.from_phase, &self.to_phase]
             .iter()
@@ -722,6 +731,11 @@ async fn enrollment_document(
             Ok(PhaseEventDoc {
                 event_id: event.id,
                 kind: closed_kind("phase event", &event.kind)?,
+                program_version: VersionRef {
+                    version_number: event.program_version_number,
+                    label: event.program_version_label,
+                },
+                version_change_event_id: event.version_change_event_id,
                 effective_at: event.effective_at,
                 recorded_at: event.recorded_at,
                 actor: event.actor_user_id.map(|id| Actor {

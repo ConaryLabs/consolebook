@@ -158,6 +158,12 @@ pub enum Finding {
     /// A packet carries every retained version, so a unit whose
     /// predecessor is not carried is a hole in the lineage.
     PredecessorNotCarried,
+    /// A packet document disagrees with the pin history the lifecycle
+    /// events and the manifest define.
+    DocumentPinHistory {
+        path: String,
+        detail: String,
+    },
     /// A packet document disagrees with the lineage the carried units
     /// establish.
     DocumentLineage {
@@ -278,6 +284,9 @@ impl fmt::Display for Finding {
             }
             Self::ManifestEnrollmentInvalid { detail } => {
                 write!(f, "the manifest's enrollment is not the shape the format mandates: {detail}")
+            }
+            Self::DocumentPinHistory { path, detail } => {
+                write!(f, "{path} disagrees with the enrollment's pin history: {detail}")
             }
             Self::PredecessorMismatch => {
                 f.write_str("the predecessor in this archive has a different content hash")

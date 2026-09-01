@@ -106,8 +106,9 @@ snapshot and every user's name is constrained non-empty.
   ],
   "phase_events": [
     { "actor": { "display_name": "…", "id": 3 }, "effective_at": 1780100000, "event_id": 7,
-      "from_phase": null, "kind": "advance", "reason": "", "recorded_at": 1780100000,
-      "to_phase": "Phase One" }
+      "from_phase": null, "kind": "advance",
+      "program_version": { "label": "…", "version_number": 1 }, "reason": "",
+      "recorded_at": 1780100000, "to_phase": "Phase One", "version_change_event_id": null }
   ]
 }
 ```
@@ -123,10 +124,25 @@ history in effective order — strictly ascending (`effective_at`,
 `pause`, `resume`, `complete`, phases by name (never empty): an advance names
 `to_phase`, a return or restart names both phases, and a pause, resume,
 or completion names only `from_phase`, the phase it happened in; nothing
-is effective after it was recorded. `actor` is `null` when no person
+is effective after it was recorded. `program_version` is the
+`{version_number, label}` of the pinned version whose phase the event
+names, and `version_change_event_id` is the `event_id` of the version
+change that opened the pin epoch the event was recorded under — `null`
+under the enrollment's original pin. `actor` is `null` when no person
 recorded the event. Actor names here are resolved at export, unlike the
 snapshots inside records and the other documents; the packet manifest's
 `exported_at` is the instant they describe.
+
+The lifecycle events define the enrollment's **pin history**: the
+original pin is the version the first version change left (the
+manifest's pinned version when there is none); each version change
+leaves the version pinned at that point and reaches the next; and the
+history ends at the manifest's pinned version. Every program version the
+packet names — in version changes, in signoffs, in phase events — is one
+the enrollment pinned, labelled as the packet labels it everywhere, and
+a phase event's `program_version` is the version its epoch reached: the
+original pin under `null`, otherwise the version the named version
+change reached.
 
 ### `packet/acknowledgments.json`
 
@@ -236,8 +252,15 @@ Document checks:
 7. the amendments agree with the carried lineage both ways, as their
    shape states above — an amendment contradicting the carried
    successor, or a carried successor without its amendment, is a
-   finding; and
-8. `enrollment.json` names the manifest's `enrollment.id`.
+   finding;
+8. the pin history is coherent and every program version the documents
+   name belongs to it, as stated under `packet/enrollment.json` — a
+   version change leaving a version other than the one pinned, a history
+   ending elsewhere than the manifest's pin, a version labelled two
+   ways, a signoff or phase event naming a version never pinned, or a
+   phase event naming a version its epoch did not reach, is a finding;
+   and
+9. `enrollment.json` names the manifest's `enrollment.id`.
 
 `consolebook-server export verify <packet>` prints one line per unit
 and per document and exits non-zero unless the verdict is `verified`.

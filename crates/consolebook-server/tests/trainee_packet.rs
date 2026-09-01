@@ -16,9 +16,9 @@ use consolebook_server::acknowledgments::{self, AckKind, TraineeAckKind};
 use consolebook_server::capabilities::RoleBundle;
 use consolebook_server::draft_content::{self, DraftContent, NarrativeEntry, RatingEntry};
 use consolebook_server::export_verify::{self, ArchiveKind, Finding, PredecessorLink};
-use consolebook_server::lifecycle::{self, EnrollmentEventKind, EnrollmentStatus};
+use consolebook_server::lifecycle::{self, EnrollmentEventKind, EnrollmentStatus, PhaseEventKind};
 use consolebook_server::programs::{
-    self, AnchorDef, CompetencyDef, FormCompetencyDef, FormDef, NarrativeDef, PolicyDef,
+    self, AnchorDef, CompetencyDef, FormCompetencyDef, FormDef, NarrativeDef, PhaseDef, PolicyDef,
     RecordType, ScaleDef, ScaleKind, TaskDef, VersionContent,
 };
 use consolebook_server::record_export::{self, ARCHIVE_MANIFEST_PATH, Scope};
@@ -180,7 +180,11 @@ fn program(name: &str) -> VersionContent {
         name: name.to_owned(),
         label: "2026 rev A".to_owned(),
         description: "Invented program for packet tests.".to_owned(),
-        phases: Vec::new(),
+        phases: vec![PhaseDef {
+            name: "Phase One".to_owned(),
+            description: "Invented first phase.".to_owned(),
+            presentation_number: 1,
+        }],
         phase_transitions: Vec::new(),
         competencies: vec![CompetencyDef {
             category: "Call processing".to_owned(),
@@ -280,6 +284,25 @@ async fn seed(fx: &Fixture, suffix: &str) -> Seeded {
         .await
         .expect("call")
         .expect("assigned");
+    let phase_one: i64 =
+        sqlx::query_scalar("SELECT id FROM phase WHERE program_version_id = ?1 AND name = ?2")
+            .bind(version_id)
+            .bind("Phase One")
+            .fetch_one(&fx.pool)
+            .await
+            .expect("phase id");
+    lifecycle::record_phase_event(
+        &fx.pool,
+        casey_id,
+        enrollment_id,
+        PhaseEventKind::Advance,
+        Some(phase_one),
+        None,
+        "",
+    )
+    .await
+    .expect("call")
+    .expect("entered");
     let task_id: i64 =
         sqlx::query_scalar("SELECT id FROM task WHERE program_version_id = ?1 AND prompt = ?2")
             .bind(version_id)
@@ -701,7 +724,30 @@ async fn packet_carries_everything_retained() {
             display_name: "Casey Coordinator".to_owned()
         })
     );
-    assert!(enrollment.phase_events.is_empty());
+    assert_eq!(enrollment.phase_events.len(), 1);
+    let entered = &enrollment.phase_events[0];
+    assert_eq!(entered.kind, PhaseEventKind::Advance);
+    assert_eq!(entered.from_phase, None);
+    assert_eq!(entered.to_phase.as_deref(), Some("Phase One"));
+    assert_eq!(
+        entered.program_version,
+        VersionRef {
+            version_number: 1,
+            label: "2026 rev A".to_owned()
+        },
+        "the pinned version whose phase was entered"
+    );
+    assert_eq!(
+        entered.version_change_event_id, None,
+        "recorded under the original pin"
+    );
+    assert_eq!(
+        entered.actor,
+        Some(Actor {
+            id: s.casey_id,
+            display_name: "Casey Coordinator".to_owned()
+        })
+    );
 
     // Verified from the archive alone, as a packet.
     let report = export_verify::verify_archive(&packet.bytes);
@@ -1203,10 +1249,33 @@ fn phase_event(
         "event_id": event_id,
         "from_phase": from,
         "kind": kind,
+        "program_version": {"label": "2026 rev A", "version_number": 1},
         "reason": "",
         "recorded_at": recorded_at,
         "to_phase": to,
+        "version_change_event_id": null,
     })
+}
+
+/// One version-change event as a forger would write it.
+fn version_change(event_id: i64, from: (i64, &str), to: (i64, &str)) -> serde_json::Value {
+    serde_json::json!({
+        "actor": null,
+        "event_id": event_id,
+        "from_version": {"label": from.1, "version_number": from.0},
+        "kind": "version_change",
+        "occurred_at": 1_780_000_000,
+        "reason": "Invented version change.",
+        "to_version": {"label": to.1, "version_number": to.0},
+    })
+}
+
+/// A phase event under a named epoch, naming a version.
+fn epoch_phase_event(event_id: i64, epoch: Option<i64>, version: (i64, &str)) -> serde_json::Value {
+    let mut event = phase_event("advance", None, Some("Phase One"), 10, 10, event_id);
+    event["program_version"] = serde_json::json!({"label": version.1, "version_number": version.0});
+    event["version_change_event_id"] = serde_json::json!(epoch);
+    event
 }
 
 /// The verifier holds every document to the order and the cross-member
@@ -1479,10 +1548,12 @@ async fn documents_keep_their_order_and_shape() {
     assert!(
         matches!(
             &report.documents[3].findings[..],
-            [Finding::DocumentInvalid { detail, .. }]
-                if detail.contains("program version below 1")
+            [
+                Finding::DocumentInvalid { detail, .. },
+                Finding::DocumentPinHistory { .. }
+            ] if detail.contains("program version below 1")
         ),
-        "{report:?}"
+        "a version below 1 is misshapen and was never pinned: {report:?}"
     );
     let report = forged(&listed, enrollment, |doc| {
         doc["phase_events"] =
@@ -1528,9 +1599,12 @@ async fn documents_keep_their_order_and_shape() {
     assert!(
         matches!(
             &report.documents[3].findings[..],
-            [Finding::DocumentInvalid { detail, .. }] if detail.contains("differently from signoff")
+            [
+                Finding::DocumentInvalid { detail, .. },
+                Finding::DocumentPinHistory { .. }
+            ] if detail.contains("differently from signoff")
         ),
-        "{report:?}"
+        "a differing version is a differing description and was never pinned: {report:?}"
     );
 
     // The genuine packet passes every one of these.
@@ -1674,4 +1748,145 @@ async fn a_packet_never_holds_a_connection_while_waiting_for_one() {
         .expect("export")
         .expect("permitted");
     assert_eq!(packet.bytes, reference.bytes);
+}
+
+/// The lifecycle events define the enrollment's pin history, and every
+/// program version the packet names belongs to it: the verifier refuses
+/// a version the enrollment never pinned, a label that disagrees, a
+/// version change that leaves a version other than the one pinned, a
+/// history ending elsewhere than the manifest's pin, and a phase event
+/// naming a version its epoch did not reach.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn packets_agree_with_their_pin_history() {
+    let fx = Fixture::new().await;
+    let s = seed(&fx, "pins").await;
+    let original = pack(&fx, s.casey_id, s.enrollment_id).await;
+    let listed = entries(&original);
+    let enrollment = DocumentKind::Enrollment;
+    let signoffs = DocumentKind::Signoffs;
+    let next_event_id = |doc: &serde_json::Value| -> i64 {
+        doc["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .map(|event| event["event_id"].as_i64().expect("id"))
+            .max()
+            .unwrap_or(0)
+            + 1
+    };
+    let history = |findings: &[Finding], expected: &str| {
+        assert!(
+            findings.len() == 1
+                && matches!(
+                    &findings[0],
+                    Finding::DocumentPinHistory { detail, .. } if detail.contains(expected)
+                ),
+            "expected one pin-history finding containing {expected:?}: {findings:?}"
+        );
+    };
+
+    // Signoffs naming a version the enrollment never pinned, and ones
+    // labelling the pinned version differently from the packet.
+    let report = forged(&listed, signoffs, |doc| {
+        for row in doc.as_array_mut().expect("rows") {
+            row["program_version"]["version_number"] = serde_json::json!(7);
+        }
+    });
+    assert_eq!(report.documents[3].findings.len(), 2, "{report:?}");
+    assert!(
+        report.documents[3].findings.iter().all(|finding| matches!(
+            finding,
+            Finding::DocumentPinHistory { detail, .. } if detail.contains("never pinned")
+        )),
+        "{report:?}"
+    );
+    let report = forged(&listed, signoffs, |doc| {
+        for row in doc.as_array_mut().expect("rows") {
+            row["program_version"]["label"] = serde_json::json!("2026 rev B");
+        }
+    });
+    assert!(
+        report.documents[3].findings.iter().all(|finding| matches!(
+            finding,
+            Finding::DocumentPinHistory { detail, .. } if detail.contains("labels version 1")
+        )),
+        "{report:?}"
+    );
+
+    // A version change ending elsewhere than the manifest's pin; a
+    // second change leaving a version other than the one pinned; an
+    // event labelling the manifest's version another way.
+    let report = forged(&listed, enrollment, |doc| {
+        let id = next_event_id(doc);
+        doc["events"]
+            .as_array_mut()
+            .expect("events")
+            .push(version_change(id, (1, "2026 rev A"), (2, "2026 rev B")));
+    });
+    history(
+        &report.documents[2].findings,
+        "end at version 2, but the manifest pins version 1",
+    );
+    let report = forged(&listed, enrollment, |doc| {
+        let id = next_event_id(doc);
+        let events = doc["events"].as_array_mut().expect("events");
+        events.push(version_change(id, (1, "2026 rev A"), (2, "2026 rev B")));
+        events.push(version_change(id + 1, (3, "2026 rev C"), (1, "2026 rev A")));
+    });
+    history(
+        &report.documents[2].findings,
+        "leaves version 3, but the enrollment was pinned to version 2",
+    );
+    let report = forged(&listed, enrollment, |doc| {
+        let id = next_event_id(doc);
+        doc["events"]
+            .as_array_mut()
+            .expect("events")
+            .push(version_change(id, (2, "2026 rev B"), (1, "Renamed")));
+        doc["phase_events"] = serde_json::json!([]);
+    });
+    history(
+        &report.documents[2].findings,
+        "labels version 1 \"Renamed\", but the packet labels it \"2026 rev A\"",
+    );
+
+    // Phase events: an epoch the history does not record; a version the
+    // named epoch did not reach; the original pin naming another version.
+    let report = forged(&listed, enrollment, |doc| {
+        doc["phase_events"] =
+            serde_json::json!([epoch_phase_event(1, Some(999), (1, "2026 rev A"))]);
+    });
+    history(
+        &report.documents[2].findings,
+        "names version change 999 as its epoch, which the history does not record",
+    );
+    let report = forged(&listed, enrollment, |doc| {
+        let id = next_event_id(doc);
+        doc["events"]
+            .as_array_mut()
+            .expect("events")
+            .push(version_change(id, (2, "2026 rev B"), (1, "2026 rev A")));
+        doc["phase_events"] =
+            serde_json::json!([epoch_phase_event(1, Some(id), (2, "2026 rev B"))]);
+    });
+    history(
+        &report.documents[2].findings,
+        "names version 2 under the epoch that reached version 1",
+    );
+    let report = forged(&listed, enrollment, |doc| {
+        let id = next_event_id(doc);
+        doc["events"]
+            .as_array_mut()
+            .expect("events")
+            .push(version_change(id, (2, "2026 rev B"), (1, "2026 rev A")));
+        doc["phase_events"] = serde_json::json!([epoch_phase_event(1, None, (1, "2026 rev A"))]);
+    });
+    history(
+        &report.documents[2].findings,
+        "recorded under the original pin, but names version 1 rather than version 2",
+    );
+
+    // The genuine packet's history is coherent.
+    assert!(export_verify::verify_archive(&original).verified());
 }
