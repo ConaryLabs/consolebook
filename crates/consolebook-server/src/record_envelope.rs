@@ -26,11 +26,22 @@ pub struct User {
     pub display_name: String,
 }
 
-/// Attachments exist in no schema yet: the array is always empty, and
-/// an element of any shape is not a schema-1 or schema-2 record.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Attachment {}
+/// Attachments exist in no schema yet: the array is always empty. The
+/// element type is uninhabited, so no value of any shape deserializes
+/// into it and a non-empty array is not a schema-1 or schema-2 record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attachment {}
+
+impl<'de> Deserialize<'de> for Attachment {
+    fn deserialize<D>(_: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Err(<D::Error as serde::de::Error>::custom(
+            "attachments exist in no known record schema",
+        ))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -108,6 +108,10 @@ pub enum Finding {
     ChainHashMismatch,
     /// A first version with a predecessor, or a later one without.
     LineageShape,
+    /// `record_id` and `version_number` are positive integers.
+    IdentityOutOfRange {
+        member: &'static str,
+    },
     /// The predecessor is in the archive and its content hash is not
     /// what this unit's chain was computed over.
     PredecessorMismatch,
@@ -116,6 +120,9 @@ pub enum Finding {
 impl fmt::Display for Finding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::IdentityOutOfRange { member } => {
+                write!(f, "{member} is not a positive integer")
+            }
             Self::EnvelopeInvalid { detail } => {
                 write!(f, "the record bytes are not a valid envelope: {detail}")
             }
@@ -496,6 +503,19 @@ fn verify_unit(
         }),
     }
 
+    // Identity is positive by the format: the database assigns record
+    // ids from 1 and version numbers start at 1, so a zero or negative
+    // number is not an identity the lineage rule below can reason about.
+    if entry.record_id < 1 {
+        findings.push(Finding::IdentityOutOfRange {
+            member: "record_id",
+        });
+    }
+    if entry.version_number < 1 {
+        findings.push(Finding::IdentityOutOfRange {
+            member: "version_number",
+        });
+    }
     if (entry.version_number == 1) != entry.predecessor_content_hash.is_none() {
         findings.push(Finding::LineageShape);
     }

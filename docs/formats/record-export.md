@@ -96,7 +96,7 @@ identity and lineage on their own (ADR 0011).
 | `format` | string | Always `consolebook-record-unit` |
 | `format_version` | integer | `1`; bumped by any change to either manifest's shape |
 | `installation_id` | string | The exporting installation's identity (`instance.installation_id`) |
-| `record_id` | integer | The record's instance-local identity |
+| `record_id` | integer | The record's instance-local identity (positive) |
 | `version_number` | integer | This version's number within the record (from 1) |
 | `record_schema` | integer | The stored envelope schema of `record.json` |
 | `content_hash` | string | The stored SHA-256 of `record.json`, lowercase hex |
@@ -210,7 +210,8 @@ Unit checks, for every listed unit:
 4. `record.json` is an envelope of a known record schema: every member
    ADR 0011 (schema 1) or ADR 0013 (schema 2) names, with its type,
    every nullable member present, no member the schema does not name,
-   and `daily_reports` present exactly for schema 2;
+   `daily_reports` present exactly for schema 2, and `attachments`
+   empty (no known schema carries attachments);
 5. the envelope agrees with the manifest: `record.id`,
    `record.version_number`, `record.record_schema`,
    `record.predecessor_content_hash`, `instance`, and
@@ -219,7 +220,8 @@ Unit checks, for every listed unit:
    `SHA-256("consolebook-version-v1" || 0x00 || predecessor || bytes)`
    with `predecessor` the raw 32 bytes of `predecessor_content_hash`,
    or 32 zero bytes when it is `null`;
-7. `predecessor_content_hash` is `null` exactly when `version_number`
+7. `record_id` and `version_number` are positive integers, and
+   `predecessor_content_hash` is `null` exactly when `version_number`
    is 1; and
 8. when the archive also lists (`record_id`, `version_number - 1`),
    that unit's `content_hash` equals this unit's

@@ -1130,6 +1130,59 @@ async fn verification_reads_envelopes_as_typed_records() {
         &canonical::canonical_bytes(&unknown_schema).expect("canonical"),
         7,
     );
+    // Attachments exist in no known schema: an element of any shape,
+    // even an empty object, is not a record.
+    let mut attached = genuine.clone();
+    attached["attachments"] = serde_json::json!([{}]);
+    invalid(
+        &canonical::canonical_bytes(&attached).expect("canonical"),
+        2,
+    );
+
+    // Identity is positive: a version 0 with a predecessor satisfies the
+    // lineage rule's two sides trivially, so the range check has to be
+    // its own finding — and it is the only objection.
+    let v0 = format!("records/{}/v0", s.record_id);
+    let mut zeroed = genuine.clone();
+    zeroed["record"]["version_number"] = serde_json::json!(0);
+    let zeroed_bytes = canonical::canonical_bytes(&zeroed).expect("canonical");
+    let zeroed_content = canonical::content_hash_hex(&zeroed_bytes);
+    let zeroed_chain = canonical::chain_hash_hex(Some(&v1_content), &zeroed_bytes).expect("chain");
+    let relabel_zero = |manifest: &mut serde_json::Value| {
+        manifest["version_number"] = serde_json::json!(0);
+        manifest["content_hash"] = serde_json::Value::String(zeroed_content.clone());
+        manifest["chain_hash"] = serde_json::Value::String(zeroed_chain.clone());
+    };
+    let renumbered: Vec<(String, Vec<u8>)> = listed
+        .iter()
+        .map(|(name, content)| {
+            if name == ARCHIVE_MANIFEST_PATH {
+                let edited = edit_json(content, |manifest| {
+                    manifest["scope"]["version_number"] = serde_json::json!(0);
+                    relabel_zero(&mut manifest["units"][0]);
+                    manifest["units"][0]["path"] = serde_json::Value::String(v0.clone());
+                });
+                (name.clone(), edited)
+            } else if name.ends_with("/record.json") {
+                (format!("{v0}/record.json"), zeroed_bytes.clone())
+            } else {
+                (
+                    format!("{v0}/manifest.json"),
+                    edit_json(content, relabel_zero),
+                )
+            }
+        })
+        .collect();
+    let report = export_verify::verify_archive(&repack(&renumbered));
+    assert!(!report.verified());
+    assert_eq!(
+        report.units[0].findings,
+        vec![Finding::IdentityOutOfRange {
+            member: "version_number"
+        }],
+        "{report:?}"
+    );
+    assert!(report.findings.is_empty(), "{report:?}");
 
     // The same content shaped as schema 1 — no daily_reports, schema 1
     // declared throughout — is a valid record of its own schema.
