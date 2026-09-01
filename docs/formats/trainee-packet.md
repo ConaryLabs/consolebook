@@ -91,7 +91,8 @@ constraints. Every person a document names is an object
 (`docs/records-integrity.md`: stable ids preserve identity, snapshots
 preserve what the record said). The name is the stored snapshot for
 acknowledgments, amendments, and signoffs, and the export-time name for
-enrollment and phase events.
+enrollment and phase events, and it is never empty: every stored
+snapshot and every user's name is constrained non-empty.
 
 ### `packet/enrollment.json`
 
@@ -206,8 +207,9 @@ Document checks:
 4. the rows are in the kind's mandated order — strictly ascending by
    the key its shape names above — so a reordered or duplicated row is
    a finding;
-5. the cross-member rules each shape states above hold: an
-   acknowledgment's response and speaker match its kind and its `user`
+5. the cross-member rules each shape states above hold: every named
+   person has a non-empty name, an acknowledgment's response and
+   speaker match its kind and its `user`
    is the packet's trainee, an amendment gives a reason, a lifecycle
    event carries version references exactly when it is a version
    change, a phase event names the phases its kind requires and is not

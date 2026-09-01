@@ -42,16 +42,27 @@
 	// A packet is everything retained about one enrollment, as one archive
 	// the trainee can verify anywhere (ADR 0015).
 	let enrollments: OwnEnrollment[] = $state([]);
+	let enrollmentsLoaded = $state(false);
+	let enrollmentsError = $state('');
 	let packetError = $state('');
 	let packetDownloaded = $state('');
 	let packetBusy = $state(false);
 	$effect(() => {
 		if (!canViewOwn) {
+			enrollmentsLoaded = true;
 			return;
 		}
 		myEnrollments().then(
-			(body) => (enrollments = body.enrollments),
-			() => (enrollments = [])
+			(body) => {
+				enrollments = body.enrollments;
+				enrollmentsLoaded = true;
+			},
+			(err: unknown) => {
+				// A failed request is a failure to show, never an empty list.
+				enrollmentsError =
+					err instanceof ApiError ? err.message : 'the server could not be reached';
+				enrollmentsLoaded = true;
+			}
 		);
 	});
 	async function downloadPacket(enrollment: OwnEnrollment) {
@@ -114,7 +125,11 @@
 			and the enrollment's own history — as one archive. Verify it anywhere
 			with <code>consolebook-server export verify</code>.
 		</p>
-		{#if enrollments.length === 0}
+		{#if !enrollmentsLoaded}
+			<p class="quiet">Loading…</p>
+		{:else if enrollmentsError}
+			<p class="error" role="alert">{enrollmentsError}</p>
+		{:else if enrollments.length === 0}
 			<p class="quiet">No enrollments.</p>
 		{:else}
 			<table class="grid">

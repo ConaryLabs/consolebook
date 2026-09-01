@@ -157,6 +157,15 @@ pub struct Actor {
     pub display_name: String,
 }
 
+impl Actor {
+    /// Every stored name snapshot and every user's name is constrained
+    /// non-empty, so an empty name cannot have come from the tables.
+    #[must_use]
+    pub fn is_named(&self) -> bool {
+        !self.display_name.is_empty()
+    }
+}
+
 /// One enrollment lifecycle event, presented as of export.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -179,10 +188,13 @@ impl EnrollmentEventDoc {
     /// The shape the format mandates beyond member types, mirroring
     /// `enrollment_event`'s constraints: a version change names the
     /// version left and a different version reached and gives a reason;
-    /// no other kind names a version.
+    /// no other kind names a version; a named actor has a name.
     #[must_use]
     pub fn shape_error(&self) -> Option<String> {
         let (id, kind) = (self.event_id, self.kind.as_str());
+        if self.actor.as_ref().is_some_and(|actor| !actor.is_named()) {
+            return Some(format!("event {id} names its actor with an empty name"));
+        }
         match (self.kind, &self.from_version, &self.to_version) {
             (EnrollmentEventKind::VersionChange, Some(from), Some(to)) => {
                 if from.version_number == to.version_number {
@@ -226,10 +238,15 @@ impl PhaseEventDoc {
     /// `phase_event`'s constraints: an advance names its target, a
     /// return or restart names both phases, and a pause, resume, or
     /// completion names only the phase it happened in; nothing is
-    /// effective after it was recorded.
+    /// effective after it was recorded; a named actor has a name.
     #[must_use]
     pub fn shape_error(&self) -> Option<String> {
         let (id, kind) = (self.event_id, self.kind.as_str());
+        if self.actor.as_ref().is_some_and(|actor| !actor.is_named()) {
+            return Some(format!(
+                "phase event {id} names its actor with an empty name"
+            ));
+        }
         let (from, to) = (self.from_phase.is_some(), self.to_phase.is_some());
         let shaped = match self.kind {
             PhaseEventKind::Advance => to,
@@ -278,10 +295,10 @@ pub struct AcknowledgmentDoc {
 
 impl AcknowledgmentDoc {
     /// The shape the format mandates beyond member types, mirroring
-    /// `acknowledgment`'s constraints: a plain acknowledgment carries no
-    /// response and every other kind explains itself; the trainee's own
-    /// kinds are recorded by the trainee and the attested kinds never
-    /// are.
+    /// `acknowledgment`'s constraints: both people have names; a plain
+    /// acknowledgment carries no response and every other kind explains
+    /// itself; the trainee's own kinds are recorded by the trainee and
+    /// the attested kinds never are.
     #[must_use]
     pub fn shape_error(&self) -> Option<String> {
         let what = format!(
@@ -290,6 +307,12 @@ impl AcknowledgmentDoc {
             self.record_id,
             self.version_number
         );
+        if !self.user.is_named() {
+            return Some(format!("{what} names its trainee with an empty name"));
+        }
+        if !self.recorded_by.is_named() {
+            return Some(format!("{what} names its recorder with an empty name"));
+        }
         let plain = self.kind == AckKind::Acknowledged;
         if plain && !self.response.is_empty() {
             return Some(format!("{what} carries a response"));
@@ -328,15 +351,21 @@ pub struct AmendmentDoc {
 
 impl AmendmentDoc {
     /// The shape the format mandates beyond member types, mirroring
-    /// `amendment`'s constraint: an amendment explains itself.
+    /// `amendment`'s constraints: an amendment explains itself and its
+    /// authority has a name.
     #[must_use]
     pub fn shape_error(&self) -> Option<String> {
-        self.reason.trim().is_empty().then(|| {
-            format!(
-                "the amendment of record {} version {} gives no reason",
-                self.record_id, self.predecessor_version_number
-            )
-        })
+        let what = format!(
+            "the amendment of record {} version {}",
+            self.record_id, self.predecessor_version_number
+        );
+        if self.reason.trim().is_empty() {
+            return Some(format!("{what} gives no reason"));
+        }
+        if !self.opened_by.is_named() {
+            return Some(format!("{what} names its authority with an empty name"));
+        }
+        None
     }
 }
 
@@ -358,9 +387,10 @@ pub struct SignoffDoc {
 }
 
 /// The shape the format mandates of the signoff history beyond member
-/// types, mirroring `task_signoff`'s triggers: in recorded order, any
-/// signoff after the first for a task supersedes it and records its
-/// reason, and a revocation has something to revoke.
+/// types, mirroring `task_signoff`'s constraints and triggers: every
+/// signer has a name; in recorded order, any signoff after the first
+/// for a task supersedes it and records its reason, and a revocation
+/// has something to revoke.
 #[must_use]
 pub fn signoff_shape_errors(signoffs: &[SignoffDoc]) -> Vec<String> {
     let mut seen = BTreeSet::new();
@@ -368,7 +398,12 @@ pub fn signoff_shape_errors(signoffs: &[SignoffDoc]) -> Vec<String> {
         .iter()
         .filter_map(|signoff| {
             let first = seen.insert(signoff.task_id);
-            if first && signoff.kind == SignoffKind::Revoked {
+            if !signoff.signed_by.is_named() {
+                Some(format!(
+                    "signoff {} names its signer with an empty name",
+                    signoff.signoff_id
+                ))
+            } else if first && signoff.kind == SignoffKind::Revoked {
                 Some(format!(
                     "signoff {} revokes task {} before any signoff",
                     signoff.signoff_id, signoff.task_id

@@ -1395,6 +1395,53 @@ async fn documents_keep_their_order_and_shape() {
         "{report:?}"
     );
 
+    // An empty name where the tables require one: the acknowledging
+    // trainee, an amendment's authority, a signer, an event's actor.
+    let report = forged(&listed, acks, |doc| {
+        doc[0]["user"]["display_name"] = serde_json::json!("");
+    });
+    assert!(
+        matches!(
+            &report.documents[0].findings[..],
+            [Finding::DocumentInvalid { detail, .. }]
+                if detail.contains("trainee with an empty name")
+        ),
+        "{report:?}"
+    );
+    let report = forged(&listed, amendments, |doc| {
+        doc[0]["opened_by"]["display_name"] = serde_json::json!("");
+    });
+    assert!(
+        matches!(
+            &report.documents[1].findings[..],
+            [Finding::DocumentInvalid { detail, .. }]
+                if detail.contains("authority with an empty name")
+        ),
+        "{report:?}"
+    );
+    let report = forged(&listed, signoffs, |doc| {
+        doc[1]["signed_by"]["display_name"] = serde_json::json!("");
+    });
+    assert!(
+        matches!(
+            &report.documents[3].findings[..],
+            [Finding::DocumentInvalid { detail, .. }]
+                if detail.contains("signer with an empty name")
+        ),
+        "{report:?}"
+    );
+    let report = forged(&listed, enrollment, |doc| {
+        doc["events"][0]["actor"]["display_name"] = serde_json::json!("");
+    });
+    assert!(
+        matches!(
+            &report.documents[2].findings[..],
+            [Finding::DocumentInvalid { detail, .. }]
+                if detail.contains("actor with an empty name")
+        ),
+        "{report:?}"
+    );
+
     // The genuine packet passes every one of these.
     assert!(export_verify::verify_archive(&original).verified());
 }
