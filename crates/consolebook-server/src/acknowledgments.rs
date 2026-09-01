@@ -95,6 +95,30 @@ pub enum AckKind {
     Unavailable,
 }
 
+impl AckKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Acknowledged => "acknowledged",
+            Self::AcknowledgedWithResponse => "acknowledged_with_response",
+            Self::Refused => "refused",
+            Self::SupervisorAttestedRefusal => "supervisor_attested_refusal",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    /// Whether the kind is the trainee's own act, recorded by the
+    /// trainee, rather than someone else's statement about them
+    /// (migration 0011's who-speaks rule).
+    #[must_use]
+    pub fn spoken_by_trainee(self) -> bool {
+        matches!(
+            self,
+            Self::Acknowledged | Self::AcknowledgedWithResponse | Self::Refused
+        )
+    }
+}
+
 /// One recorded acknowledgment, presented.
 #[derive(Debug, Clone, Serialize)]
 pub struct AckView {

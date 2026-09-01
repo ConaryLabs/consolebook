@@ -14,6 +14,8 @@
 //! training history, `export_records`); `export_verify` checks a packet
 //! from its bytes alone.
 
+use std::collections::BTreeSet;
+
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -142,14 +144,30 @@ pub struct VersionRef {
     pub label: String,
 }
 
+/// A person as a document names them: the stable identity beside the
+/// name shown (`docs/records-integrity.md`: stable ids preserve
+/// identity, snapshots preserve what the record said). The name is the
+/// stored snapshot where the act stored one — acknowledgments,
+/// amendments, signoffs — and the export-time name for enrollment and
+/// phase events.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Actor {
+    pub id: i64,
+    pub display_name: String,
+}
+
 /// One enrollment lifecycle event, presented as of export.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnrollmentEventDoc {
+    /// The installation's row identity: recorded order is ascending
+    /// `event_id`.
+    pub event_id: i64,
     pub kind: EnrollmentEventKind,
     pub occurred_at: i64,
     #[serde(deserialize_with = "nullable")]
-    pub actor_display_name: Option<String>,
+    pub actor: Option<Actor>,
     pub reason: String,
     #[serde(deserialize_with = "nullable")]
     pub from_version: Option<VersionRef>,
@@ -157,20 +175,79 @@ pub struct EnrollmentEventDoc {
     pub to_version: Option<VersionRef>,
 }
 
+impl EnrollmentEventDoc {
+    /// The shape the format mandates beyond member types, mirroring
+    /// `enrollment_event`'s constraints: a version change names the
+    /// version left and a different version reached and gives a reason;
+    /// no other kind names a version.
+    #[must_use]
+    pub fn shape_error(&self) -> Option<String> {
+        let (id, kind) = (self.event_id, self.kind.as_str());
+        match (self.kind, &self.from_version, &self.to_version) {
+            (EnrollmentEventKind::VersionChange, Some(from), Some(to)) => {
+                if from.version_number == to.version_number {
+                    Some(format!("event {id} ({kind}) reaches the version it left"))
+                } else if self.reason.is_empty() {
+                    Some(format!("event {id} ({kind}) gives no reason"))
+                } else {
+                    None
+                }
+            }
+            (EnrollmentEventKind::VersionChange, _, _) => {
+                Some(format!("event {id} ({kind}) lacks its version references"))
+            }
+            (_, None, None) => None,
+            _ => Some(format!("event {id} ({kind}) carries version references")),
+        }
+    }
+}
+
 /// One phase history event, presented as of export.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PhaseEventDoc {
+    /// The installation's row identity: effective order is ascending
+    /// (`effective_at`, `event_id`).
+    pub event_id: i64,
     pub kind: PhaseEventKind,
     pub effective_at: i64,
     pub recorded_at: i64,
     #[serde(deserialize_with = "nullable")]
-    pub actor_display_name: Option<String>,
+    pub actor: Option<Actor>,
     pub reason: String,
     #[serde(deserialize_with = "nullable")]
     pub from_phase: Option<String>,
     #[serde(deserialize_with = "nullable")]
     pub to_phase: Option<String>,
+}
+
+impl PhaseEventDoc {
+    /// The shape the format mandates beyond member types, mirroring
+    /// `phase_event`'s constraints: an advance names its target, a
+    /// return or restart names both phases, and a pause, resume, or
+    /// completion names only the phase it happened in; nothing is
+    /// effective after it was recorded.
+    #[must_use]
+    pub fn shape_error(&self) -> Option<String> {
+        let (id, kind) = (self.event_id, self.kind.as_str());
+        let (from, to) = (self.from_phase.is_some(), self.to_phase.is_some());
+        let shaped = match self.kind {
+            PhaseEventKind::Advance => to,
+            PhaseEventKind::Return | PhaseEventKind::Restart => from && to,
+            PhaseEventKind::Pause | PhaseEventKind::Resume | PhaseEventKind::Complete => {
+                from && !to
+            }
+        };
+        if !shaped {
+            return Some(format!("phase event {id} ({kind}) names the wrong phases"));
+        }
+        if self.effective_at > self.recorded_at {
+            return Some(format!(
+                "phase event {id} is effective after it was recorded"
+            ));
+        }
+        None
+    }
 }
 
 /// `packet/enrollment.json`: the enrollment's own history.
@@ -191,9 +268,48 @@ pub struct AcknowledgmentDoc {
     pub version_number: i64,
     pub kind: AckKind,
     pub response: String,
-    pub user_display_name: String,
-    pub recorded_by_display_name: String,
+    /// The person bound to the version: always the packet's trainee.
+    pub user: Actor,
+    /// Who spoke: the trainee for their own kinds, never the trainee
+    /// for the attested ones.
+    pub recorded_by: Actor,
     pub recorded_at: i64,
+}
+
+impl AcknowledgmentDoc {
+    /// The shape the format mandates beyond member types, mirroring
+    /// `acknowledgment`'s constraints: a plain acknowledgment carries no
+    /// response and every other kind explains itself; the trainee's own
+    /// kinds are recorded by the trainee and the attested kinds never
+    /// are.
+    #[must_use]
+    pub fn shape_error(&self) -> Option<String> {
+        let what = format!(
+            "the {} acknowledgment of record {} version {}",
+            self.kind.as_str(),
+            self.record_id,
+            self.version_number
+        );
+        let plain = self.kind == AckKind::Acknowledged;
+        if plain && !self.response.is_empty() {
+            return Some(format!("{what} carries a response"));
+        }
+        if !plain && self.response.trim().is_empty() {
+            return Some(format!("{what} gives no response"));
+        }
+        let self_recorded = self.recorded_by.id == self.user.id;
+        if self.kind.spoken_by_trainee() && !self_recorded {
+            return Some(format!(
+                "{what} is recorded by someone other than the trainee"
+            ));
+        }
+        if !self.kind.spoken_by_trainee() && self_recorded {
+            return Some(format!(
+                "{what} is recorded by the trainee it attests about"
+            ));
+        }
+        None
+    }
 }
 
 /// One amendment: the version it corrected and, once sealed, the
@@ -206,22 +322,60 @@ pub struct AmendmentDoc {
     #[serde(deserialize_with = "nullable")]
     pub successor_version_number: Option<i64>,
     pub reason: String,
-    pub opened_by_display_name: String,
+    pub opened_by: Actor,
     pub opened_at: i64,
+}
+
+impl AmendmentDoc {
+    /// The shape the format mandates beyond member types, mirroring
+    /// `amendment`'s constraint: an amendment explains itself.
+    #[must_use]
+    pub fn shape_error(&self) -> Option<String> {
+        self.reason.trim().is_empty().then(|| {
+            format!(
+                "the amendment of record {} version {} gives no reason",
+                self.record_id, self.predecessor_version_number
+            )
+        })
+    }
 }
 
 /// One task signoff row, with the task text it signed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignoffDoc {
+    /// The installation's row identity: recorded order is ascending
+    /// `signoff_id`.
+    pub signoff_id: i64,
     pub task_id: i64,
     pub competency_category: String,
     pub competency_name: String,
     pub prompt: String,
     pub kind: SignoffKind,
     pub reason: String,
-    pub signed_by_display_name: String,
+    pub signed_by: Actor,
     pub signed_at: i64,
+}
+
+/// The shape the format mandates of the signoff history beyond member
+/// types, mirroring `task_signoff`'s trigger: in recorded order, any
+/// signoff after the first for a task supersedes it and records its
+/// reason.
+#[must_use]
+pub fn signoff_shape_errors(signoffs: &[SignoffDoc]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    signoffs
+        .iter()
+        .filter_map(|signoff| {
+            let first = seen.insert(signoff.task_id);
+            (!first && signoff.reason.trim().is_empty()).then(|| {
+                format!(
+                    "signoff {} overrides task {} without a reason",
+                    signoff.signoff_id, signoff.task_id
+                )
+            })
+        })
+        .collect()
 }
 
 // ------------------------------------------------------------ producing
@@ -264,19 +418,25 @@ pub async fn export(
 /// transaction, so they describe one committed state — a finalization,
 /// acknowledgment, or signoff landing mid-pack is wholly in or wholly
 /// out, never in the manifest and missing from a document.
+/// Authorization runs first, on the pool, so no request holds the
+/// transaction's connection while waiting for another: the pool is
+/// bounded, and a packet must never be the reason it runs dry.
 pub async fn export_at(
     pool: &SqlitePool,
     actor_user_id: i64,
     enrollment_id: i64,
     exported_at: i64,
 ) -> Result<std::result::Result<Packet, PacketRefusal>> {
+    let Some(trainee_user_id) = trainee_of(pool, enrollment_id).await? else {
+        return Ok(Err(PacketRefusal::NoSuchEnrollment));
+    };
+    if !may_pack(pool, actor_user_id, enrollment_id, trainee_user_id).await? {
+        return Ok(Err(PacketRefusal::CapabilityRequired));
+    }
     let mut tx = pool.begin().await.context("beginning packet read")?;
     let Some(enrollment) = load_enrollment(&mut tx, enrollment_id).await? else {
         return Ok(Err(PacketRefusal::NoSuchEnrollment));
     };
-    if !may_pack(pool, actor_user_id, enrollment_id, enrollment.trainee.id).await? {
-        return Ok(Err(PacketRefusal::CapabilityRequired));
-    }
     let installation_id = storage::installation_id(&mut *tx).await?;
     let rows = record_export::collect(&mut tx, Scope::Enrollment { enrollment_id }).await?;
     let units = record_export::unit_entries(&rows);
@@ -341,6 +501,16 @@ pub async fn export_at(
         exported_at,
         unit_count,
     }))
+}
+
+/// The enrollment's trainee, for authorization; `None` for an unknown
+/// enrollment.
+async fn trainee_of(pool: &SqlitePool, enrollment_id: i64) -> Result<Option<i64>> {
+    sqlx::query_scalar("SELECT user_id FROM enrollment WHERE id = ?1")
+        .bind(enrollment_id)
+        .fetch_optional(pool)
+        .await
+        .context("reading enrollment")
 }
 
 /// Who may pack an enrollment: whoever may read its training history,
@@ -420,9 +590,13 @@ async fn enrollment_document(
         .into_iter()
         .map(|event| {
             Ok(EnrollmentEventDoc {
+                event_id: event.id,
                 kind: closed_kind("enrollment event", &event.kind)?,
                 occurred_at: event.occurred_at,
-                actor_display_name: event.actor_display_name,
+                actor: event.actor_user_id.map(|id| Actor {
+                    id,
+                    display_name: event.actor_display_name.clone().unwrap_or_default(),
+                }),
                 reason: event.reason,
                 from_version: event.from_version_number.map(|number| VersionRef {
                     version_number: number,
@@ -440,10 +614,14 @@ async fn enrollment_document(
         .into_iter()
         .map(|event| {
             Ok(PhaseEventDoc {
+                event_id: event.id,
                 kind: closed_kind("phase event", &event.kind)?,
                 effective_at: event.effective_at,
                 recorded_at: event.recorded_at,
-                actor_display_name: event.actor_display_name,
+                actor: event.actor_user_id.map(|id| Actor {
+                    id,
+                    display_name: event.actor_display_name.clone().unwrap_or_default(),
+                }),
                 reason: event.reason,
                 from_phase: event.from_phase_name,
                 to_phase: event.to_phase_name,
@@ -464,7 +642,8 @@ async fn acknowledgments(
 ) -> Result<Vec<AcknowledgmentDoc>> {
     let rows = sqlx::query(
         "SELECT v.evaluation_record_id AS record_id, v.version_number, a.kind, a.response,
-                a.user_display_name, a.recorded_by_display_name, a.recorded_at
+                a.user_id, a.user_display_name, a.recorded_by, a.recorded_by_display_name,
+                a.recorded_at
          FROM acknowledgment a
          JOIN evaluation_version v ON v.id = a.evaluation_version_id
          JOIN evaluation_record r ON r.id = v.evaluation_record_id
@@ -482,8 +661,14 @@ async fn acknowledgments(
                 version_number: row.get("version_number"),
                 kind: closed_kind("acknowledgment", row.get("kind"))?,
                 response: row.get("response"),
-                user_display_name: row.get("user_display_name"),
-                recorded_by_display_name: row.get("recorded_by_display_name"),
+                user: Actor {
+                    id: row.get("user_id"),
+                    display_name: row.get("user_display_name"),
+                },
+                recorded_by: Actor {
+                    id: row.get("recorded_by"),
+                    display_name: row.get("recorded_by_display_name"),
+                },
                 recorded_at: row.get("recorded_at"),
             })
         })
@@ -495,7 +680,7 @@ async fn amendments(conn: &mut SqliteConnection, enrollment_id: i64) -> Result<V
         "SELECT am.evaluation_record_id AS record_id,
                 p.version_number AS predecessor_version_number,
                 s.version_number AS successor_version_number,
-                am.reason, am.opened_by_display_name, am.opened_at
+                am.reason, am.opened_by, am.opened_by_display_name, am.opened_at
          FROM amendment am
          JOIN evaluation_version p ON p.id = am.predecessor_version_id
          LEFT JOIN evaluation_version s ON s.predecessor_id = am.predecessor_version_id
@@ -514,7 +699,10 @@ async fn amendments(conn: &mut SqliteConnection, enrollment_id: i64) -> Result<V
             predecessor_version_number: row.get("predecessor_version_number"),
             successor_version_number: row.get("successor_version_number"),
             reason: row.get("reason"),
-            opened_by_display_name: row.get("opened_by_display_name"),
+            opened_by: Actor {
+                id: row.get("opened_by"),
+                display_name: row.get("opened_by_display_name"),
+            },
             opened_at: row.get("opened_at"),
         })
         .collect())
@@ -522,8 +710,8 @@ async fn amendments(conn: &mut SqliteConnection, enrollment_id: i64) -> Result<V
 
 async fn signoffs(conn: &mut SqliteConnection, enrollment_id: i64) -> Result<Vec<SignoffDoc>> {
     let rows = sqlx::query(
-        "SELECT s.task_id, c.category, c.name, t.prompt, s.kind, s.reason,
-                s.signed_by_display_name, s.signed_at
+        "SELECT s.id AS signoff_id, s.task_id, c.category, c.name, t.prompt, s.kind, s.reason,
+                s.signed_by, s.signed_by_display_name, s.signed_at
          FROM task_signoff s
          JOIN task t ON t.id = s.task_id
          JOIN competency c ON c.id = t.competency_id
@@ -537,13 +725,17 @@ async fn signoffs(conn: &mut SqliteConnection, enrollment_id: i64) -> Result<Vec
     rows.iter()
         .map(|row| {
             Ok(SignoffDoc {
+                signoff_id: row.get("signoff_id"),
                 task_id: row.get("task_id"),
                 competency_category: row.get("category"),
                 competency_name: row.get("name"),
                 prompt: row.get("prompt"),
                 kind: closed_kind("signoff", row.get("kind"))?,
                 reason: row.get("reason"),
-                signed_by_display_name: row.get("signed_by_display_name"),
+                signed_by: Actor {
+                    id: row.get("signed_by"),
+                    display_name: row.get("signed_by_display_name"),
+                },
                 signed_at: row.get("signed_at"),
             })
         })

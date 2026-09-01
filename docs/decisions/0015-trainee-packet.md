@@ -27,12 +27,19 @@ may produce it, and how it verifies (#48; Milestone 5 slice 2).
   under `packet/`: the enrollment's lifecycle and phase history, every
   acknowledgment, every amendment, and the full task signoff history
   (`docs/formats/trainee-packet.md`).
-- Documents carry the stored snapshots where a snapshot exists
-  (acknowledgment names, amendment authority, signoff authority). The
-  enrollment document and the manifest's `enrollment` member present
-  the trainee, program version, and event actors as of the export
-  instant, and the format says so; they are presentation of history,
-  not records, and the records inside the units remain the authority.
+- Documents name every person by stable identity beside the name
+  shown — the stored snapshot where the act stored one (acknowledgment
+  names, amendment authority, signoff authority). The enrollment
+  document and the manifest's `enrollment` member present the trainee,
+  program version, and event actors as of the export instant, and the
+  format says so; they are presentation of history, not records, and
+  the records inside the units remain the authority.
+- Document shapes mirror the stored tables' own constraints — closed
+  kinds, mandated orders carrying the row identity that fixes recorded
+  order, speaker and response rules, version and phase references by
+  kind — so a document that could not have come from the tables does
+  not verify, and the shape check is the format's contract rather than
+  a spot check of member types.
 - The document set is a closed, ordered list of kinds carried exactly
   once. Rendered PDFs (decision 2, slice 4) arrive as a new kind under a
   new format version; a version-1 verifier refuses a kind it does not

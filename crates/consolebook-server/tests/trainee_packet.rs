@@ -7,6 +7,7 @@
 //! Every fixture is invented.
 
 use std::io::{Cursor, Read, Write};
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, SET_COOKIE};
@@ -23,7 +24,7 @@ use consolebook_server::programs::{
 use consolebook_server::record_export::{self, ARCHIVE_MANIFEST_PATH, Scope};
 use consolebook_server::task_signoffs::{self, SignoffKind};
 use consolebook_server::trainee_packet::{
-    self, AcknowledgmentDoc, AmendmentDoc, DocumentKind, EnrollmentDocument, PACKET_FORMAT,
+    self, AcknowledgmentDoc, Actor, AmendmentDoc, DocumentKind, EnrollmentDocument, PACKET_FORMAT,
     PACKET_FORMAT_VERSION, PacketManifest, PacketRefusal, SignoffDoc,
 };
 use consolebook_server::training_sessions::{self, Disposition, SessionInput};
@@ -32,6 +33,7 @@ use consolebook_server::{
     finalization, setup, storage, users,
 };
 use http_body_util::BodyExt;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use tower::ServiceExt;
 use zip::write::{SimpleFileOptions, ZipWriter};
 
@@ -616,8 +618,14 @@ async fn packet_carries_everything_retained() {
         (acks[0].record_id, acks[0].version_number, acks[0].kind),
         (s.record_id, 1, AckKind::Acknowledged)
     );
-    assert_eq!(acks[0].user_display_name, "Taylor Trainee");
-    assert_eq!(acks[0].recorded_by_display_name, "Taylor Trainee");
+    assert_eq!(
+        acks[0].user,
+        Actor {
+            id: s.taylor_id,
+            display_name: "Taylor Trainee".to_owned()
+        }
+    );
+    assert_eq!(acks[0].recorded_by, acks[0].user, "the trainee's own act");
     let amended: Vec<AmendmentDoc> =
         serde_json::from_slice(entry(&listed, "packet/amendments.json")).expect("amendments");
     assert_eq!(amended.len(), 1);
@@ -628,13 +636,25 @@ async fn packet_carries_everything_retained() {
         amended[0].reason,
         "The invented rating was entered one point low."
     );
-    assert_eq!(amended[0].opened_by_display_name, "Casey Coordinator");
+    assert_eq!(
+        amended[0].opened_by,
+        Actor {
+            id: s.casey_id,
+            display_name: "Casey Coordinator".to_owned()
+        }
+    );
     let signoffs: Vec<SignoffDoc> =
         serde_json::from_slice(entry(&listed, "packet/signoffs.json")).expect("signoffs");
     assert_eq!(signoffs.len(), 2, "first signoff and override alike");
     assert_eq!(signoffs[0].task_id, s.task_id);
     assert_eq!(signoffs[0].kind, SignoffKind::Observed);
-    assert_eq!(signoffs[0].signed_by_display_name, "Jordan Trainer");
+    assert_eq!(
+        signoffs[0].signed_by,
+        Actor {
+            id: s.jordan_id,
+            display_name: "Jordan Trainer".to_owned()
+        }
+    );
     assert_eq!(
         signoffs[0].prompt,
         "Processes an invented structure-fire call."
@@ -645,7 +665,17 @@ async fn packet_carries_everything_retained() {
         signoffs[1].reason,
         "Demonstrated on the invented live call."
     );
-    assert_eq!(signoffs[1].signed_by_display_name, "Casey Coordinator");
+    assert_eq!(
+        signoffs[1].signed_by,
+        Actor {
+            id: s.casey_id,
+            display_name: "Casey Coordinator".to_owned()
+        }
+    );
+    assert!(
+        signoffs[0].signoff_id < signoffs[1].signoff_id,
+        "recorded order is ascending signoff_id"
+    );
     let enrollment: EnrollmentDocument =
         serde_json::from_slice(entry(&listed, "packet/enrollment.json")).expect("enrollment");
     assert_eq!(enrollment.enrollment_id, s.enrollment_id);
@@ -657,8 +687,11 @@ async fn packet_carries_everything_retained() {
         "Invented transfer to another center."
     );
     assert_eq!(
-        enrollment.events[0].actor_display_name.as_deref(),
-        Some("Casey Coordinator")
+        enrollment.events[0].actor,
+        Some(Actor {
+            id: s.casey_id,
+            display_name: "Casey Coordinator".to_owned()
+        })
     );
     assert!(enrollment.phase_events.is_empty());
 
@@ -1131,4 +1164,259 @@ async fn packet_api_and_cli() {
         stdout.contains("does not hash to the manifest's sha256"),
         "stdout: {stdout}"
     );
+}
+
+/// A forgery whose document is well-typed and rehashed: only what the
+/// rows say, and their order, can object.
+fn forged(
+    listed: &[(String, Vec<u8>)],
+    kind: DocumentKind,
+    edit: impl FnOnce(&mut serde_json::Value),
+) -> export_verify::ArchiveReport {
+    let bytes = edit_json(entry(listed, &kind.path()), edit);
+    export_verify::verify_archive(&with_document(listed, kind, &bytes, true))
+}
+
+/// One phase event as a forger would write it.
+fn phase_event(
+    kind: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+    effective_at: i64,
+    recorded_at: i64,
+    event_id: i64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "actor": null,
+        "effective_at": effective_at,
+        "event_id": event_id,
+        "from_phase": from,
+        "kind": kind,
+        "reason": "",
+        "recorded_at": recorded_at,
+        "to_phase": to,
+    })
+}
+
+/// The verifier holds every document to the order and the cross-member
+/// rules the format mandates — the stored tables' own constraints — not
+/// only to member types: a forger who keeps every member well-typed and
+/// rehashes still cannot reorder, duplicate, or misshape a row.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn documents_keep_their_order_and_shape() {
+    let fx = Fixture::new().await;
+    let s = seed(&fx, "shape").await;
+    let original = pack(&fx, s.casey_id, s.enrollment_id).await;
+    let listed = entries(&original);
+    let acks = DocumentKind::Acknowledgments;
+    let amendments = DocumentKind::Amendments;
+    let enrollment = DocumentKind::Enrollment;
+    let signoffs = DocumentKind::Signoffs;
+
+    // Order: reversed signoffs, a duplicated acknowledgment, a duplicated
+    // amendment. A duplicate is out of order because the orders are total.
+    let report = forged(&listed, signoffs, |doc| {
+        doc.as_array_mut().expect("array").reverse();
+    });
+    assert!(
+        matches!(
+            &report.documents[3].findings[0],
+            Finding::DocumentOutOfOrder { detail, .. }
+                if detail == "signoff 1 does not follow signoff 0 in ascending signoff_id"
+        ),
+        "{report:?}"
+    );
+    let report = forged(&listed, acks, |doc| {
+        let first = doc[0].clone();
+        doc.as_array_mut().expect("array").push(first);
+    });
+    assert!(
+        matches!(
+            &report.documents[0].findings[..],
+            [Finding::DocumentOutOfOrder { detail, .. }]
+                if detail.contains("ascending (record_id, version_number)")
+        ),
+        "{report:?}"
+    );
+    let report = forged(&listed, amendments, |doc| {
+        let first = doc[0].clone();
+        doc.as_array_mut().expect("array").push(first);
+    });
+    assert!(
+        matches!(
+            &report.documents[1].findings[..],
+            [Finding::DocumentOutOfOrder { detail, .. }]
+                if detail.contains("ascending (record_id, predecessor_version_number)")
+        ),
+        "{report:?}"
+    );
+
+    // Lifecycle events: a withdraw carrying version references, and a
+    // version change without them.
+    let report = forged(&listed, enrollment, |doc| {
+        doc["events"][0]["from_version"] =
+            serde_json::json!({"version_number": 1, "label": "Invented v1"});
+        doc["events"][0]["to_version"] =
+            serde_json::json!({"version_number": 2, "label": "Invented v2"});
+    });
+    assert!(
+        matches!(
+            &report.documents[2].findings[..],
+            [Finding::DocumentInvalid { detail, .. }]
+                if detail.contains("(withdraw) carries version references")
+        ),
+        "{report:?}"
+    );
+    let report = forged(&listed, enrollment, |doc| {
+        doc["events"][0]["kind"] = serde_json::json!("version_change");
+    });
+    assert!(
+        matches!(
+            &report.documents[2].findings[..],
+            [Finding::DocumentInvalid { detail, .. }]
+                if detail.contains("(version_change) lacks its version references")
+        ),
+        "{report:?}"
+    );
+
+    // Phase events: a pause naming no phase, an advance effective after
+    // it was recorded, and two well-shaped events out of effective order.
+    let report = forged(&listed, enrollment, |doc| {
+        doc["phase_events"] = serde_json::json!([phase_event("pause", None, None, 10, 10, 1)]);
+    });
+    assert!(
+        matches!(
+            &report.documents[2].findings[..],
+            [Finding::DocumentInvalid { detail, .. }]
+                if detail == "phase event 1 (pause) names the wrong phases"
+        ),
+        "{report:?}"
+    );
+    let report = forged(&listed, enrollment, |doc| {
+        doc["phase_events"] =
+            serde_json::json!([phase_event("advance", None, Some("Phase One"), 11, 10, 1)]);
+    });
+    assert!(
+        matches!(
+            &report.documents[2].findings[..],
+            [Finding::DocumentInvalid { detail, .. }]
+                if detail == "phase event 1 is effective after it was recorded"
+        ),
+        "{report:?}"
+    );
+    let report = forged(&listed, enrollment, |doc| {
+        doc["phase_events"] = serde_json::json!([
+            phase_event("advance", None, Some("Phase One"), 20, 20, 2),
+            phase_event("advance", Some("Phase One"), Some("Phase Two"), 10, 10, 1),
+        ]);
+    });
+    assert!(
+        matches!(
+            &report.documents[2].findings[..],
+            [Finding::DocumentOutOfOrder { detail, .. }]
+                if detail.contains("phase event 1 does not follow phase event 0")
+        ),
+        "{report:?}"
+    );
+
+    // Acknowledgments: a plain acknowledgment with a response, one
+    // recorded by someone other than the trainee, one binding another
+    // person than the packet's trainee.
+    let report = forged(&listed, acks, |doc| {
+        doc[0]["response"] = serde_json::json!("Noted.");
+    });
+    assert!(
+        matches!(
+            &report.documents[0].findings[..],
+            [Finding::DocumentInvalid { detail, .. }] if detail.contains("carries a response")
+        ),
+        "{report:?}"
+    );
+    let report = forged(&listed, acks, |doc| {
+        doc[0]["recorded_by"]["id"] = serde_json::json!(s.casey_id);
+    });
+    assert!(
+        matches!(
+            &report.documents[0].findings[..],
+            [Finding::DocumentInvalid { detail, .. }]
+                if detail.contains("recorded by someone other than the trainee")
+        ),
+        "{report:?}"
+    );
+    let report = forged(&listed, acks, |doc| {
+        doc[0]["user"]["id"] = serde_json::json!(s.jordan_id);
+        doc[0]["recorded_by"]["id"] = serde_json::json!(s.jordan_id);
+    });
+    assert_eq!(
+        report.documents[0].findings,
+        vec![Finding::DocumentDisagrees {
+            path: acks.path(),
+            member: "user.id"
+        }],
+        "{report:?}"
+    );
+
+    // An amendment without a reason; a signoff override without one.
+    let report = forged(&listed, amendments, |doc| {
+        doc[0]["reason"] = serde_json::json!(" \u{2003} ");
+    });
+    assert!(
+        matches!(
+            &report.documents[1].findings[..],
+            [Finding::DocumentInvalid { detail, .. }] if detail.contains("gives no reason")
+        ),
+        "{report:?}"
+    );
+    let report = forged(&listed, signoffs, |doc| {
+        doc[1]["reason"] = serde_json::json!("");
+    });
+    assert!(
+        matches!(
+            &report.documents[3].findings[..],
+            [Finding::DocumentInvalid { detail, .. }]
+                if detail.contains("overrides task") && detail.contains("without a reason")
+        ),
+        "{report:?}"
+    );
+
+    // The genuine packet passes every one of these.
+    assert!(export_verify::verify_archive(&original).verified());
+}
+
+/// Authorization runs before the packet's read transaction, so a packet
+/// never holds a pooled connection while waiting for another. A pool of
+/// one connection is the sharpest proof: a packet that acquired twice
+/// at once would wait on itself until the pool gave up.
+#[tokio::test]
+async fn a_packet_never_holds_a_connection_while_waiting_for_one() {
+    let fx = Fixture::new().await;
+    let s = seed(&fx, "pool").await;
+    let database: String =
+        sqlx::query_scalar("SELECT file FROM pragma_database_list WHERE name = 'main'")
+            .fetch_one(&fx.pool)
+            .await
+            .expect("database path");
+    let single = SqlitePoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(&database)
+                .journal_mode(SqliteJournalMode::Wal)
+                .foreign_keys(true)
+                .busy_timeout(Duration::from_secs(5)),
+        )
+        .await
+        .expect("one-connection pool");
+    let packet = trainee_packet::export_at(&single, s.casey_id, s.enrollment_id, EXPORTED_AT)
+        .await
+        .expect("a packet takes one connection at a time")
+        .expect("permitted");
+    single.close().await;
+    let reference = trainee_packet::export_at(&fx.pool, s.casey_id, s.enrollment_id, EXPORTED_AT)
+        .await
+        .expect("export")
+        .expect("permitted");
+    assert_eq!(packet.bytes, reference.bytes);
 }

@@ -54,6 +54,12 @@ pub enum Finding {
         path: String,
         detail: String,
     },
+    /// A packet document's rows are not in the order the format
+    /// mandates (a duplicated row included).
+    DocumentOutOfOrder {
+        path: String,
+        detail: String,
+    },
     /// A version-1 packet lists each document kind exactly once, in path
     /// order.
     DocumentsIncomplete,
@@ -165,6 +171,9 @@ impl fmt::Display for Finding {
             }
             Self::DocumentReference { path, detail } => {
                 write!(f, "{path} refers outside the packet: {detail}")
+            }
+            Self::DocumentOutOfOrder { path, detail } => {
+                write!(f, "{path} is out of order: {detail}")
             }
             Self::DocumentsIncomplete => f.write_str(
                 "the packet lists its document kinds incompletely, twice, or out of order",

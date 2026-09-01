@@ -82,9 +82,16 @@ kind it does not know rather than skipping it.
 
 Every document is canonical JSON with a typed shape: every member
 present (nullable members as `null`, never absent), no member the shape
-does not name, and every `kind` one of a closed vocabulary — the set the
+does not name, every `kind` one of a closed vocabulary — the set the
 stored table constrains — so a value outside it fails the shape check
-rather than passing through as text.
+rather than passing through as text, and the order and cross-member
+rules each shape states below, which mirror the stored tables' own
+constraints. Every person a document names is an object
+`{id, display_name}`: the stable user identity beside the name shown
+(`docs/records-integrity.md`: stable ids preserve identity, snapshots
+preserve what the record said). The name is the stored snapshot for
+acknowledgments, amendments, and signoffs, and the export-time name for
+enrollment and phase events.
 
 ### `packet/enrollment.json`
 
@@ -93,49 +100,65 @@ rather than passing through as text.
   "enrolled_at": 1780000000,
   "enrollment_id": 4,
   "events": [
-    { "actor_display_name": "…", "from_version": null, "kind": "withdraw",
-      "occurred_at": 1780500000, "reason": "…", "to_version": null }
+    { "actor": { "display_name": "…", "id": 3 }, "event_id": 12, "from_version": null,
+      "kind": "withdraw", "occurred_at": 1780500000, "reason": "…", "to_version": null }
   ],
   "phase_events": [
-    { "actor_display_name": "…", "effective_at": 1780100000, "from_phase": null,
-      "kind": "advance", "reason": "", "recorded_at": 1780100000, "to_phase": "Phase One" }
+    { "actor": { "display_name": "…", "id": 3 }, "effective_at": 1780100000, "event_id": 7,
+      "from_phase": null, "kind": "advance", "reason": "", "recorded_at": 1780100000,
+      "to_phase": "Phase One" }
   ]
 }
 ```
 
-`events` are the enrollment lifecycle events in recorded order (`kind`
-one of `version_change`, `withdraw`, `complete`, `reinstate`;
+`events` are the enrollment lifecycle events in recorded order —
+strictly ascending `event_id`, the installation's row identity — with
+`kind` one of `version_change`, `withdraw`, `complete`, `reinstate`.
 `from_version` and `to_version` are `{version_number, label}` objects
-for a version change and `null` otherwise). `phase_events` are the
-phase history in effective order (`kind` one of `advance`, `return`,
-`restart`, `pause`, `resume`, `complete`; phases by name). Actor names
-here are resolved at export, unlike the snapshots inside records and
-the other documents; the packet manifest's `exported_at` is the instant
-they describe.
+for a version change, which names two different versions and gives a
+reason, and `null` for every other kind. `phase_events` are the phase
+history in effective order — strictly ascending (`effective_at`,
+`event_id`) — with `kind` one of `advance`, `return`, `restart`,
+`pause`, `resume`, `complete`, phases by name: an advance names
+`to_phase`, a return or restart names both phases, and a pause, resume,
+or completion names only `from_phase`, the phase it happened in; nothing
+is effective after it was recorded. `actor` is `null` when no person
+recorded the event. Actor names here are resolved at export, unlike the
+snapshots inside records and the other documents; the packet manifest's
+`exported_at` is the instant they describe.
 
 ### `packet/acknowledgments.json`
 
-An array, ascending by (`record_id`, `version_number`), of
-`{record_id, version_number, kind, response, user_display_name,
-recorded_by_display_name, recorded_at}` — every acknowledgment bound to
-any version the packet carries, from the stored snapshots. `kind` is one
-of the acknowledgment kinds (`docs/domain-model.md`).
+An array, strictly ascending by (`record_id`, `version_number`) — one
+acknowledgment binds one version — of `{record_id, version_number,
+kind, response, user, recorded_by, recorded_at}`: every acknowledgment
+bound to any version the packet carries, from the stored snapshots.
+`kind` is one of the acknowledgment kinds (`docs/domain-model.md`).
+`user` is the person bound, always the packet's trainee. `recorded_by`
+is who spoke: the trainee themselves for `acknowledged`,
+`acknowledged_with_response`, and `refused`, and never the trainee for
+`supervisor_attested_refusal` and `unavailable`. A plain `acknowledged`
+carries an empty `response`; every other kind explains itself with a
+non-blank one.
 
 ### `packet/amendments.json`
 
-An array, ascending by (`record_id`, `predecessor_version_number`), of
+An array, strictly ascending by (`record_id`,
+`predecessor_version_number`) — a version is amended at most once — of
 `{record_id, predecessor_version_number, successor_version_number,
-reason, opened_by_display_name, opened_at}`. `successor_version_number`
-is `null` while the correction is still in progress; a sealed
-correction names the version it produced.
+reason, opened_by, opened_at}`. `reason` is non-blank.
+`successor_version_number` is `null` while the correction is still in
+progress; a sealed correction names the version it produced.
 
 ### `packet/signoffs.json`
 
-An array in recorded order of `{task_id, competency_category,
-competency_name, prompt, kind, reason, signed_by_display_name,
-signed_at}`: every task signoff row, first signoffs and overrides
-alike, so the history is complete (ADR 0013). `kind` is one of
-`observed`, `demonstrated`, `revoked`.
+An array in recorded order — strictly ascending `signoff_id`, the
+installation's row identity — of `{signoff_id, task_id,
+competency_category, competency_name, prompt, kind, reason, signed_by,
+signed_at}`: every task signoff row, first signoffs and overrides alike,
+so the history is complete (ADR 0013). `kind` is one of `observed`,
+`demonstrated`, `revoked`. Any signoff after the first for a task
+supersedes it and records a non-blank `reason`.
 
 ## Determinism
 
@@ -171,12 +194,22 @@ Document checks:
 2. every listed document exists, and the SHA-256 of its bytes equals
    the manifest's `sha256`, itself 64 lowercase hex characters;
 3. the bytes are canonical JSON and parse as the kind's shape — every
-   named member, typed, and no other;
-4. every acknowledgment names a (`record_id`, `version_number`) the
+   named member, typed, closed kinds included, and no other;
+4. the rows are in the kind's mandated order — strictly ascending by
+   the key its shape names above — so a reordered or duplicated row is
+   a finding;
+5. the cross-member rules each shape states above hold: an
+   acknowledgment's response and speaker match its kind and its `user`
+   is the packet's trainee, an amendment gives a reason, a lifecycle
+   event carries version references exactly when it is a version
+   change, a phase event names the phases its kind requires and is not
+   effective after it was recorded, and a signoff override records its
+   reason;
+6. every acknowledgment names a (`record_id`, `version_number`) the
    packet carries, and every amendment's predecessor, and successor
    where present, does too — a reference the packet cannot resolve is
    a finding; and
-5. `enrollment.json` names the manifest's `enrollment.id`.
+7. `enrollment.json` names the manifest's `enrollment.id`.
 
 `consolebook-server export verify <packet>` prints one line per unit
 and per document and exits non-zero unless the verdict is `verified`.
