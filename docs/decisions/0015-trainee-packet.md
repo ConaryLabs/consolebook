@@ -49,6 +49,14 @@ may produce it, and how it verifies (#48; Milestone 5 slice 2).
 - The signoff history travels in full — first signoffs and overrides
   alike — so the packet answers "what was signed off, by whom, and what
   changed" without the installation.
+- Every component is read from one database snapshot (one read
+  transaction), so the manifest, the units, and the documents describe
+  the same committed state; a packet never carries a version its
+  acknowledgment document has not seen, or the reverse.
+- Every `kind` a document carries is a closed vocabulary shared with the
+  module that owns the table — lifecycle event kinds, phase event kinds,
+  acknowledgment kinds, signoff kinds — parsed on production and on
+  verification, never passed through as text.
 
 ### One verifier, dispatching on the declared format
 

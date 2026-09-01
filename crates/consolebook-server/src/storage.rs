@@ -10,10 +10,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use sqlx::Row;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
+use sqlx::{Executor, Row, Sqlite};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
@@ -188,9 +188,9 @@ async fn ensure_instance_identity(pool: &SqlitePool) -> Result<()> {
 }
 
 /// The opaque, stable identifier of this installation.
-pub async fn installation_id(pool: &SqlitePool) -> Result<String> {
+pub async fn installation_id<'e>(executor: impl Executor<'e, Database = Sqlite>) -> Result<String> {
     let row = sqlx::query("SELECT installation_id FROM instance WHERE id = 1")
-        .fetch_one(pool)
+        .fetch_one(executor)
         .await
         .context("reading instance identity")?;
     Ok(row.get(0))

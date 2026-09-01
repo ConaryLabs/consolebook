@@ -82,6 +82,19 @@ impl AttestedKind {
     }
 }
 
+/// Every acknowledgment kind, as stored: the trainee's own kinds and the
+/// attested ones together (migration 0011's closed set). Readers that
+/// meet a stored kind — exports and packets — parse into this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AckKind {
+    Acknowledged,
+    AcknowledgedWithResponse,
+    Refused,
+    SupervisorAttestedRefusal,
+    Unavailable,
+}
+
 /// One recorded acknowledgment, presented.
 #[derive(Debug, Clone, Serialize)]
 pub struct AckView {

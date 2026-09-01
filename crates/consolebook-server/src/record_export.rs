@@ -17,7 +17,7 @@ use std::io::{Cursor, Write};
 
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, SqliteConnection, SqlitePool};
 use time::OffsetDateTime;
 use zip::CompressionMethod;
 use zip::write::{SimpleFileOptions, ZipWriter};
@@ -173,7 +173,9 @@ pub async fn export_at(
         Ok(audited) => audited,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let rows = collect(pool, scope).await?;
+    let mut conn = pool.acquire().await.context("acquiring connection")?;
+    let rows = collect(&mut conn, scope).await?;
+    drop(conn);
     if rows.is_empty() {
         return Ok(Err(match scope {
             Scope::Version { .. } => ExportRefusal::NoSuchVersion,
@@ -334,7 +336,7 @@ macro_rules! unit_query {
     };
 }
 
-pub(crate) async fn collect(pool: &SqlitePool, scope: Scope) -> Result<Vec<VersionRow>> {
+pub(crate) async fn collect(conn: &mut SqliteConnection, scope: Scope) -> Result<Vec<VersionRow>> {
     let rows = match scope {
         Scope::Version {
             record_id,
@@ -345,22 +347,22 @@ pub(crate) async fn collect(pool: &SqlitePool, scope: Scope) -> Result<Vec<Versi
             ))
             .bind(record_id)
             .bind(version_number)
-            .fetch_all(pool)
+            .fetch_all(&mut *conn)
             .await
         }
         Scope::Record { record_id } => {
             sqlx::query(unit_query!("WHERE v.evaluation_record_id = ?1"))
                 .bind(record_id)
-                .fetch_all(pool)
+                .fetch_all(&mut *conn)
                 .await
         }
         Scope::Enrollment { enrollment_id } => {
             sqlx::query(unit_query!("WHERE r.enrollment_id = ?1"))
                 .bind(enrollment_id)
-                .fetch_all(pool)
+                .fetch_all(&mut *conn)
                 .await
         }
-        Scope::Installation => sqlx::query(unit_query!("")).fetch_all(pool).await,
+        Scope::Installation => sqlx::query(unit_query!("")).fetch_all(&mut *conn).await,
     }
     .context("reading finalized versions")?;
     Ok(rows

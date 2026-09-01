@@ -81,8 +81,10 @@ kind it does not know rather than skipping it.
 ## Documents
 
 Every document is canonical JSON with a typed shape: every member
-present (nullable members as `null`, never absent) and no member the
-shape does not name.
+present (nullable members as `null`, never absent), no member the shape
+does not name, and every `kind` one of a closed vocabulary — the set the
+stored table constrains — so a value outside it fails the shape check
+rather than passing through as text.
 
 ### `packet/enrollment.json`
 
@@ -139,7 +141,12 @@ alike, so the history is complete (ADR 0013). `kind` is one of
 
 A packet is a pure function of the enrollment's rows and the export
 instant: the same enrollment packed at the same instant is byte-
-identical, for the same reasons the record export is.
+identical, for the same reasons the record export is. The producing
+installation reads the enrollment, its units, and every document inside
+one database transaction, so a packet describes one committed state: a
+finalization, acknowledgment, or signoff that lands while a packet is
+being produced is wholly in it or wholly absent, never listed by the
+manifest and missing from a document.
 
 ## Verification
 

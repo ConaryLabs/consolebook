@@ -11,7 +11,7 @@ use std::io::{Cursor, Read, Write};
 use axum::body::Body;
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, Request, StatusCode};
-use consolebook_server::acknowledgments::{self, TraineeAckKind};
+use consolebook_server::acknowledgments::{self, AckKind, TraineeAckKind};
 use consolebook_server::capabilities::RoleBundle;
 use consolebook_server::draft_content::{self, DraftContent, NarrativeEntry, RatingEntry};
 use consolebook_server::export_verify::{self, ArchiveKind, Finding};
@@ -613,12 +613,8 @@ async fn packet_carries_everything_retained() {
         serde_json::from_slice(entry(&listed, "packet/acknowledgments.json")).expect("acks");
     assert_eq!(acks.len(), 1);
     assert_eq!(
-        (
-            acks[0].record_id,
-            acks[0].version_number,
-            acks[0].kind.as_str()
-        ),
-        (s.record_id, 1, "acknowledged")
+        (acks[0].record_id, acks[0].version_number, acks[0].kind),
+        (s.record_id, 1, AckKind::Acknowledged)
     );
     assert_eq!(acks[0].user_display_name, "Taylor Trainee");
     assert_eq!(acks[0].recorded_by_display_name, "Taylor Trainee");
@@ -637,14 +633,14 @@ async fn packet_carries_everything_retained() {
         serde_json::from_slice(entry(&listed, "packet/signoffs.json")).expect("signoffs");
     assert_eq!(signoffs.len(), 2, "first signoff and override alike");
     assert_eq!(signoffs[0].task_id, s.task_id);
-    assert_eq!(signoffs[0].kind, "observed");
+    assert_eq!(signoffs[0].kind, SignoffKind::Observed);
     assert_eq!(signoffs[0].signed_by_display_name, "Jordan Trainer");
     assert_eq!(
         signoffs[0].prompt,
         "Processes an invented structure-fire call."
     );
     assert_eq!(signoffs[0].competency_name, "Emergency Call Interrogation");
-    assert_eq!(signoffs[1].kind, "demonstrated");
+    assert_eq!(signoffs[1].kind, SignoffKind::Demonstrated);
     assert_eq!(
         signoffs[1].reason,
         "Demonstrated on the invented live call."
@@ -655,7 +651,7 @@ async fn packet_carries_everything_retained() {
     assert_eq!(enrollment.enrollment_id, s.enrollment_id);
     assert!(enrollment.enrolled_at > 0);
     assert_eq!(enrollment.events.len(), 1);
-    assert_eq!(enrollment.events[0].kind, "withdraw");
+    assert_eq!(enrollment.events[0].kind, EnrollmentEventKind::Withdraw);
     assert_eq!(
         enrollment.events[0].reason,
         "Invented transfer to another center."
@@ -788,6 +784,58 @@ async fn packet_verification_names_findings() {
         matches!(
             &report.documents[2].findings[..],
             [Finding::DocumentInvalid { detail, .. }] if detail == "not canonical JSON"
+        ),
+        "{report:?}"
+    );
+
+    // A discriminator outside its closed set is not the kind's shape,
+    // however plausible the string: the vocabularies are the ones the
+    // stored tables constrain, and the verifier knows them by name.
+    let shrugged = edit_json(entry(&listed, &acks_path), |acks| {
+        acks[0]["kind"] = serde_json::json!("shrugged");
+    });
+    let report = export_verify::verify_archive(&with_document(
+        &listed,
+        DocumentKind::Acknowledgments,
+        &shrugged,
+        true,
+    ));
+    assert!(
+        matches!(
+            &report.documents[0].findings[..],
+            [Finding::DocumentInvalid { detail, .. }] if detail.contains("shrugged")
+        ),
+        "{report:?}"
+    );
+    let maybe = edit_json(entry(&listed, &DocumentKind::Signoffs.path()), |signoffs| {
+        signoffs[1]["kind"] = serde_json::json!("maybe");
+    });
+    let report = export_verify::verify_archive(&with_document(
+        &listed,
+        DocumentKind::Signoffs,
+        &maybe,
+        true,
+    ));
+    assert!(
+        matches!(
+            &report.documents[3].findings[..],
+            [Finding::DocumentInvalid { detail, .. }] if detail.contains("maybe")
+        ),
+        "{report:?}"
+    );
+    let vanished = edit_json(entry(&listed, &DocumentKind::Enrollment.path()), |doc| {
+        doc["events"][0]["kind"] = serde_json::json!("vanished");
+    });
+    let report = export_verify::verify_archive(&with_document(
+        &listed,
+        DocumentKind::Enrollment,
+        &vanished,
+        true,
+    ));
+    assert!(
+        matches!(
+            &report.documents[2].findings[..],
+            [Finding::DocumentInvalid { detail, .. }] if detail.contains("vanished")
         ),
         "{report:?}"
     );

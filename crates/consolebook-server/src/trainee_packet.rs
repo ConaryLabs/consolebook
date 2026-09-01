@@ -6,25 +6,32 @@
 //! them — plus typed documents for what the units do not carry: the
 //! enrollment's lifecycle and phase history, every acknowledgment, every
 //! amendment, and the full task signoff history. One packet manifest
-//! names all of it with hashes. Production follows the read rules that
-//! exist (the trainee on their own enrollment, whoever may read the
+//! names all of it with hashes. Every component is read from one
+//! database snapshot, so a packet never mixes states; every stored
+//! discriminator is parsed into its closed set, so a document's `kind`
+//! is a vocabulary, not a string. Production follows the read rules
+//! that exist (the trainee on their own enrollment, whoever may read the
 //! training history, `export_records`); `export_verify` checks a packet
 //! from its bytes alone.
 
 use anyhow::{Context, Result};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, SqlitePool};
+use serde_json::Value;
+use sqlx::{Row, SqliteConnection, SqlitePool};
 use time::OffsetDateTime;
 
+use crate::acknowledgments::AckKind;
 use crate::audit::{self, EventKind, Subject};
 use crate::canonical;
 use crate::capabilities::{self, Capability};
-use crate::lifecycle::{self, EnrollmentStatus};
+use crate::lifecycle::{self, EnrollmentEventKind, EnrollmentStatus, PhaseEventKind};
 use crate::record_envelope::nullable;
 use crate::record_export::{
     self, ARCHIVE_MANIFEST_PATH, ArchiveWriter, Scope, UnitEntry, canonical_json,
 };
 use crate::storage;
+use crate::task_signoffs::SignoffKind;
 
 /// Packet-manifest discriminator; never changes.
 pub const PACKET_FORMAT: &str = "consolebook-trainee-packet";
@@ -122,6 +129,10 @@ pub struct PacketManifest {
 }
 
 // ------------------------------------------------------------ documents
+//
+// Every `kind` below is the closed set its table's migration constrains,
+// reused from the module that owns it: a reader parses the vocabulary,
+// never a string, and a value outside the set is a finding, not a row.
 
 /// A program version an enrollment event names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,7 +146,7 @@ pub struct VersionRef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnrollmentEventDoc {
-    pub kind: String,
+    pub kind: EnrollmentEventKind,
     pub occurred_at: i64,
     #[serde(deserialize_with = "nullable")]
     pub actor_display_name: Option<String>,
@@ -150,7 +161,7 @@ pub struct EnrollmentEventDoc {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PhaseEventDoc {
-    pub kind: String,
+    pub kind: PhaseEventKind,
     pub effective_at: i64,
     pub recorded_at: i64,
     #[serde(deserialize_with = "nullable")]
@@ -178,7 +189,7 @@ pub struct EnrollmentDocument {
 pub struct AcknowledgmentDoc {
     pub record_id: i64,
     pub version_number: i64,
-    pub kind: String,
+    pub kind: AckKind,
     pub response: String,
     pub user_display_name: String,
     pub recorded_by_display_name: String,
@@ -207,7 +218,7 @@ pub struct SignoffDoc {
     pub competency_category: String,
     pub competency_name: String,
     pub prompt: String,
-    pub kind: String,
+    pub kind: SignoffKind,
     pub reason: String,
     pub signed_by_display_name: String,
     pub signed_at: i64,
@@ -248,42 +259,48 @@ pub async fn export(
 }
 
 /// Packs `enrollment_id` stamped with `exported_at`. The packet is a
-/// pure function of the enrollment's rows and this instant.
+/// pure function of the enrollment's rows and this instant: the
+/// enrollment, its units, and every document are read inside one
+/// transaction, so they describe one committed state — a finalization,
+/// acknowledgment, or signoff landing mid-pack is wholly in or wholly
+/// out, never in the manifest and missing from a document.
 pub async fn export_at(
     pool: &SqlitePool,
     actor_user_id: i64,
     enrollment_id: i64,
     exported_at: i64,
 ) -> Result<std::result::Result<Packet, PacketRefusal>> {
-    let Some(enrollment) = load_enrollment(pool, enrollment_id).await? else {
+    let mut tx = pool.begin().await.context("beginning packet read")?;
+    let Some(enrollment) = load_enrollment(&mut tx, enrollment_id).await? else {
         return Ok(Err(PacketRefusal::NoSuchEnrollment));
     };
     if !may_pack(pool, actor_user_id, enrollment_id, enrollment.trainee.id).await? {
         return Ok(Err(PacketRefusal::CapabilityRequired));
     }
-    let installation_id = storage::installation_id(pool).await?;
-    let rows = record_export::collect(pool, Scope::Enrollment { enrollment_id }).await?;
+    let installation_id = storage::installation_id(&mut *tx).await?;
+    let rows = record_export::collect(&mut tx, Scope::Enrollment { enrollment_id }).await?;
     let units = record_export::unit_entries(&rows);
     let unit_count = rows.len();
-
     let documents = [
         (
             DocumentKind::Acknowledgments,
-            canonical_json(&acknowledgments(pool, enrollment_id).await?)?,
+            canonical_json(&acknowledgments(&mut tx, enrollment_id).await?)?,
         ),
         (
             DocumentKind::Amendments,
-            canonical_json(&amendments(pool, enrollment_id).await?)?,
+            canonical_json(&amendments(&mut tx, enrollment_id).await?)?,
         ),
         (
             DocumentKind::Enrollment,
-            canonical_json(&enrollment_document(pool, enrollment_id).await?)?,
+            canonical_json(&enrollment_document(&mut tx, enrollment_id).await?)?,
         ),
         (
             DocumentKind::Signoffs,
-            canonical_json(&signoffs(pool, enrollment_id).await?)?,
+            canonical_json(&signoffs(&mut tx, enrollment_id).await?)?,
         ),
     ];
+    tx.commit().await.context("ending packet read")?;
+
     let manifest = PacketManifest {
         format: PACKET_FORMAT.to_owned(),
         format_version: PACKET_FORMAT_VERSION,
@@ -347,8 +364,17 @@ async fn may_pack(
     capabilities::user_has(pool, actor_user_id, Capability::ExportRecords).await
 }
 
+/// A stored discriminator, parsed into the closed set its table's
+/// migration constrains. The constraint makes any other value
+/// corruption, and corruption is an error to surface, never a string
+/// to pass along.
+fn closed_kind<T: DeserializeOwned>(what: &str, stored: &str) -> Result<T> {
+    serde_json::from_value(Value::String(stored.to_owned()))
+        .with_context(|| format!("stored {what} kind {stored:?} is outside its closed set"))
+}
+
 async fn load_enrollment(
-    pool: &SqlitePool,
+    conn: &mut SqliteConnection,
     enrollment_id: i64,
 ) -> Result<Option<PacketEnrollment>> {
     let row = sqlx::query(
@@ -360,7 +386,7 @@ async fn load_enrollment(
          WHERE e.id = ?1",
     )
     .bind(enrollment_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await
     .context("reading enrollment")?;
     Ok(row.map(|row| PacketEnrollment {
@@ -380,44 +406,50 @@ async fn load_enrollment(
     }))
 }
 
-async fn enrollment_document(pool: &SqlitePool, enrollment_id: i64) -> Result<EnrollmentDocument> {
+async fn enrollment_document(
+    conn: &mut SqliteConnection,
+    enrollment_id: i64,
+) -> Result<EnrollmentDocument> {
     let enrolled_at: i64 = sqlx::query_scalar("SELECT enrolled_at FROM enrollment WHERE id = ?1")
         .bind(enrollment_id)
-        .fetch_one(pool)
+        .fetch_one(&mut *conn)
         .await
         .context("reading enrollment")?;
-    let mut conn = pool.acquire().await.context("acquiring connection")?;
-    let events = lifecycle::list_events(&mut conn, enrollment_id)
+    let events = lifecycle::list_events(&mut *conn, enrollment_id)
         .await?
         .into_iter()
-        .map(|event| EnrollmentEventDoc {
-            kind: event.kind,
-            occurred_at: event.occurred_at,
-            actor_display_name: event.actor_display_name,
-            reason: event.reason,
-            from_version: event.from_version_number.map(|number| VersionRef {
-                version_number: number,
-                label: event.from_version_label.clone().unwrap_or_default(),
-            }),
-            to_version: event.to_version_number.map(|number| VersionRef {
-                version_number: number,
-                label: event.to_version_label.clone().unwrap_or_default(),
-            }),
+        .map(|event| {
+            Ok(EnrollmentEventDoc {
+                kind: closed_kind("enrollment event", &event.kind)?,
+                occurred_at: event.occurred_at,
+                actor_display_name: event.actor_display_name,
+                reason: event.reason,
+                from_version: event.from_version_number.map(|number| VersionRef {
+                    version_number: number,
+                    label: event.from_version_label.clone().unwrap_or_default(),
+                }),
+                to_version: event.to_version_number.map(|number| VersionRef {
+                    version_number: number,
+                    label: event.to_version_label.clone().unwrap_or_default(),
+                }),
+            })
         })
-        .collect();
-    let phase_events = lifecycle::list_phase_events(&mut conn, enrollment_id)
+        .collect::<Result<Vec<_>>>()?;
+    let phase_events = lifecycle::list_phase_events(&mut *conn, enrollment_id)
         .await?
         .into_iter()
-        .map(|event| PhaseEventDoc {
-            kind: event.kind,
-            effective_at: event.effective_at,
-            recorded_at: event.recorded_at,
-            actor_display_name: event.actor_display_name,
-            reason: event.reason,
-            from_phase: event.from_phase_name,
-            to_phase: event.to_phase_name,
+        .map(|event| {
+            Ok(PhaseEventDoc {
+                kind: closed_kind("phase event", &event.kind)?,
+                effective_at: event.effective_at,
+                recorded_at: event.recorded_at,
+                actor_display_name: event.actor_display_name,
+                reason: event.reason,
+                from_phase: event.from_phase_name,
+                to_phase: event.to_phase_name,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     Ok(EnrollmentDocument {
         enrollment_id,
         enrolled_at,
@@ -426,7 +458,10 @@ async fn enrollment_document(pool: &SqlitePool, enrollment_id: i64) -> Result<En
     })
 }
 
-async fn acknowledgments(pool: &SqlitePool, enrollment_id: i64) -> Result<Vec<AcknowledgmentDoc>> {
+async fn acknowledgments(
+    conn: &mut SqliteConnection,
+    enrollment_id: i64,
+) -> Result<Vec<AcknowledgmentDoc>> {
     let rows = sqlx::query(
         "SELECT v.evaluation_record_id AS record_id, v.version_number, a.kind, a.response,
                 a.user_display_name, a.recorded_by_display_name, a.recorded_at
@@ -437,24 +472,25 @@ async fn acknowledgments(pool: &SqlitePool, enrollment_id: i64) -> Result<Vec<Ac
          ORDER BY v.evaluation_record_id, v.version_number",
     )
     .bind(enrollment_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
     .context("reading acknowledgments")?;
-    Ok(rows
-        .iter()
-        .map(|row| AcknowledgmentDoc {
-            record_id: row.get("record_id"),
-            version_number: row.get("version_number"),
-            kind: row.get("kind"),
-            response: row.get("response"),
-            user_display_name: row.get("user_display_name"),
-            recorded_by_display_name: row.get("recorded_by_display_name"),
-            recorded_at: row.get("recorded_at"),
+    rows.iter()
+        .map(|row| {
+            Ok(AcknowledgmentDoc {
+                record_id: row.get("record_id"),
+                version_number: row.get("version_number"),
+                kind: closed_kind("acknowledgment", row.get("kind"))?,
+                response: row.get("response"),
+                user_display_name: row.get("user_display_name"),
+                recorded_by_display_name: row.get("recorded_by_display_name"),
+                recorded_at: row.get("recorded_at"),
+            })
         })
-        .collect())
+        .collect()
 }
 
-async fn amendments(pool: &SqlitePool, enrollment_id: i64) -> Result<Vec<AmendmentDoc>> {
+async fn amendments(conn: &mut SqliteConnection, enrollment_id: i64) -> Result<Vec<AmendmentDoc>> {
     let rows = sqlx::query(
         "SELECT am.evaluation_record_id AS record_id,
                 p.version_number AS predecessor_version_number,
@@ -468,7 +504,7 @@ async fn amendments(pool: &SqlitePool, enrollment_id: i64) -> Result<Vec<Amendme
          ORDER BY am.evaluation_record_id, p.version_number",
     )
     .bind(enrollment_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
     .context("reading amendments")?;
     Ok(rows
@@ -484,7 +520,7 @@ async fn amendments(pool: &SqlitePool, enrollment_id: i64) -> Result<Vec<Amendme
         .collect())
 }
 
-async fn signoffs(pool: &SqlitePool, enrollment_id: i64) -> Result<Vec<SignoffDoc>> {
+async fn signoffs(conn: &mut SqliteConnection, enrollment_id: i64) -> Result<Vec<SignoffDoc>> {
     let rows = sqlx::query(
         "SELECT s.task_id, c.category, c.name, t.prompt, s.kind, s.reason,
                 s.signed_by_display_name, s.signed_at
@@ -495,22 +531,23 @@ async fn signoffs(pool: &SqlitePool, enrollment_id: i64) -> Result<Vec<SignoffDo
          ORDER BY s.id",
     )
     .bind(enrollment_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
     .context("reading signoffs")?;
-    Ok(rows
-        .iter()
-        .map(|row| SignoffDoc {
-            task_id: row.get("task_id"),
-            competency_category: row.get("category"),
-            competency_name: row.get("name"),
-            prompt: row.get("prompt"),
-            kind: row.get("kind"),
-            reason: row.get("reason"),
-            signed_by_display_name: row.get("signed_by_display_name"),
-            signed_at: row.get("signed_at"),
+    rows.iter()
+        .map(|row| {
+            Ok(SignoffDoc {
+                task_id: row.get("task_id"),
+                competency_category: row.get("category"),
+                competency_name: row.get("name"),
+                prompt: row.get("prompt"),
+                kind: closed_kind("signoff", row.get("kind"))?,
+                reason: row.get("reason"),
+                signed_by_display_name: row.get("signed_by_display_name"),
+                signed_at: row.get("signed_at"),
+            })
         })
-        .collect())
+        .collect()
 }
 
 // ------------------------------------------------------------ own list
