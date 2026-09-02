@@ -12,34 +12,42 @@ A correction produces a successor version linked to the original with an explici
 
 ## Canonical bytes
 
-The canonical byte representation is part of the record format and must be specified before records are produced.
+The canonical byte representation is part of the record format and was fixed
+before the first finalized record by ADR 0011.
 
-The current design target is canonical JSON using RFC 8785 JSON Canonicalization Scheme semantics:
+Consolebook uses canonical JSON with RFC 8785 JSON Canonicalization Scheme
+semantics and a deliberately closed value subset:
 
 - UTF-8 encoding;
 - deterministic object-member ordering;
 - deterministic number serialization;
-- no insignificant whitespace; and
-- a versioned envelope identifying the canonicalization and record-schema versions.
+- no insignificant whitespace;
+- a versioned envelope identifying the canonicalization and record-schema versions;
+- integers with magnitude below 2^53; and
+- no floating-point values or non-ASCII object-member names.
 
-Hashes must be calculated over the specified canonical bytes, never over incidental serializer output.
+Hashes are calculated over the specified canonical bytes, never over incidental
+serializer output. Golden vectors in
+`crates/consolebook-server/tests/canonical_format.rs` pin the serializer.
 
 ## Stable fingerprints
 
 Every finalized version receives a SHA-256 content hash.
 
-A version relationship may also carry an integrity-chain hash using a domain-separated construction such as:
+Every version also carries the domain-separated integrity-chain hash fixed by
+ADR 0011:
 
 ```text
 SHA-256(
   "consolebook-version-v1" ||
   0x00 ||
-  previous_version_hash ||
+  predecessor_content_hash ||
   canonical_record_bytes
 )
 ```
 
-Exact byte lengths and treatment of a missing predecessor must be fixed in the format specification and covered by golden vectors.
+The predecessor is the prior version's raw 32-byte content hash, or 32 zero
+bytes for a first version. Golden vectors cover both cases.
 
 This chain detects corruption, incomplete history, buggy writes, and lazy tampering. Someone with arbitrary database-write access can recompute a database-local chain, so the product must not describe the chain alone as strong tamper evidence.
 
@@ -49,7 +57,8 @@ A future stronger mode may sign version hashes with an installation Ed25519 key 
 
 The public key and signature metadata would accompany structured exports and PDFs. Key creation, rotation, backup, recovery, and compromise handling require a separate design and are outside milestone one.
 
-Canonicalization is included now so signatures can be added without redefining a record.
+Canonicalization allows signatures to be added later without redefining a
+record.
 
 ## Historical presentation snapshots
 
@@ -68,9 +77,10 @@ Stable IDs preserve identity. Snapshots preserve what the record said.
 
 ## Attachments
 
-Attachments included in a finalized record receive cryptographic hashes and immutable metadata. Replacing an attachment creates a successor record version.
-
-Malware scanning, content-type validation, size limits, and export behavior remain to be designed.
+The canonical envelope reserves an attachments member, currently empty.
+Attachment content, cryptographic hashes, immutable metadata, replacement
+behavior, malware scanning, content-type validation, size limits, and export
+behavior remain Milestone 5 design and implementation work.
 
 ## Acknowledgments
 
@@ -82,7 +92,7 @@ An amendment never inherits acknowledgment silently.
 
 Immutability governs records while they are retained. It does not overrule an approved records-retention schedule or authorize keeping personal data forever.
 
-Consolebook will model retention as an explicit workflow:
+The next Milestone 5 slice implements retention as this explicit workflow:
 
 1. a versioned policy identifies the record class, disposition authority, trigger, retention period, and action;
 2. the service checks for litigation, anticipated-litigation, audit, investigation, public-records-request, and other configured holds;
@@ -104,14 +114,16 @@ Audit events and disposition events need their own retention and integrity rules
 
 ## Verification
 
-Before the first production-capable release, Consolebook must have:
+Current automated evidence includes canonicalization and hash golden vectors,
+database tests proving finalized rows reject mutation, amendment and
+acknowledgment binding tests, file-only structured-export and trainee-packet
+verification, backup validation, and tests of the stopped-server restore path.
 
-- canonicalization golden vectors;
-- hash and predecessor-chain vectors;
-- database tests proving finalized rows reject mutation;
+Before the first production-capable release, Consolebook still needs:
+
 - hold and lawful-disposition tests, including partial failure and retry behavior;
 - verification tests for retained tombstones and policy-required chain closure;
-- export round-trip tests;
 - deterministic PDF fixtures within defined tolerances;
-- backup validation and restore drills; and
-- tests proving amendments and acknowledgments bind to exact versions.
+- attachment integrity and export tests; and
+- recorded clean-installation restore drills beyond the automated restore-path
+  tests.

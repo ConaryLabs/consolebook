@@ -176,13 +176,19 @@ The event does not preserve destroyed narratives, attachments, presentation snap
 
 ### AuditEvent
 
-Security- and record-sensitive actions produce append-only audit events, including authentication, authorization changes, finalization, acknowledgment, refusal, amendment, hold changes, disposition, export, backup, and restore.
+Security- and record-sensitive actions produce append-only audit events. The
+implemented vocabulary covers authentication and recovery, assignments and
+enrollment lifecycle, draft and review workflow, finalization,
+acknowledgments, amendments, exports, and backup or restore operations. Hold
+and disposition events join that vocabulary with the Milestone 5 retention
+slice.
 
 An audit event supplements the immutable domain record. It is not a substitute for version history.
 
-## Database invariants to enforce
+## Database invariants
 
-The initial schema is expected to enforce at least:
+The embedded migrations, constraints, and triggers enforce the persisted
+contract. Among the current invariants:
 
 1. finalized versions cannot be updated or deleted through normal application writes;
 2. acknowledgments reference a specific finalized version;
@@ -193,12 +199,18 @@ The initial schema is expected to enforce at least:
 7. active training intervals for one trainee cannot overlap; and
 8. no uniqueness constraint assumes one session or evaluation per trainee and calendar date.
 
-The exact enforcement mechanism—constraints, triggers, or transactional application services—will be decided with migration `0001`.
+Application services add transactional checks where the invariant spans
+authorization, workflow state, or several tables. Migrations are forward-only;
+the migration that introduced an invariant remains its historical authority.
 
-## Application-service invariants to enforce
+## Application-service invariants
 
 1. capability and assignment scope are checked before sensitive reads and writes;
 2. `view_own_records` grants a trainee access only to their own retained timeline;
-3. any applicable hold blocks disposition;
-4. disposition requires explicit capability, policy authority, scope confirmation, attribution, and a recorded result; and
-5. all trainers assigned to the same trainee can share the records allowed by policy without receiving broad access to unrelated trainees.
+3. all trainers assigned to the same trainee can share the records allowed by policy without receiving broad access to unrelated trainees; and
+4. authorization and the data it governs share one database snapshot where a
+   concurrent change could otherwise separate the decision from the read.
+
+The Milestone 5 retention slice adds two further invariants: any applicable
+hold blocks disposition, and disposition requires explicit capability, policy
+authority, scope confirmation, attribution, and a recorded result.

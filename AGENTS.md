@@ -12,6 +12,7 @@ only).
 Durable truth lives in a few files; read only what the task needs:
 
 - `PRINCIPLES.md` — non-negotiable product constraints
+- `docs/development.md` — runtime flow, source ownership, and local workflow
 - `docs/architecture.md` — system boundaries and design targets
 - `docs/domain-model.md` — domain vocabulary and invariants
 - `docs/records-integrity.md` — immutability, hashes, provenance
@@ -111,7 +112,8 @@ closed; `doctor` diagnoses read-only and never creates or migrates state
 ## Documentation And Safety
 
 `AGENTS.md` is the concise repo-wide contract; `CONTRIBUTING.md` owns the
-full contribution lifecycle; ADRs own decisions. Tool entrypoints
+full contribution lifecycle; `docs/development.md` owns the implementation
+map; ADRs own decisions. Tool entrypoints
 (`CLAUDE.md`, `.agents/rules/`, `.github/copilot-instructions.md`) stay
 thin and point back here.
 
