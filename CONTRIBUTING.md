@@ -73,6 +73,8 @@ If a system Chromium is available, skip the browser download and run:
 
 Linux browser dependencies can be installed with
 `npx playwright install --with-deps chromium` from `web/`.
+Run Unix diagnostic permission tests as an unprivileged user; they assert that
+filesystem permissions deny writes, which a privileged runner can bypass.
 The [pr-gate workflow](.github/workflows/pr-gate.yml) runs the web, Rust, and
 browser checks on pull requests. Focused local tests help development but do
 not replace required gates. Preserve exact failure evidence and report only

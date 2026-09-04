@@ -2,6 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-28
+- **Amended by:** [ADR 0016](0016-read-only-diagnostics.md), which separates
+  diagnostic connection options and defines WAL-sidecar and PRAGMA scope.
 
 ## Context
 
@@ -14,7 +16,7 @@ verified, not assumed.
 
 ## Decision
 
-Every connection is created from a single options object
+Every writable connection is created from a single options object
 (`storage::connect_options`) that sets:
 
 - `foreign_keys = ON` — referential integrity is enforced by the database,
@@ -29,8 +31,9 @@ Every connection is created from a single options object
   immediately or hanging forever.
 
 Startup re-reads the four PRAGMA values and **fails closed** if any does not
-hold. `consolebook doctor` reports the same checks without mutating the
-installation: it never creates the database and never runs migrations.
+hold. `consolebook doctor` reports the same checks through the read-only path
+in ADR 0016: it never creates or writes the database and never runs migrations.
+SQLite may create WAL sidecars and update shared-memory coordination state.
 
 Migrations are application-owned, embedded in the executable
 (`sqlx::migrate!`), and applied on startup. Diagnostic and backup paths open

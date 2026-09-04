@@ -67,7 +67,7 @@ Milestone 5 work. For the live demonstration deployment, see the
 ```sh
 (cd web && npm ci && npm run build)               # build the interface (embedded by cargo)
 cargo run -p consolebook-server -- serve                   # initialize ./data and serve UI + API
-cargo run -p consolebook-server -- doctor                  # diagnostics; see the current caveat below
+cargo run -p consolebook-server -- doctor                  # read-only database diagnostics
 cargo run -p consolebook-server -- backup                  # validated snapshot into ./data/backups
 cargo run -p consolebook-server -- restore <snapshot>      # recover from a snapshot (server stopped)
 cargo run -p consolebook-server -- setup-code              # fresh first-run setup code
@@ -86,10 +86,11 @@ durability, [ADR 0004](docs/decisions/0004-local-authentication.md) for
 authentication, and [ADR 0005](docs/decisions/0005-embedded-web-interface.md)
 for the embedded interface.
 
-`doctor` currently has a read-only-contract defect: it may change a non-WAL
-database to WAL before reporting its settings. See
-[#56](https://github.com/FieldmouseWorks/consolebook/issues/56) before using it
-on retained data.
+`doctor` opens the database read-only and reports journal mismatches without
+repairing them. SQLite may create WAL sidecars or update shared-memory
+coordination; read-only storage without usable sidecars can prevent diagnosis.
+Its connection-local PRAGMA checks describe the diagnostic connection.
+See [ADR 0016](docs/decisions/0016-read-only-diagnostics.md) for the precise contract.
 
 ## Privacy
 
