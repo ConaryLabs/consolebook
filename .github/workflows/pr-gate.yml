@@ -59,3 +59,12 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      # Playwright starts the binary itself, using invented scratch installations.
+      - name: Build browser-test binary
+        run: cargo build -p consolebook-server
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+      - name: Browser tests
+        run: npm run e2e
+        working-directory: web

@@ -55,7 +55,9 @@ This chain detects corruption, incomplete history, buggy writes, and lazy tamper
 
 A future stronger mode may sign version hashes with an installation Ed25519 key stored outside SQLite with operating-system access controls.
 
-The public key and signature metadata would accompany structured exports and PDFs. Key creation, rotation, backup, recovery, and compromise handling require a separate design and are outside milestone one.
+The public key and signature metadata would accompany structured exports and
+PDFs. Key creation, rotation, backup, recovery, and compromise handling remain
+deferred pending a separate design.
 
 Canonicalization allows signatures to be added later without redefining a
 record.
@@ -70,8 +72,9 @@ Finalized versions cannot depend on mutable joins for their meaning. They preser
 - competency and task text;
 - rating labels and definitions;
 - form instructions;
-- timezone and local-time representation; and
-- template and font versions used for rendered output.
+- timezone and local-time representation.
+
+Template and font version pinning belongs to the planned PDF implementation.
 
 Stable IDs preserve identity. Snapshots preserve what the record said.
 

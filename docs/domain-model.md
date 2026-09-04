@@ -1,22 +1,27 @@
 # Domain Model
 
-Consolebook uses an opinionated training domain with versioned agency configuration. The names below are working vocabulary, not final table names.
+Consolebook uses a training domain with versioned agency configuration. These
+are domain concepts, not a table inventory. Retention/disposition, attachments,
+and PDF presentation remain design targets; see [roadmap.md](roadmap.md).
 
 ## Configuration
 
 ### Program and ProgramVersion
 
-A Program is the continuing identity of a training program. A ProgramVersion is an immutable configuration snapshot containing:
+A Program is the continuing identity of a training program. A ProgramVersion
+is editable while a draft and immutable after publication. It contains:
 
 - phase definitions and allowed transitions;
 - competencies and tasks;
 - evaluation forms;
 - rating scales and modifiers;
 - narrative requirements;
-- completion rules; and
-- document presentation metadata.
+- completion rules.
 
-Publishing a change creates a new ProgramVersion. Existing enrollments never float silently to it.
+PDF template/font metadata remains part of the planned rendering work.
+
+Changes to published configuration require a new draft ProgramVersion, then
+publication. Existing enrollments never float silently to it.
 
 ### EvaluationForm
 
@@ -28,7 +33,8 @@ Daily reports, weekly summaries, and phase evaluations are distinct record types
 
 ### User
 
-A person with a stable internal identity. Names, employee identifiers, titles, and contact details are mutable profile data.
+A person with a stable internal identity. Names, employee identifiers, and
+titles are profile data. Contact details are not currently modeled.
 
 Finalized records snapshot the presentation values they used.
 
@@ -101,7 +107,7 @@ An immutable finalized snapshot containing the complete historical presentation:
 - program, phase, form, competency, and rating definitions;
 - observations, ratings, modifiers, and narratives;
 - covered sessions;
-- attachments and their hashes;
+- an attachments member, currently empty pending attachment support;
 - timestamps and local-time representation;
 - canonicalization version; and
 - integrity metadata.
@@ -148,7 +154,7 @@ A RecordExport is an archive of finalized EvaluationVersions as stored: each ver
 
 A TraineePacket is everything retained about one enrollment as one archive (`docs/formats/trainee-packet.md`, ADR 0015): the record export's units for every retained version of every record, plus typed documents for the enrollment's lifecycle and phase history, every acknowledgment, every amendment, and the full task signoff history, named with hashes by one packet manifest. The trainee may produce their own; so may whoever reads the enrollment's training history and `export_records` holders. It verifies with the same verifier as a record export.
 
-## Retention and disposition
+## Retention and disposition (planned)
 
 ### RetentionPolicy
 
@@ -207,9 +213,12 @@ the migration that introduced an invariant remains its historical authority.
 
 1. capability and assignment scope are checked before sensitive reads and writes;
 2. `view_own_records` grants a trainee access only to their own retained timeline;
-3. all trainers assigned to the same trainee can share the records allowed by policy without receiving broad access to unrelated trainees; and
-4. authorization and the data it governs share one database snapshot where a
-   concurrent change could otherwise separate the decision from the read.
+3. all trainers assigned to the same trainee can share the records allowed by policy without receiving broad access to unrelated trainees.
+
+Snapshot-bound authorization is implemented for trainee packets (ADR 0015),
+not a universal service guarantee. Other read/write paths need their transaction
+boundaries checked before claiming the same property. A write transaction alone
+does not ensure an earlier authorization decision belongs to its snapshot.
 
 The Milestone 5 retention slice adds two further invariants: any applicable
 hold blocks disposition, and disposition requires explicit capability, policy

@@ -1,105 +1,80 @@
 # Development Guide
 
-This is the source-ownership map for contributors and coding agents. Product
-rules live in `PRINCIPLES.md`, domain terms in `docs/domain-model.md`, integrity
-rules in `docs/records-integrity.md`, and durable decisions in
-`docs/decisions/`. This guide says where the implementation lives and how its
-pieces call one another.
+This map routes contributors and agents to the implementation and its
+authorities. [AGENTS.md](../AGENTS.md) owns repository rules;
+[CONTRIBUTING.md](../CONTRIBUTING.md) owns build gates and contribution workflow.
 
-## Runtime and request flow
+## Choose context by task
 
-Consolebook is one Rust process serving a static single-page application and a
-versionless JSON API from the same origin:
+Read the relevant row, then the specific service, migration, and test involved.
+ADRs record decisions; format documents specify portable bytes; source and
+tests show what is implemented. [Roadmap](roadmap.md) owns milestone status.
+
+| Task | Start in `crates/consolebook-server/src/` | Supporting context |
+| --- | --- | --- |
+| Process, storage, diagnostics | `main.rs`, `data_dir.rs`, `storage.rs`, `doctor.rs` | [Architecture](architecture.md), [ADR 0003](decisions/0003-sqlite-connection-invariants.md) |
+| Backups and restore | `backup.rs`, `scheduler.rs`, `restore.rs`, `serve_lock.rs` | [ADR 0006](decisions/0006-backup-scheduling-and-restore.md) |
+| Setup, login, recovery | `setup.rs`, `users.rs`, `sessions.rs`, `secrets.rs` | [ADR 0004](decisions/0004-local-authentication.md) |
+| Capabilities and assignments | `capabilities.rs`, `assignments.rs`, `draft_access.rs` | [ADR 0010](decisions/0010-service-owned-authorization-boundary.md), [Domain model](domain-model.md) |
+| Program configuration | `programs.rs`, `program_export.rs` | [ADR 0007](decisions/0007-program-version-configuration-model.md), [Program format](formats/program-version-export.md) |
+| Enrollment and training sessions | `enrollments.rs`, `lifecycle.rs`, `training_sessions.rs`, `session_membership.rs`, `session_time.rs` | [ADR 0008](decisions/0008-session-draft-and-attribution-model.md), [ADR 0009](decisions/0009-session-local-time-resolution.md) |
+| Drafts and review | `evaluation_drafts.rs`, `draft_content.rs`, `draft_review.rs` | [ADR 0008](decisions/0008-session-draft-and-attribution-model.md), [ADR 0010](decisions/0010-service-owned-authorization-boundary.md) |
+| Finalization and canonical bytes | `finalization.rs`, `canonical.rs`, `record_envelope.rs` | [Integrity](records-integrity.md), [ADR 0011](decisions/0011-canonical-record-format-and-finalization.md) |
+| Acknowledgments and amendments | `acknowledgments.rs`, `amendments.rs` | [Domain model](domain-model.md), [ADR 0012](decisions/0012-amendment-reopening-state-machine.md) |
+| Summaries and signoffs | `summaries.rs`, `task_signoffs.rs` | [ADR 0013](decisions/0013-weekly-summaries-and-task-signoffs.md) |
+| Record exports | `record_export.rs`, `export_verify.rs`, `zip_container.rs` | [ADR 0014](decisions/0014-record-export-format.md), [Export format](formats/record-export.md) |
+| Trainee packets | `trainee_packet.rs`, `packet_verify.rs` | [ADR 0015](decisions/0015-trainee-packet.md), [Packet format](formats/trainee-packet.md) |
+| Retention, holds, disposition (planned) | No implemented service yet | [Integrity](records-integrity.md), [Milestone 5 decisions](https://github.com/FieldmouseWorks/consolebook/issues/44) |
+| Web shell and HTTP | `http.rs`, `web_assets.rs`, `notices.rs`, domain `*_http.rs` modules | [ADR 0005](decisions/0005-embedded-web-interface.md), web map below |
+| Preview operations | Separate host installation | [Preview runbook](preview.md) |
+
+`lib.rs` exposes the library modules. Integration tests in
+`crates/consolebook-server/tests/` are named by capability; migration files in
+`crates/consolebook-server/migrations/` own schema, constraints, and triggers.
+Read both when changing a persisted contract.
+
+## Runtime flow
 
 ```text
-browser route
-  -> web/src/lib/api.ts
-  -> /api/* handler in http.rs or a *_http.rs module
-  -> domain service in a capability-owned Rust module
-  -> SQLx transaction
-  -> SQLite constraints and triggers in migrations/
+Svelte route -> web/src/lib/api.ts -> /api/* HTTP adapter
+             -> domain service -> SQLx -> SQLite constraints and triggers
 ```
 
-`crates/consolebook-server/src/main.rs` is the CLI boundary. `serve` resolves
-one `DataDir`, acquires the installation lock, opens and migrates SQLite,
-verifies connection invariants, starts automatic backups, and hands the pool
-to the Axum router. The router falls back to `web_assets.rs`, which serves the
-SvelteKit build and sends `index.html` for client-side routes.
+`main.rs` owns the CLI. `serve` resolves the data directory, acquires the serve
+lock, opens and migrates SQLite, verifies connection invariants, starts the
+backup scheduler, and serves Axum. `http.rs` owns router registration, the
+current-user extractor, and error translation. Larger handler groups live in
+`programs_http.rs`, `training_http.rs`, `drafts_http.rs`, and `exports_http.rs`.
+Policy belongs in services; persisted constraints also have database backstops.
+`audit.rs` owns typed audit events; `notices.rs` owns recipient-scoped notices.
 
-Policy belongs in domain services, not HTTP handlers or Svelte components.
-Handlers translate transport shapes and typed refusals. Database constraints
-and triggers are the final authority for persisted invariants. The web client
-does not establish authorization or record integrity.
+`sessions.rs` owns login sessions; `training_sessions.rs` owns periods of
+training. Do not infer policy from a role name or a UI guard.
 
-## Repository map
+New write paths use `storage::write_tx` and await rollback on refusal through
+`storage::refuse`. Earlier deferred write transactions still need the
+[#27 retrofit](https://github.com/FieldmouseWorks/consolebook/issues/27).
+A transaction's presence alone does not prove authorization shares its
+snapshot; check where the decision is evaluated. See the
+[domain-model qualification](domain-model.md#application-service-invariants).
 
-```text
-crates/consolebook-server/
-├── src/          library modules and the thin CLI entry point
-├── migrations/   embedded, ordered SQLite schema and trigger authority
-└── tests/        integration tests against public/runtime paths
-web/
-├── src/lib/      the typed same-origin API client and shared UI helpers
-├── src/routes/   SvelteKit pages and the client-side routing guard
-└── e2e/          browser tests against the compiled Rust executable
-docs/
-├── decisions/    ADRs for durable behavior
-└── formats/      normative portable-format specifications
-```
+## Web map
 
-The Rust modules are organized by ownership rather than by table or route:
+The UI is a client-routed SPA. `web/src/routes/+layout.ts` guards setup and
+authentication; `+layout.svelte` owns navigation and shared styling.
+`web/src/lib/api.ts` owns typed same-origin HTTP calls.
+`web/src/lib/editor/` contains program-authoring components.
 
-- Process and storage: `main.rs`, `data_dir.rs`, `serve_lock.rs`,
-  `storage.rs`, and the embedded migrations.
-- Operations: `backup.rs`, `scheduler.rs`, `restore.rs`, and `doctor.rs`.
-- Local identity and access: `setup.rs`, `users.rs`, `secrets.rs`,
-  `sessions.rs`, `capabilities.rs`, `assignments.rs`, and `audit.rs`.
-- Program configuration: `programs.rs`, `program_export.rs`, and
-  `programs_http.rs`.
-- Training lifecycle: `enrollments.rs`, `lifecycle.rs`,
-  `training_sessions.rs`, `session_time.rs`, `session_membership.rs`, and
-  `training_http.rs`.
-- Draft workflow: `evaluation_drafts.rs`, `draft_access.rs`,
-  `draft_content.rs`, `draft_review.rs`, and `drafts_http.rs`.
-- Defensible records: `canonical.rs`, `finalization.rs`,
-  `record_envelope.rs`, `acknowledgments.rs`, `amendments.rs`, `summaries.rs`,
-  and `task_signoffs.rs`.
-- Portable records: `record_export.rs`, `trainee_packet.rs`,
-  `export_verify.rs`, `packet_verify.rs`, `zip_container.rs`, and
-  `exports_http.rs`.
-- HTTP and interface shell: `http.rs`, the three domain `*_http.rs` modules,
-  `exports_http.rs`, `notices.rs`, and `web_assets.rs`.
+| Route | Ownership |
+| --- | --- |
+| `/setup`, `/login`, `/reset` | Installation and authentication entry |
+| `/` | Capability-sensitive status, notices, administration, session/review queues, installation exports |
+| `/programs/**` | Program authoring, comparison, publishing, enrollment |
+| `/enrollments/[id]` | Lifecycle, assignments, sessions, summaries, signoffs, exports |
+| `/drafts/[id]` | Authoring, review, finalized presentation, acknowledgment, amendments |
+| `/records` | Trainee's own timeline and packet downloads |
 
-Two names are easy to confuse: `sessions.rs` owns authenticated login sessions;
-`training_sessions.rs` owns periods of on-the-job training. Likewise,
-`programs.rs` owns program behavior while `programs_http.rs` only adapts it to
-HTTP.
-
-`http.rs` is intentionally a router/error/authentication hub. Larger route
-families register through `programs_http.rs`, `training_http.rs`,
-`drafts_http.rs`, and `exports_http.rs`. New domain behavior should not make
-the hub its owner.
-
-## Web ownership
-
-`web/src/routes/+layout.ts` is the client-side setup and authentication guard;
-`+layout.svelte` owns the shared shell and primary navigation.
-`web/src/lib/api.ts` is the typed boundary for every HTTP call. Page ownership
-is:
-
-- `/setup`, `/login`, and `/reset`: installation and local-authentication entry;
-- `/`: capability-sensitive status, notices, user administration, session and
-  review queues, and installation exports;
-- `/programs/**`: program authoring, comparison, publishing, and enrollment;
-- `/enrollments/[id]`: one enrollment's lifecycle and training workflow;
-- `/drafts/[id]`: draft authoring, review, and finalization;
-- `/records`: the signed-in trainee's records and packet downloads.
-
-There is no production Node.js server. SvelteKit builds a static SPA into
-`web/build`; Rust embeds those files. Build the web app before Rust whenever
-interface behavior or asset serving matters.
-
-## Run a fresh local installation
+## Local workflow
 
 From the repository root:
 
@@ -108,64 +83,23 @@ From the repository root:
 cargo run -p consolebook-server -- --data-dir ./data serve
 ```
 
-The server binds `127.0.0.1:7770` by default. On a new data directory it prints
-a short-lived setup code. Open <http://127.0.0.1:7770>, enter that code, and
-create the invented local agency and first administrator. Never use real
-agency or personnel data in a development installation or screenshot.
+Open <http://127.0.0.1:7770> on the same machine. For a fresh installation,
+use the setup code printed by the server, create invented agency/admin data,
+then sign in. Use a separate empty data directory for a disposable preview.
+The published preview already occupies port 7770 on its host; choose another
+`serve --bind 127.0.0.1:PORT` there.
 
-Use a separate empty `--data-dir` for disposable previews. `serve`, unlike
-`doctor`, may create the directory, migrate the database, issue setup material,
-and start the backup scheduler.
+For live UI editing, run `npm run dev` in `web/` with a local Rust server.
+`vite.config.ts` proxies `/api` to port 7770; adjust the target when using a
+different local port. Check that target before using the dev UI on a shared
+host. `npm run preview` alone serves static files without that API proxy.
 
-Useful operator commands are:
+`web_assets.rs` uses the build in `web/build/`: release builds embed it;
+debug builds read it from disk. A missing build serves the explicit
+"interface not embedded" notice. Rebuild web then Rust for release packaging.
+Node.js is never required by the deployed binary.
 
-```sh
-cargo run -p consolebook-server -- --data-dir ./data doctor
-cargo run -p consolebook-server -- --data-dir ./data backup
-cargo run -p consolebook-server -- --data-dir ./data restore <snapshot>
-cargo run -p consolebook-server -- export verify <archive>
-```
-
-`doctor` is read-only and never creates or migrates an installation. Restore
-requires the server to be stopped. Export verification reads the archive and
-does not open an installation.
-
-## Verification map
-
-Run the repository gates in build order:
-
-```sh
-(cd web && npm ci && npm run check && npm run build)
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-```
-
-Rust integration tests in `crates/consolebook-server/tests/` mirror the major
-domain capabilities and exercise the public service, HTTP, CLI, or storage
-boundary appropriate to the contract. `web/e2e/` drives the compiled binary in
-a real browser and supplies a scratch data directory; build both web and Rust
-first, then run from `web/`:
-
-```sh
-CONSOLEBOOK_E2E_CHROMIUM=/path/to/chromium npm run e2e
-```
-
-Do not report a command as verified unless it actually ran. A format document
-does not prove serialization, a unit test does not prove recovery, and a UI
-check does not prove service-layer authorization. Apparently software remains
-stubbornly unimpressed by good intentions.
-
-## Choosing authority before editing
-
-- Change a product invariant only through `PRINCIPLES.md` plus an ADR.
-- Change durable behavior with the relevant ADR and focused contract tests.
-- Change a portable archive by updating its `docs/formats/` specification,
-  producer, file-only verifier, and fixtures together.
-- Change persisted behavior through a forward migration; never rewrite an
-  applied migration.
-- Change a capability-sensitive operation in the domain service first, then
-  adapt HTTP and web layers.
-- Check `docs/roadmap.md` and the primary milestone issue before starting the
-  next slice; GitHub issue state is more transient than tracked architecture.
-
+See [CONTRIBUTING.md](../CONTRIBUTING.md#build-and-verification) for the full
+verification sequence, browser prerequisites, and test port allocation.
+`cargo run -p consolebook-server -- --help` lists CLI operations;
+`export verify <archive>` reads a file without opening an installation.

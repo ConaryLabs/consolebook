@@ -21,7 +21,7 @@ HTTP API and application services
   +-- sessions and evaluation workflow
   +-- immutable record versions
   +-- acknowledgments and amendments
-  +-- holds, retention, and lawful disposition
+  +-- holds, retention, and lawful disposition (planned)
   +-- authorization and audit
   +-- in-app notifications
   +-- exports and recovery
@@ -56,9 +56,11 @@ Connections must be created from one explicit options object that enables and ve
 - a bounded busy timeout; and
 - application-owned migrations.
 
-Startup verifies these invariants and fails closed. `consolebook doctor`
-checks an existing installation read-only without creating or migrating it
-(ADR 0003).
+Startup verifies these invariants and fails closed. ADR 0003 requires
+`consolebook doctor` to inspect without changing state. It does not create or
+migrate a database, but its current connection path can change a non-WAL
+database's journal mode; [#56](https://github.com/FieldmouseWorks/consolebook/issues/56)
+tracks restoring the read-only contract.
 
 ### User interface
 
@@ -122,7 +124,9 @@ Password recovery in v1 is local and administrator-operated:
 
 - an authorized administrator can issue a short-lived, single-use reset code;
 - using the code forces a new password, revokes existing sessions, and creates an audit event; and
-- a sole-administrator recovery command requires operating-system access to the installation data directory and records an explicit recovery event.
+- a recovery command for administrator accounts requires operating-system
+  access to the data directory and records an explicit recovery event. It is
+  not restricted to installations with only one administrator.
 
 Password reset does not depend on email or another external service.
 

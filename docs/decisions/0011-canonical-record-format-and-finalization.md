@@ -20,9 +20,11 @@ and the completion rules (#36; Milestone 4 slice 1).
 ### Canonical bytes
 
 - A finalized version's content is one JSON document, serialized under
-  RFC 8785 (JSON Canonicalization Scheme) semantics: UTF-8, object
-  members sorted by code point, no insignificant whitespace, JCS
-  string escaping.
+  RFC 8785 (JSON Canonicalization Scheme) semantics: UTF-8, ASCII
+  object-member names in sorted order, no insignificant whitespace,
+  JCS string escaping. Non-ASCII member names are refused by the
+  serializer; string values may contain Unicode. The ASCII restriction
+  makes byte/code-point/UTF-16 member ordering agree.
 - The document is restricted to a closed subset that keeps JCS number
   rules trivial and portable: values are objects, arrays, strings,
   booleans, `null`, and integers with magnitude below 2^53. Floats,

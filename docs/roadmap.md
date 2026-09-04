@@ -14,6 +14,13 @@ complete: file-verifiable structured record exports (#46, ADR 0014) and
 complete trainee packets (#50, ADR 0015). Slice 3 — retention policy,
 holds, lawful disposition, tombstones, and explicit authority — is next.
 
+For continuation, start with the approved design in
+[#44](https://github.com/FieldmouseWorks/consolebook/issues/44) and check the
+[open issues](https://github.com/FieldmouseWorks/consolebook/issues?q=is%3Aissue+is%3Aopen)
+and current PR reviews. The [2026-09-05 audit](audits/2026-09-05.md) records
+verification, known gaps, and recommended sequencing at that revision; it is
+not a substitute for live issue state.
+
 ## Milestone 0 — Foundation
 
 - establish principles and architecture decisions;
