@@ -7,7 +7,6 @@ export default defineConfig({
 	testDir: './e2e',
 	timeout: 60_000,
 	use: {
-		baseURL: 'http://127.0.0.1:7781',
 		// Prefer an environment-provided Chromium (CONSOLEBOOK_E2E_CHROMIUM)
 		// over downloading a browser per Playwright version.
 		launchOptions: process.env.CONSOLEBOOK_E2E_CHROMIUM

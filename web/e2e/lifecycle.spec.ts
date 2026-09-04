@@ -4,48 +4,11 @@
 // reading their trainee through the scoped view. All fixture data is
 // invented.
 
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { promisify } from 'node:util';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 
-const execFileAsync = promisify(execFile);
-
-const BINARY = join(import.meta.dirname, '../../target/debug/consolebook-server');
-const BASE = 'http://127.0.0.1:7783';
 const PASSWORD = 'invented-passphrase-1';
 const TRAINER_PASSWORD = 'trainer-passphrase-3';
 
-let server: ChildProcess;
-let dataDir: string;
-
-test.beforeAll(async () => {
-	dataDir = join(mkdtempSync(join(tmpdir(), 'consolebook-e2e-')), 'data');
-	server = spawn(BINARY, ['--data-dir', dataDir, 'serve', '--bind', '127.0.0.1:7783'], {
-		stdio: 'ignore'
-	});
-	for (let i = 0; i < 50; i += 1) {
-		try {
-			const response = await fetch(`${BASE}/api/health`);
-			if (response.ok) return;
-		} catch {
-			// not up yet
-		}
-		await new Promise((resolve) => setTimeout(resolve, 200));
-	}
-	throw new Error('server did not become healthy');
-});
-
-test.afterAll(() => {
-	server?.kill('SIGTERM');
-});
-
-async function setupCode(): Promise<string> {
-	const { stdout } = await execFileAsync(BINARY, ['--data-dir', dataDir, 'setup-code']);
-	return stdout.trim();
-}
 
 /** Two phases with an advance edge and a remediation loop. */
 const content = {
@@ -83,11 +46,11 @@ const content = {
 	citations: []
 };
 
-test('assign a trainer, record phase history, and read it scoped', async ({ page }) => {
+test('assign a trainer, record phase history, and read it scoped', async ({ page, setupCode }) => {
 	// Initialize and sign in as the administrator.
-	await page.goto(`${BASE}/`);
+	await page.goto(`/`);
 	await expect(page).toHaveURL(/\/setup$/);
-	await page.getByLabel('Setup code').fill(await setupCode());
+	await page.getByLabel('Setup code').fill(setupCode);
 	await page.getByLabel('Agency name').fill('Example County Communications');
 	await page.getByLabel('Administrator username').fill('avery.admin');
 	await page.getByLabel('Administrator display name').fill('Avery Admin');
@@ -111,20 +74,20 @@ test('assign a trainer, record phase history, and read it scoped', async ({ page
 	// Seed the published program, the trainee, and the enrollment over the
 	// API; the signed-in session's cookies ride page.request.
 	const program = await (
-		await page.request.post(`${BASE}/api/programs`, {
+		await page.request.post(`/api/programs`, {
 			data: { name: content.name }
 		})
 	).json();
 	const version = await (
-		await page.request.post(`${BASE}/api/programs/${program.id}/versions`, { data: content })
+		await page.request.post(`/api/programs/${program.id}/versions`, { data: content })
 	).json();
-	await page.request.post(`${BASE}/api/program-versions/${version.id}/publish`, { data: {} });
+	await page.request.post(`/api/program-versions/${version.id}/publish`, { data: {} });
 	const trainee = await (
-		await page.request.post(`${BASE}/api/users`, {
+		await page.request.post(`/api/users`, {
 			data: { username: 'taylor.trainee', display_name: 'Taylor Trainee' }
 		})
 	).json();
-	await page.request.post(`${BASE}/api/program-versions/${version.id}/enrollments`, {
+	await page.request.post(`/api/program-versions/${version.id}/enrollments`, {
 		data: { user_id: trainee.id }
 	});
 
@@ -156,7 +119,7 @@ test('assign a trainer, record phase history, and read it scoped', async ({ page
 	await page.getByRole('link', { name: 'Home' }).click();
 	await page.getByRole('button', { name: 'Sign out' }).click();
 	await expect(page).toHaveURL(/\/login$/);
-	await page.goto(`${BASE}/reset`);
+	await page.goto(`/reset`);
 	await page.getByLabel('Username').fill('jordan.trainer');
 	await page.getByLabel('Reset code').fill(trainerCode);
 	await page.getByLabel('New password').fill(TRAINER_PASSWORD);

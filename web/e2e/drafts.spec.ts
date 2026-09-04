@@ -1,53 +1,17 @@
-// Browser proof of Milestone 3 slice 3: starting the daily draft from a
-// session, autosaved collaborative content with visible attribution,
-// ownership transfer, and the submission that freezes the draft. All
-// fixture data is invented.
+// Browser proof of the record lifecycle: collaborative drafts, review,
+// finalization, acknowledgment, amendments, summaries, signoffs, exports,
+// and trainee packets. All fixture data is invented.
 
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { promisify } from 'node:util';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import type { Page } from '@playwright/test';
+import { BINARY, execFileAsync } from './server';
 
-const execFileAsync = promisify(execFile);
-
-const BINARY = join(import.meta.dirname, '../../target/debug/consolebook-server');
-const BASE = 'http://127.0.0.1:7785';
 const PASSWORD = 'invented-passphrase-1';
 const JORDAN_PASSWORD = 'trainer-passphrase-3';
 const ROWAN_PASSWORD = 'trainer-passphrase-4';
 const CASEY_PASSWORD = 'coordinator-passphrase-5';
 const TAYLOR_PASSWORD = 'trainee-passphrase-6';
 
-let server: ChildProcess;
-let dataDir: string;
-
-test.beforeAll(async () => {
-	dataDir = join(mkdtempSync(join(tmpdir(), 'consolebook-e2e-')), 'data');
-	server = spawn(BINARY, ['--data-dir', dataDir, 'serve', '--bind', '127.0.0.1:7785'], {
-		stdio: 'ignore'
-	});
-	for (let i = 0; i < 50; i += 1) {
-		try {
-			const response = await fetch(`${BASE}/api/health`);
-			if (response.ok) return;
-		} catch {
-			// not up yet
-		}
-		await new Promise((resolve) => setTimeout(resolve, 200));
-	}
-	throw new Error('server did not become healthy');
-});
-
-test.afterAll(() => {
-	server?.kill('SIGTERM');
-});
-
-async function setupCode(): Promise<string> {
-	const { stdout } = await execFileAsync(BINARY, ['--data-dir', dataDir, 'setup-code']);
-	return stdout.trim();
-}
 
 const content = {
 	name: 'Example County CTO Program',
@@ -135,7 +99,7 @@ const content = {
 };
 
 async function resetAndLogin(page: Page, username: string, resetCode: string, password: string) {
-	await page.goto(`${BASE}/reset`);
+	await page.goto(`/reset`);
 	await page.getByLabel('Username').fill(username);
 	await page.getByLabel('Reset code').fill(resetCode);
 	await page.getByLabel('New password').fill(password);
@@ -146,11 +110,11 @@ async function resetAndLogin(page: Page, username: string, resetCode: string, pa
 	await page.getByRole('button', { name: 'Sign in' }).click();
 }
 
-test('draft, collaborate, transfer, and submit a daily evaluation', async ({ page }) => {
+test('draft, collaborate, transfer, and submit a daily evaluation', async ({ page, setupCode }) => {
 	// Initialize and sign in as the administrator.
-	await page.goto(`${BASE}/`);
+	await page.goto(`/`);
 	await expect(page).toHaveURL(/\/setup$/);
-	await page.getByLabel('Setup code').fill(await setupCode());
+	await page.getByLabel('Setup code').fill(setupCode);
 	await page.getByLabel('Agency name').fill('Example County Communications');
 	await page.getByLabel('Administrator username').fill('avery.admin');
 	await page.getByLabel('Administrator display name').fill('Avery Admin');
@@ -165,29 +129,29 @@ test('draft, collaborate, transfer, and submit a daily evaluation', async ({ pag
 	// Seed the published program, people, enrollment, assignment, and an
 	// open session over the API; the cookie rides page.request.
 	const program = await (
-		await page.request.post(`${BASE}/api/programs`, { data: { name: content.name } })
+		await page.request.post(`/api/programs`, { data: { name: content.name } })
 	).json();
 	const version = await (
-		await page.request.post(`${BASE}/api/programs/${program.id}/versions`, { data: content })
+		await page.request.post(`/api/programs/${program.id}/versions`, { data: content })
 	).json();
-	await page.request.post(`${BASE}/api/program-versions/${version.id}/publish`, { data: {} });
+	await page.request.post(`/api/program-versions/${version.id}/publish`, { data: {} });
 	const trainee = await (
-		await page.request.post(`${BASE}/api/users`, {
+		await page.request.post(`/api/users`, {
 			data: { username: 'taylor.trainee', display_name: 'Taylor Trainee' }
 		})
 	).json();
 	const jordan = await (
-		await page.request.post(`${BASE}/api/users`, {
+		await page.request.post(`/api/users`, {
 			data: { username: 'jordan.trainer', display_name: 'Jordan Trainer', role: 'trainer' }
 		})
 	).json();
 	const rowan = await (
-		await page.request.post(`${BASE}/api/users`, {
+		await page.request.post(`/api/users`, {
 			data: { username: 'rowan.trainer', display_name: 'Rowan Trainer', role: 'trainer' }
 		})
 	).json();
 	const casey = await (
-		await page.request.post(`${BASE}/api/users`, {
+		await page.request.post(`/api/users`, {
 			data: {
 				username: 'casey.coord',
 				display_name: 'Casey Coordinator',
@@ -196,14 +160,14 @@ test('draft, collaborate, transfer, and submit a daily evaluation', async ({ pag
 		})
 	).json();
 	const enrollment = await (
-		await page.request.post(`${BASE}/api/program-versions/${version.id}/enrollments`, {
+		await page.request.post(`/api/program-versions/${version.id}/enrollments`, {
 			data: { user_id: trainee.id }
 		})
 	).json();
-	await page.request.post(`${BASE}/api/enrollments/${enrollment.id}/assignments`, {
+	await page.request.post(`/api/enrollments/${enrollment.id}/assignments`, {
 		data: { trainer_user_id: jordan.id }
 	});
-	await page.request.post(`${BASE}/api/enrollments/${enrollment.id}/sessions`, {
+	await page.request.post(`/api/enrollments/${enrollment.id}/sessions`, {
 		data: {
 			business_date: '2026-06-02',
 			timezone: 'America/Chicago',
@@ -494,7 +458,7 @@ test('draft, collaborate, transfer, and submit a daily evaluation', async ({ pag
 	await page.getByLabel('Password').fill(CASEY_PASSWORD);
 	await page.getByRole('button', { name: 'Sign in' }).click();
 	await expect(page.getByRole('heading', { name: 'Installation status' })).toBeVisible();
-	await page.goto(`${BASE}/enrollments/${enrollment.id}`);
+	await page.goto(`/enrollments/${enrollment.id}`);
 	await expect(page.getByRole('heading', { name: 'Task signoffs' })).toBeVisible();
 	await page.getByRole('button', { name: 'Observed', exact: true }).first().click();
 	await expect(page.getByText('by Casey Coordinator', { exact: false }).first()).toBeVisible();

@@ -1,22 +1,27 @@
 # Domain Model
 
-Consolebook uses an opinionated training domain with versioned agency configuration. The names below are working vocabulary, not final table names.
+Consolebook uses a training domain with versioned agency configuration. These
+are domain concepts, not a table inventory. Retention/disposition, attachments,
+and PDF presentation remain design targets; see [roadmap.md](roadmap.md).
 
 ## Configuration
 
 ### Program and ProgramVersion
 
-A Program is the continuing identity of a training program. A ProgramVersion is an immutable configuration snapshot containing:
+A Program is the continuing identity of a training program. A ProgramVersion
+is editable while a draft and immutable after publication. It contains:
 
 - phase definitions and allowed transitions;
 - competencies and tasks;
 - evaluation forms;
 - rating scales and modifiers;
 - narrative requirements;
-- completion rules; and
-- document presentation metadata.
+- completion rules.
 
-Publishing a change creates a new ProgramVersion. Existing enrollments never float silently to it.
+PDF template/font metadata remains part of the planned rendering work.
+
+Changes to published configuration require a new draft ProgramVersion, then
+publication. Existing enrollments never float silently to it.
 
 ### EvaluationForm
 
@@ -28,7 +33,8 @@ Daily reports, weekly summaries, and phase evaluations are distinct record types
 
 ### User
 
-A person with a stable internal identity. Names, employee identifiers, titles, and contact details are mutable profile data.
+A person with a stable internal identity. Names, employee identifiers, and
+titles are profile data. Contact details are not currently modeled.
 
 Finalized records snapshot the presentation values they used.
 
@@ -101,7 +107,7 @@ An immutable finalized snapshot containing the complete historical presentation:
 - program, phase, form, competency, and rating definitions;
 - observations, ratings, modifiers, and narratives;
 - covered sessions;
-- attachments and their hashes;
+- an attachments member, currently empty pending attachment support;
 - timestamps and local-time representation;
 - canonicalization version; and
 - integrity metadata.
@@ -148,7 +154,7 @@ A RecordExport is an archive of finalized EvaluationVersions as stored: each ver
 
 A TraineePacket is everything retained about one enrollment as one archive (`docs/formats/trainee-packet.md`, ADR 0015): the record export's units for every retained version of every record, plus typed documents for the enrollment's lifecycle and phase history, every acknowledgment, every amendment, and the full task signoff history, named with hashes by one packet manifest. The trainee may produce their own; so may whoever reads the enrollment's training history and `export_records` holders. It verifies with the same verifier as a record export.
 
-## Retention and disposition
+## Retention and disposition (planned)
 
 ### RetentionPolicy
 
@@ -176,13 +182,19 @@ The event does not preserve destroyed narratives, attachments, presentation snap
 
 ### AuditEvent
 
-Security- and record-sensitive actions produce append-only audit events, including authentication, authorization changes, finalization, acknowledgment, refusal, amendment, hold changes, disposition, export, backup, and restore.
+Security- and record-sensitive actions produce append-only audit events. The
+implemented vocabulary covers authentication and recovery, assignments and
+enrollment lifecycle, draft and review workflow, finalization,
+acknowledgments, amendments, exports, and backup or restore operations. Hold
+and disposition events join that vocabulary with the Milestone 5 retention
+slice.
 
 An audit event supplements the immutable domain record. It is not a substitute for version history.
 
-## Database invariants to enforce
+## Database invariants
 
-The initial schema is expected to enforce at least:
+The embedded migrations, constraints, and triggers enforce the persisted
+contract. Among the current invariants:
 
 1. finalized versions cannot be updated or deleted through normal application writes;
 2. acknowledgments reference a specific finalized version;
@@ -193,12 +205,21 @@ The initial schema is expected to enforce at least:
 7. active training intervals for one trainee cannot overlap; and
 8. no uniqueness constraint assumes one session or evaluation per trainee and calendar date.
 
-The exact enforcement mechanism—constraints, triggers, or transactional application services—will be decided with migration `0001`.
+Application services add transactional checks where the invariant spans
+authorization, workflow state, or several tables. Migrations are forward-only;
+the migration that introduced an invariant remains its historical authority.
 
-## Application-service invariants to enforce
+## Application-service invariants
 
 1. capability and assignment scope are checked before sensitive reads and writes;
 2. `view_own_records` grants a trainee access only to their own retained timeline;
-3. any applicable hold blocks disposition;
-4. disposition requires explicit capability, policy authority, scope confirmation, attribution, and a recorded result; and
-5. all trainers assigned to the same trainee can share the records allowed by policy without receiving broad access to unrelated trainees.
+3. all trainers assigned to the same trainee can share the records allowed by policy without receiving broad access to unrelated trainees.
+
+Snapshot-bound authorization is implemented for trainee packets (ADR 0015),
+not a universal service guarantee. Other read/write paths need their transaction
+boundaries checked before claiming the same property. A write transaction alone
+does not ensure an earlier authorization decision belongs to its snapshot.
+
+The Milestone 5 retention slice adds two further invariants: any applicable
+hold blocks disposition, and disposition requires explicit capability, policy
+authority, scope confirmation, attribution, and a recorded result.

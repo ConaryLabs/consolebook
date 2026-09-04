@@ -1,121 +1,81 @@
 # Repository Guidelines
 
-## Start With The Smallest Useful Context
+Consolebook is pre-alpha training-record software for emergency communications
+centers: one Rust executable, one SQLite data directory, and a static SvelteKit
+UI. No required external services, telemetry, or production Node.js runtime.
 
-Consolebook is a small Rust workspace plus one web app: the server lives
-in `crates/consolebook-server/` (library modules plus a thin CLI in
-`main.rs`, integration tests in `tests/`, embedded migrations in
-`migrations/`), and the embedded SvelteKit interface lives in `web/`
-(built statically, embedded by the Rust build; Node.js is build-time
-only).
+## Find the relevant context
 
-Durable truth lives in a few files; read only what the task needs:
+Start with `git status --short --branch` and the task's issue or PR, including
+unresolved review feedback. Preserve unrelated work. Do not assume a previous
+session's branch, milestone status, or verification still describes the head.
 
-- `PRINCIPLES.md` — non-negotiable product constraints
-- `docs/architecture.md` — system boundaries and design targets
-- `docs/domain-model.md` — domain vocabulary and invariants
-- `docs/records-integrity.md` — immutability, hashes, provenance
-- `docs/roadmap.md` — milestone sequence and current position
-- `docs/decisions/` — architecture decision records
+Read only the context needed for the task:
 
-## Build And Verification
+- Build, source ownership, or local development: `docs/development.md`.
+- Next work and milestone status: `docs/roadmap.md`, then the linked GitHub issue.
+- Product constraints: `PRINCIPLES.md`; boundaries: `docs/architecture.md`.
+- Domain terms: `docs/domain-model.md`; record integrity: `docs/records-integrity.md`.
+- Contribution lifecycle, verification, and refactor rules: `CONTRIBUTING.md`.
+- Decisions and formats: the task index in `docs/development.md` links the
+  relevant ADRs and specifications. Do not load the entire corpus by default.
+- Preview deployment: `docs/preview.md`. Host configuration and deployed
+  binaries are separate from this checkout.
 
-- `cargo build -p consolebook-server` builds the server.
-- `cargo test --workspace` runs the tests.
-- `cargo fmt --check` and
-  `cargo clippy --workspace --all-targets -- -D warnings` are repository
-  gates; clippy pedantic is enabled workspace-wide.
-- In `web/`: `npm ci`, `npm run check`, and `npm run build` are gates;
-  build `web/` before cargo when interface behavior matters (a bare cargo
-  build compiles but serves an honest "not embedded" notice).
-- `npm run e2e` in `web/` drives the compiled binary through the shell in
-  a real browser (set `CONSOLEBOOK_E2E_CHROMIUM` to a Chromium path when
-  Playwright's own download is unavailable).
-- The toolchain is pinned in `rust-toolchain.toml`; do not float it.
+The server is in `crates/consolebook-server/`: `src/` owns services and the thin
+CLI, `migrations/` owns persisted constraints, and `tests/` owns integration
+proof. `web/src/` owns the UI and typed API client; `web/e2e/` tests the binary
+through a browser. `sessions.rs` means login sessions; `training_sessions.rs`
+means training periods.
 
-Verification means the reported command actually ran. Preserve exact failure
-evidence and explain the causal leaf failure. A design document is not runtime
-proof, and a passing unit test is not recovery proof.
+## Non-negotiable contracts
 
-## Issue, Branch, And Pull-Request Workflow
+- Finalized records are immutable while retained. Corrections create successor
+  versions or amendments. Lawful disposition is a separate authorized workflow.
+- Agency variation is versioned configuration. Finalized records pin configuration
+  and presentation snapshots; mutable reference data must not rewrite history.
+- Operational dates are agency-local; duration and ordering use UTC instants.
+- Capabilities and scope are enforced by domain services. HTTP and UI adapt
+  those decisions. Authorization, integrity, retention, disposition, and exports
+  require typed contracts and tests; heuristics cannot establish them.
+- Startup verifies storage invariants and fails closed. `doctor` must diagnose
+  without creating, migrating, or changing state (ADR 0003).
+- Use invented agencies, people, incidents, identifiers, and narratives. Real
+  records, operational material, personal data, and credentials never enter the
+  repository, tests, logs, or issues. Security reports follow `SECURITY.md` privately.
 
-Follow `CONTRIBUTING.md`. Non-trivial implementation, bug, refactor,
-documentation, operations, and maintenance work uses one primary GitHub
-issue, an issue-linked branch, and a pull request; never push repository
-changes directly to `main`. Search existing issues first. `Closes #...`
-means the PR satisfies the issue's acceptance criteria; otherwise use
-`Refs #...` and leave the issue open.
+## Work and verification
 
-Security reports use private advisories per `SECURITY.md`, never public
-issues.
+Non-trivial work requires one primary issue, an issue-linked branch, and a PR.
+Search existing issues first; never push directly to `main`. `Closes #...` means
+all acceptance criteria are satisfied; otherwise use `Refs #...`.
 
-## Product And Authority Contract
+Build `web/` before Rust when UI or embedding matters. The command sequence and
+browser prerequisites are in `CONTRIBUTING.md`. Required checks: `npm ci`,
+`npm run check`, `npm run build` in `web/`; `cargo fmt --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, and
+`cargo test --workspace`. Browser tests need the compiled debug binary.
+Keep the pinned Rust toolchain in `rust-toolchain.toml`.
 
-Consolebook is pre-alpha training-record software for emergency
-communications centers. `PRINCIPLES.md` is the authority; the load-bearing
-consequences for code:
+Report only verification actually run, with exact failures. Investigate
+intermittent failures. Design documents are not runtime proof; unit tests are
+not recovery drills. Fix causes and in-scope defects; file exact-evidence
+issues for separate work.
 
-- Finalized records are immutable while retained. Corrections are successor
-  versions or amendments; deletion is lawful disposition, a separate
-  authorized workflow. Never an in-place edit.
-- Agency variation is versioned configuration, never agency-specific code
-  paths or hidden conditionals.
-- Finalized records pin the exact configuration versions used to create
-  them; mutable reference data must not rewrite history.
-- Operational dates carry agency-local meaning; duration and ordering use
-  UTC instants. Do not conflate them.
-- One executable, one data directory, SQLite. No required external
-  services, telemetry, or cloud dependencies.
+Follow `CONTRIBUTING.md` before adding behavior to large Rust modules: over
+1,000 lines requires an ownership-based reorganization, over 1,500 requires
+naming the boundary first, and over 2,500 requires a reviewed decomposition
+path before major feature work unless urgent. Refactors state the new owner,
+persisted/public impact, and focused proof.
 
-Engineer solutions, not band-aids. Heuristics, regexes, substring matching,
-and silent defaults may aid diagnostics, discovery, or presentation; they
-may not establish record integrity, authorization, retention, disposition,
-or export behavior. Those are typed contracts with tests. A failure in a
-typed check is a defect to engineer, not a class of input to route around.
+Durable behavior changes require an ADR; changes to `PRINCIPLES.md` require one.
+Use forward migrations, standard Rust formatting, `thiserror` for library
+errors as they emerge, `anyhow` at application boundaries, and no `unsafe`.
+Use short imperative Conventional Commit subjects. Logs exclude sensitive
+content; existing first-run setup-code output is the documented exception
+(ADR 0004), not permission for additional secret logging.
 
-## Defect And Maintainability Discipline
-
-- Fix a defect, duplicated authority, or half-implementation found in
-  scope. File an exact-evidence issue when it belongs elsewhere; do not
-  silently route around it.
-- Fix causes and prove the contract or property, not only the observed
-  input.
-- Treat intermittent or unexplained failures as evidence of a defect, not
-  as a reason to retry until green.
-- A slice adding behavior to a Rust source file over 1,000 lines must
-  include an ownership-based reorganization in the same issue or plan.
-  Thin dispatch, registration, and re-export wiring may remain in a large
-  hub.
-- Before changing behavior in a Rust file over 1,500 lines, name the
-  ownership boundary being preserved or improved. Files over 2,500 lines
-  need a reviewed decomposition path before major feature work unless the
-  fix is urgent.
-- Refactors name what moves, its new owner, persisted/public impact, and
-  the focused proof.
-- Decisions that change durable system behavior get an ADR in
-  `docs/decisions/`; changes to `PRINCIPLES.md` require one.
-
-## Rust And CLI Conventions
-
-Use standard Rust formatting and naming, `thiserror` for library errors as
-they emerge, and `anyhow` at application boundaries. `unsafe` is forbidden
-workspace-wide. Keep modules focused on one domain capability. Use short
-imperative Conventional Commit subjects such as
-`storage(backup): validate snapshot before fsync`.
-
-Structured `tracing` logs never contain record content, personal data, or
-credentials. Startup verifies database connection invariants and fails
-closed; `doctor` diagnoses read-only and never creates or migrates state
-(ADR 0003).
-
-## Documentation And Safety
-
-`AGENTS.md` is the concise repo-wide contract; `CONTRIBUTING.md` owns the
-full contribution lifecycle; ADRs own decisions. Tool entrypoints
-(`CLAUDE.md`, `.agents/rules/`, `.github/copilot-instructions.md`) stay
-thin and point back here.
-
-All fixtures, examples, tests, and seed data use invented agencies, people,
-incidents, narratives, and identifiers. Real training records, operational
-material, credentials, or personal information never enter this repository
-in any form — code, docs, tests, logs, or issue text.
+This file owns the concise shared contract; `CONTRIBUTING.md` owns workflow,
+`docs/development.md` owns the source map, and ADRs own decisions. Tool-specific
+entrypoints (`CLAUDE.md`, `.agents/rules/`, `.github/copilot-instructions.md`)
+only point here. Keep machine preferences and session handoffs out of this file.

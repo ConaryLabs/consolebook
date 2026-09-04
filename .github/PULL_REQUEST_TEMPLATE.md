@@ -25,9 +25,12 @@ What problem does this solve, and what should be true after merge?
 - [ ] All fixtures and examples are invented; no real agency data
 
 ```text
+- web/: npm ci, npm run check, npm run build
 - cargo fmt --check
 - cargo clippy --workspace --all-targets -- -D warnings
 - cargo test --workspace
+- cargo build -p consolebook-server
+- web/: npm run e2e (state the browser used)
 ```
 
 ## Review And Merge Notes

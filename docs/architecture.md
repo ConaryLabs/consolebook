@@ -1,6 +1,8 @@
 # Architecture
 
-This document describes the current design target. It is not an implementation receipt.
+This document describes the implemented system boundary and the remaining
+design target. It is not an implementation receipt; tests and operator drills
+prove runtime claims.
 
 ## Shape
 
@@ -19,7 +21,7 @@ HTTP API and application services
   +-- sessions and evaluation workflow
   +-- immutable record versions
   +-- acknowledgments and amendments
-  +-- holds, retention, and lawful disposition
+  +-- holds, retention, and lawful disposition (planned)
   +-- authorization and audit
   +-- in-app notifications
   +-- exports and recovery
@@ -30,17 +32,21 @@ SQLite database and local data directory
 
 The application should remain useful without Redis, a message broker, a Node.js runtime, a hosted identity provider, or a network connection to the project maintainers.
 
-## Planned components
+## Implemented components
 
 ### Application
 
-Rust owns the process lifecycle, configuration, HTTP API, migrations, background maintenance, backups, exports, and embedded assets.
+Rust owns the process lifecycle, configuration, HTTP API, migrations,
+background maintenance, backups, exports, and embedded assets.
 
-Axum is the planned HTTP framework. Application boundaries should follow domain capabilities rather than mirror web routes.
+Axum serves versionless `/api/` routes and the embedded interface from one
+listener. Application boundaries follow domain capabilities rather than mirror
+web routes: handlers translate HTTP and services own policy. The detailed
+source map lives in `docs/development.md`.
 
 ### Storage
 
-SQLite is the default operational database.
+SQLite is the operational database.
 
 Connections must be created from one explicit options object that enables and verifies:
 
@@ -50,23 +56,36 @@ Connections must be created from one explicit options object that enables and ve
 - a bounded busy timeout; and
 - application-owned migrations.
 
-Startup and the future `consolebook doctor` command will verify these invariants.
+Startup verifies these invariants and fails closed. ADR 0003 requires
+`consolebook doctor` to inspect without changing state. It does not create or
+migrate a database, but its current connection path can change a non-WAL
+database's journal mode; [#56](https://github.com/FieldmouseWorks/consolebook/issues/56)
+tracks restoring the read-only contract.
 
 ### User interface
 
-The planned interface is a statically built SvelteKit application embedded in the Rust executable. Server-side rendering and a production Node.js runtime are outside the design.
+The interface is a statically built SvelteKit single-page application embedded
+in the Rust executable. Server-side rendering and a production Node.js runtime
+are outside the design (ADR 0005).
 
 The web interface is part of every vertical slice, not a post-API decoration. Setup, program configuration, training workflow, trainee review, retention administration, and recovery each require a usable interface before their milestone is complete.
 
-### Documents
+### Records and portable documents
 
-Typst is the planned renderer for stable PDF exports. Templates and redistribution-friendly fonts will ship with the application.
+Finalization stores versioned canonical JSON bytes and SHA-256 content and chain
+hashes. Acknowledgments, amendments, weekly summaries, and task signoffs remain
+separate typed history. Structured record exports and trainee packets carry
+stored bytes verbatim and verify from the archive alone (ADRs 0011–0015).
+
+Typst is the planned renderer for stable PDF presentations. Templates and
+redistribution-friendly fonts will ship with the application in a later
+Milestone 5 slice.
 
 A PDF is a presentation of a record version. The structured record remains independently exportable.
 
 ## Data directory
 
-The intended layout is deliberately boring:
+The layout is deliberately boring:
 
 ```text
 data/
@@ -76,19 +95,25 @@ data/
 └── instance/
 ```
 
-Exact paths and retention policies remain undecided.
+`DataDir` owns these paths. SQLite and application state live under this one
+root; runtime services do not require an external database, queue, cache, or
+object store. Retention policies for records remain Milestone 5 work.
 
 ## Backups
 
-Backups will be automatic and default-on.
+Backups are automatic and default-on while the server runs.
 
-The current design preference is a consistent SQLite snapshot produced with `VACUUM INTO`, followed by integrity validation, an explicit durability step, and retention management. Restore must be a tested product workflow.
+The implemented pipeline produces a consistent SQLite snapshot with `VACUUM
+INTO`, validates it, performs an explicit durability step, and prunes by
+configured count (ADRs 0003 and 0006). Manual backup and stopped-server restore
+use the same library paths as the CLI. Count-plus-age retention and clean-room
+restore verification remain Milestone 5 work.
 
 ## Authentication
 
-Milestone one targets local authentication:
+Local authentication implements:
 
-- username or email;
+- username;
 - Argon2id password hashes;
 - cryptographically random opaque session tokens;
 - HttpOnly cookies;
@@ -99,7 +124,9 @@ Password recovery in v1 is local and administrator-operated:
 
 - an authorized administrator can issue a short-lived, single-use reset code;
 - using the code forces a new password, revokes existing sessions, and creates an audit event; and
-- a sole-administrator recovery command requires operating-system access to the installation data directory and records an explicit recovery event.
+- a recovery command for administrator accounts requires operating-system
+  access to the data directory and records an explicit recovery event. It is
+  not restricted to installations with only one administrator.
 
 Password reset does not depend on email or another external service.
 
@@ -109,11 +136,16 @@ OIDC may be added behind an authentication-provider boundary later.
 
 Roles are convenient bundles of capabilities. Domain services authorize capabilities and assignment scope rather than scattering role-name comparisons.
 
-The initial vocabulary is expected to include Administrator, Coordinator, Trainer, and Trainee, but the capability model is authoritative.
+The initial roles are Administrator, Coordinator, Trainer, and Trainee, but the
+capability model is authoritative. Services combine capabilities with
+assignment, session-membership, or own-record scope as the operation requires
+(ADR 0010).
 
 ## First-run setup
 
-An uninitialized installation will emit a short-lived setup code. Creating the first agency settings and administrator must be a single transaction that invalidates the setup code.
+An uninitialized installation emits a short-lived setup code. Creating the
+first agency settings and administrator is one transaction that invalidates
+the setup code.
 
 After initialization, the setup operation is unavailable.
 
@@ -125,7 +157,12 @@ SMTP may be added later as an optional delivery adapter. It mirrors an in-app no
 
 ## Retention and disposition
 
-Retention policy, record holds, and lawful disposition belong to application services with explicit capabilities and audit events. Normal repository methods cannot delete finalized content. A separate disposition path checks applicable policy and holds, previews scope, records authority, and removes only the approved material.
+Retention policy, record holds, and lawful disposition are the next Milestone 5
+slice. They belong to application services with explicit capabilities and
+audit events. Normal service methods and database triggers already reject
+mutation or deletion of finalized content. The separate disposition path will
+check applicable policy and holds, preview scope, record authority, and remove
+only the approved material.
 
 Disposition records have retention rules of their own. The architecture must not keep personal metadata forever merely to make an integrity chain convenient.
 
