@@ -46,9 +46,12 @@ An unauthenticated HTTPS request should receive `401` with a Basic Auth
 challenge. A local health response should report database `ok`; neither check
 proves recovery or a complete user workflow. Logs are in the system journal;
 first-run logs can contain the short-lived setup code, so inspect privately
-and redact before sharing. Avoid `doctor` on retained data pending
-[#56](https://github.com/FieldmouseWorks/consolebook/issues/56): its current
-connection path can change persisted journal mode while diagnosing it.
+and redact before sharing. Before using `doctor` on retained data, confirm the
+installed binary includes the [#56](https://github.com/FieldmouseWorks/consolebook/issues/56)
+repair: older binaries can change journal mode while diagnosing it. Repository
+changes do not update that separately installed binary.
+[ADR 0016](decisions/0016-read-only-diagnostics.md) defines the repaired command's
+read-only database contract and WAL-sidecar limits.
 
 ## Updating the preview
 

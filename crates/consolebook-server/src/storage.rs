@@ -1,10 +1,9 @@
 //! `SQLite` storage with explicit, verified connection invariants.
 //!
-//! `docs/architecture.md` requires every connection to come from one explicit
-//! options object that enables and verifies foreign-key enforcement, WAL
-//! journaling, an intentional synchronous mode, a bounded busy timeout, and
+//! Writable connections use explicit options that enable foreign-key enforcement,
+//! WAL journaling, an intentional synchronous mode, a bounded busy timeout, and
 //! application-owned migrations. Startup fails closed if any invariant does
-//! not hold; `doctor` reports the same checks without failing the process.
+//! not hold; `doctor` uses read-only options and reports observed mismatches.
 
 use std::path::Path;
 use std::time::Duration;
@@ -64,10 +63,10 @@ impl InvariantCheck {
     }
 }
 
-/// The single options object every connection is created from.
+/// Options for writable startup and backup connections.
 ///
-/// `create_if_missing` is only enabled by [`open`]; diagnostic paths use
-/// [`open_existing`] so `doctor` never creates a database as a side effect.
+/// `create_if_missing` is only enabled by [`open`]. Diagnostics use
+/// [`open_diagnostic`] and must never inherit the journal-mode setter.
 fn connect_options(db_path: &Path, create: bool) -> SqliteConnectOptions {
     SqliteConnectOptions::new()
         .filename(db_path)
@@ -115,7 +114,7 @@ pub async fn open(db_path: &Path) -> Result<SqlitePool> {
 }
 
 /// Opens an existing database without creating one and without migrating.
-/// Used by diagnostics and backup so they never mutate schema state.
+/// Used by backup; applies writable connection settings, including WAL.
 pub async fn open_existing(db_path: &Path) -> Result<SqlitePool> {
     if !db_path.exists() {
         bail!("database {} does not exist", db_path.display());
@@ -123,23 +122,46 @@ pub async fn open_existing(db_path: &Path) -> Result<SqlitePool> {
     connect(db_path, false).await
 }
 
-/// Reads back the PRAGMA state the options object is supposed to guarantee.
+/// Opens an existing database read-only, without migrations or journal changes.
+///
+/// Connection-local settings match startup, but `SQLx`'s unset journal-mode
+/// default preserves the database's mode. SQLite may create WAL sidecars and
+/// update shared-memory coordination state; see ADR 0016 for filesystem limits.
+/// Never use `immutable`: diagnostics must see live WAL commits and take locks.
+pub async fn open_diagnostic(db_path: &Path) -> Result<SqlitePool> {
+    let options = SqliteConnectOptions::new()
+        .filename(db_path)
+        .create_if_missing(false)
+        .read_only(true)
+        .foreign_keys(true)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(BUSY_TIMEOUT);
+    SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .with_context(|| format!("opening database {} read-only", db_path.display()))
+}
+
+/// Reads all four PRAGMAs on one connection. Only WAL journal mode persists;
+/// the other checks describe this connection, not a running server's settings.
 pub async fn verify_invariants(pool: &SqlitePool) -> Result<Vec<InvariantCheck>> {
+    let mut connection = pool.acquire().await?;
     let foreign_keys: i64 = sqlx::query("PRAGMA foreign_keys")
-        .fetch_one(pool)
+        .fetch_one(&mut *connection)
         .await?
         .get(0);
     let journal_mode: String = sqlx::query("PRAGMA journal_mode")
-        .fetch_one(pool)
+        .fetch_one(&mut *connection)
         .await?
         .get(0);
     // 1 = NORMAL. SQLite reports synchronous numerically.
     let synchronous: i64 = sqlx::query("PRAGMA synchronous")
-        .fetch_one(pool)
+        .fetch_one(&mut *connection)
         .await?
         .get(0);
     let busy_timeout_ms: i64 = sqlx::query("PRAGMA busy_timeout")
-        .fetch_one(pool)
+        .fetch_one(&mut *connection)
         .await?
         .get(0);
 

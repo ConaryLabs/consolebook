@@ -1,7 +1,8 @@
 //! `consolebook doctor`: diagnose an installation without changing it.
 //!
-//! Doctor never creates the database, never migrates, and never writes to the
-//! data directory. It reports what it finds; the operator decides what to do.
+//! Doctor never creates or writes the database, migrates, or sets journal mode.
+//! SQLite may create WAL sidecars or update their coordination state (ADR 0016).
+//! It reports what it finds; the operator decides what to do.
 
 use anyhow::Result;
 use sqlx::SqlitePool;
@@ -66,8 +67,13 @@ pub async fn run(data_dir: &DataDir) -> Vec<Finding> {
         return findings;
     }
 
-    match storage::open_existing(&db_path).await {
-        Err(err) => findings.push(Finding::fail("database", format!("cannot open: {err:#}"))),
+    match storage::open_diagnostic(&db_path).await {
+        Err(err) => findings.push(Finding::fail(
+            "database",
+            format!(
+                "cannot open read-only: {err:#}; WAL requires readable, usable -wal/-shm sidecars or permission to create them; doctor does not repair or bypass locking"
+            ),
+        )),
         Ok(pool) => {
             findings.push(Finding::ok("database", format!("{}", db_path.display())));
             check_invariants(&pool, &mut findings).await;
@@ -112,12 +118,20 @@ async fn check_invariants(pool: &SqlitePool, findings: &mut Vec<Finding>) {
         Ok(checks) => {
             for check in checks {
                 let name = format!("pragma {}", check.name);
+                let scope = if check.name == "journal_mode" {
+                    "observed database mode; WAL is persisted"
+                } else {
+                    "diagnostic connection only; does not inspect server connections"
+                };
                 if check.holds() {
-                    findings.push(Finding::ok(name, check.actual));
+                    findings.push(Finding::ok(name, format!("{} ({scope})", check.actual)));
                 } else {
                     findings.push(Finding::fail(
                         name,
-                        format!("expected {}, got {}", check.expected, check.actual),
+                        format!(
+                            "expected {}, got {} ({scope})",
+                            check.expected, check.actual
+                        ),
                     ));
                 }
             }

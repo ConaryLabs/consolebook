@@ -48,7 +48,7 @@ source map lives in `docs/development.md`.
 
 SQLite is the operational database.
 
-Connections must be created from one explicit options object that enables and verifies:
+Writable connections use one explicit options object that enables and verifies:
 
 - foreign-key enforcement;
 - WAL journaling;
@@ -56,11 +56,13 @@ Connections must be created from one explicit options object that enables and ve
 - a bounded busy timeout; and
 - application-owned migrations.
 
-Startup verifies these invariants and fails closed. ADR 0003 requires
-`consolebook doctor` to inspect without changing state. It does not create or
-migrate a database, but its current connection path can change a non-WAL
-database's journal mode; [#56](https://github.com/FieldmouseWorks/consolebook/issues/56)
-tracks restoring the read-only contract.
+Startup verifies these invariants and fails closed. `consolebook doctor` uses
+a separate read-only connection that observes journal mode without setting it
+and never creates, migrates, or writes the database. SQLite may create WAL
+sidecars or update shared-memory coordination; diagnosis can fail on read-only
+storage without usable sidecars. [ADR 0016](decisions/0016-read-only-diagnostics.md)
+defines these limits and distinguishes connection-local PRAGMAs from persisted
+WAL mode.
 
 ### User interface
 
