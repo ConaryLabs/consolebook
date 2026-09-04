@@ -62,9 +62,10 @@ cargo build -p consolebook-server
 ```
 
 The explicit build supplies `target/debug/consolebook-server` for the browser
-tests. Each spec starts its own scratch installation; they currently use ports
-7781–7785, so do not run two copies of the suite on the same host. If a system
-Chromium is available, skip the browser download and run:
+tests. The shared fixture starts a scratch installation per test on an
+OS-assigned loopback port and waits for shutdown before deleting its data.
+`npm run check` checks both Svelte code and browser-test TypeScript.
+If a system Chromium is available, skip the browser download and run:
 
 ```sh
 (cd web && CONSOLEBOOK_E2E_CHROMIUM=/path/to/chromium npm run e2e)

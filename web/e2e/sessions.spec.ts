@@ -3,48 +3,11 @@
 // closing with a disposition, and the trainer's own session list. All
 // fixture data is invented.
 
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { promisify } from 'node:util';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 
-const execFileAsync = promisify(execFile);
-
-const BINARY = join(import.meta.dirname, '../../target/debug/consolebook-server');
-const BASE = 'http://127.0.0.1:7784';
 const PASSWORD = 'invented-passphrase-1';
 const TRAINER_PASSWORD = 'trainer-passphrase-3';
 
-let server: ChildProcess;
-let dataDir: string;
-
-test.beforeAll(async () => {
-	dataDir = join(mkdtempSync(join(tmpdir(), 'consolebook-e2e-')), 'data');
-	server = spawn(BINARY, ['--data-dir', dataDir, 'serve', '--bind', '127.0.0.1:7784'], {
-		stdio: 'ignore'
-	});
-	for (let i = 0; i < 50; i += 1) {
-		try {
-			const response = await fetch(`${BASE}/api/health`);
-			if (response.ok) return;
-		} catch {
-			// not up yet
-		}
-		await new Promise((resolve) => setTimeout(resolve, 200));
-	}
-	throw new Error('server did not become healthy');
-});
-
-test.afterAll(() => {
-	server?.kill('SIGTERM');
-});
-
-async function setupCode(): Promise<string> {
-	const { stdout } = await execFileAsync(BINARY, ['--data-dir', dataDir, 'setup-code']);
-	return stdout.trim();
-}
 
 const content = {
 	name: 'Example County CTO Program',
@@ -80,11 +43,11 @@ const content = {
 	citations: []
 };
 
-test('record, close, and read sessions with local time semantics', async ({ page }) => {
+test('record, close, and read sessions with local time semantics', async ({ page, setupCode }) => {
 	// Initialize and sign in as the administrator.
-	await page.goto(`${BASE}/`);
+	await page.goto(`/`);
 	await expect(page).toHaveURL(/\/setup$/);
-	await page.getByLabel('Setup code').fill(await setupCode());
+	await page.getByLabel('Setup code').fill(setupCode);
 	await page.getByLabel('Agency name').fill('Example County Communications');
 	await page.getByLabel('Administrator username').fill('avery.admin');
 	await page.getByLabel('Administrator display name').fill('Avery Admin');
@@ -99,19 +62,19 @@ test('record, close, and read sessions with local time semantics', async ({ page
 	// Seed the published program, trainee, trainer, enrollment, and
 	// assignment over the API; the session cookie rides page.request.
 	const program = await (
-		await page.request.post(`${BASE}/api/programs`, { data: { name: content.name } })
+		await page.request.post(`/api/programs`, { data: { name: content.name } })
 	).json();
 	const version = await (
-		await page.request.post(`${BASE}/api/programs/${program.id}/versions`, { data: content })
+		await page.request.post(`/api/programs/${program.id}/versions`, { data: content })
 	).json();
-	await page.request.post(`${BASE}/api/program-versions/${version.id}/publish`, { data: {} });
+	await page.request.post(`/api/program-versions/${version.id}/publish`, { data: {} });
 	const trainee = await (
-		await page.request.post(`${BASE}/api/users`, {
+		await page.request.post(`/api/users`, {
 			data: { username: 'taylor.trainee', display_name: 'Taylor Trainee' }
 		})
 	).json();
 	const trainer = await (
-		await page.request.post(`${BASE}/api/users`, {
+		await page.request.post(`/api/users`, {
 			data: {
 				username: 'jordan.trainer',
 				display_name: 'Jordan Trainer',
@@ -120,16 +83,16 @@ test('record, close, and read sessions with local time semantics', async ({ page
 		})
 	).json();
 	const enrollment = await (
-		await page.request.post(`${BASE}/api/program-versions/${version.id}/enrollments`, {
+		await page.request.post(`/api/program-versions/${version.id}/enrollments`, {
 			data: { user_id: trainee.id }
 		})
 	).json();
-	await page.request.post(`${BASE}/api/enrollments/${enrollment.id}/assignments`, {
+	await page.request.post(`/api/enrollments/${enrollment.id}/assignments`, {
 		data: { trainer_user_id: trainer.id }
 	});
 
 	// Record a session for Jordan with agency-local times.
-	await page.goto(`${BASE}/enrollments/${enrollment.id}`);
+	await page.goto(`/enrollments/${enrollment.id}`);
 	await expect(page.getByRole('heading', { name: 'Training sessions' })).toBeVisible();
 	await expect(page.getByText('No sessions recorded.')).toBeVisible();
 	await page.getByLabel('Business date').fill('2026-06-02');
@@ -159,7 +122,7 @@ test('record, close, and read sessions with local time semantics', async ({ page
 	await expect(sessionsPanel.getByText('completed', { exact: true })).toBeVisible();
 
 	// Seed a second, open session so the trainer can work it from home.
-	await page.request.post(`${BASE}/api/enrollments/${enrollment.id}/sessions`, {
+	await page.request.post(`/api/enrollments/${enrollment.id}/sessions`, {
 		data: {
 			business_date: '2026-06-03',
 			timezone: 'America/Chicago',
@@ -171,7 +134,7 @@ test('record, close, and read sessions with local time semantics', async ({ page
 	// The trainer signs in and finds the sessions on their own list.
 	await page.getByRole('link', { name: 'Home' }).click();
 	await page.getByRole('button', { name: 'Sign out' }).click();
-	await page.goto(`${BASE}/reset`);
+	await page.goto(`/reset`);
 	await page.getByLabel('Username').fill('jordan.trainer');
 	await page.getByLabel('Reset code').fill(trainer.reset_code);
 	await page.getByLabel('New password').fill(TRAINER_PASSWORD);

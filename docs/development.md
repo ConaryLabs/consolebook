@@ -65,6 +65,11 @@ authentication; `+layout.svelte` owns navigation and shared styling.
 `web/src/lib/api.ts` owns typed same-origin HTTP calls.
 `web/src/lib/editor/` contains program-authoring components.
 
+`web/e2e/fixtures.ts` supplies each scenario's server, base URL, and setup code.
+`server.ts` owns process startup and scratch-data cleanup; `server.spec.ts`
+checks startup failures, listener ownership, and shutdown. Keep scenario data
+and assertions in their own specs.
+
 | Route | Ownership |
 | --- | --- |
 | `/setup`, `/login`, `/reset` | Installation and authentication entry |
@@ -100,6 +105,6 @@ debug builds read it from disk. A missing build serves the explicit
 Node.js is never required by the deployed binary.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md#build-and-verification) for the full
-verification sequence, browser prerequisites, and test port allocation.
+verification sequence and browser prerequisites.
 `cargo run -p consolebook-server -- --help` lists CLI operations;
 `export verify <archive>` reads a file without opening an installation.

@@ -2,57 +2,19 @@
 // issue reset code → reset password → sign back in → sign out.
 // All fixture data is invented.
 
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { promisify } from 'node:util';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 
-const execFileAsync = promisify(execFile);
-
-const BINARY = join(import.meta.dirname, '../../target/debug/consolebook-server');
-const BASE = 'http://127.0.0.1:7781';
 const PASSWORD = 'invented-passphrase-1';
 const NEW_PASSWORD = 'rotated-passphrase-2';
 
-let server: ChildProcess;
-let dataDir: string;
 
-test.beforeAll(async () => {
-	dataDir = join(mkdtempSync(join(tmpdir(), 'consolebook-e2e-')), 'data');
-	server = spawn(BINARY, ['--data-dir', dataDir, 'serve', '--bind', '127.0.0.1:7781'], {
-		stdio: 'ignore'
-	});
-	// Wait for the API to answer.
-	for (let i = 0; i < 50; i += 1) {
-		try {
-			const response = await fetch(`${BASE}/api/health`);
-			if (response.ok) return;
-		} catch {
-			// not up yet
-		}
-		await new Promise((resolve) => setTimeout(resolve, 200));
-	}
-	throw new Error('server did not become healthy');
-});
-
-test.afterAll(() => {
-	server?.kill('SIGTERM');
-});
-
-async function setupCode(): Promise<string> {
-	const { stdout } = await execFileAsync(BINARY, ['--data-dir', dataDir, 'setup-code']);
-	return stdout.trim();
-}
-
-test('full shell lifecycle', async ({ page }) => {
+test('full shell lifecycle', async ({ page, setupCode }) => {
 	// An uninitialized installation routes everything to setup.
 	await page.goto('/');
 	await expect(page).toHaveURL(/\/setup$/);
 	await expect(page.getByRole('heading', { name: 'First-run setup' })).toBeVisible();
 
-	await page.getByLabel('Setup code').fill(await setupCode());
+	await page.getByLabel('Setup code').fill(setupCode);
 	await page.getByLabel('Agency name').fill('Example County Communications');
 	await page.getByLabel('Administrator username').fill('avery.admin');
 	await page.getByLabel('Administrator display name').fill('Avery Admin');
