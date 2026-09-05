@@ -2,6 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-28
+- **Amended by:** [ADR 0018](0018-enrollment-event-reference-shape.md), which
+  completes database enforcement of enrollment-event version-reference shape.
 
 ## Context
 

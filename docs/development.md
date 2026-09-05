@@ -17,7 +17,7 @@ tests show what is implemented. [Roadmap](roadmap.md) owns milestone status.
 | Setup, login, recovery | `setup.rs`, `users.rs`, `sessions.rs`, `secrets.rs` | [ADR 0004](decisions/0004-local-authentication.md) |
 | Capabilities and assignments | `capabilities.rs`, `assignments.rs`, `draft_access.rs` | [ADR 0010](decisions/0010-service-owned-authorization-boundary.md), [Domain model](domain-model.md) |
 | Program configuration | `programs.rs`, `program_export.rs` | [ADR 0007](decisions/0007-program-version-configuration-model.md), [Program format](formats/program-version-export.md) |
-| Enrollment and training sessions | `enrollments.rs`, `lifecycle.rs`, `training_sessions.rs`, `session_membership.rs`, `session_time.rs` | [ADR 0008](decisions/0008-session-draft-and-attribution-model.md), [ADR 0009](decisions/0009-session-local-time-resolution.md) |
+| Enrollment and training sessions | `enrollments.rs`, `lifecycle.rs`, `training_sessions.rs`, `session_membership.rs`, `session_time.rs` | [ADR 0008](decisions/0008-session-draft-and-attribution-model.md), [ADR 0009](decisions/0009-session-local-time-resolution.md), [ADR 0018](decisions/0018-enrollment-event-reference-shape.md) |
 | Drafts and review | `evaluation_drafts.rs`, `draft_content.rs`, `draft_review.rs` | [ADR 0008](decisions/0008-session-draft-and-attribution-model.md), [ADR 0010](decisions/0010-service-owned-authorization-boundary.md) |
 | Finalization and canonical bytes | `finalization.rs`, `canonical.rs`, `record_envelope.rs` | [Integrity](records-integrity.md), [ADR 0011](decisions/0011-canonical-record-format-and-finalization.md) |
 | Acknowledgments and amendments | `acknowledgments.rs`, `amendments.rs` | [Domain model](domain-model.md), [ADR 0012](decisions/0012-amendment-reopening-state-machine.md) |
@@ -36,6 +36,10 @@ Read both when changing a persisted contract.
 Packet membership and timeline verification tests live in
 `tests/trainee_packet/pin_history.rs`; the parent packet test module owns
 shared fixtures and archive-editing helpers.
+
+`tests/enrollment_event_schema.rs` covers fresh and upgraded lifecycle-event
+storage, retained-history preservation, and fail-closed migration of malformed
+legacy rows. ADR 0018 explains the migration 0014 diagnostic and repair boundary.
 
 ## Runtime flow
 
