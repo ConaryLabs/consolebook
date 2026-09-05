@@ -403,6 +403,13 @@ async fn backwards_version_change_times_are_an_incoherent_timeline() {
 #[tokio::test]
 async fn service_recorded_pin_changes_and_acts_verify() {
     let fx = Fixture::new().await;
+    let coordinator = fx
+        .user_with_role(
+            "casey.timeline",
+            "Casey Coordinator",
+            RoleBundle::Coordinator,
+        )
+        .await;
     let versions = published_timeline_versions(&fx).await;
     let enrollment_id = enrollments::enroll(&fx.pool, fx.admin_id, versions[0], fx.admin_id)
         .await
@@ -415,7 +422,7 @@ async fn service_recorded_pin_changes_and_acts_verify() {
         if index > 0 {
             lifecycle::record_enrollment_event(
                 &fx.pool,
-                fx.admin_id,
+                coordinator,
                 enrollment_id,
                 EnrollmentEventKind::VersionChange,
                 "Invented configuration update.",
@@ -432,7 +439,7 @@ async fn service_recorded_pin_changes_and_acts_verify() {
             .expect("phase");
         lifecycle::record_phase_event(
             &fx.pool,
-            fx.admin_id,
+            coordinator,
             enrollment_id,
             PhaseEventKind::Advance,
             Some(phase),
@@ -449,7 +456,7 @@ async fn service_recorded_pin_changes_and_acts_verify() {
             .expect("task");
         task_signoffs::record(
             &fx.pool,
-            fx.admin_id,
+            coordinator,
             enrollment_id,
             task,
             SignoffKind::Observed,
