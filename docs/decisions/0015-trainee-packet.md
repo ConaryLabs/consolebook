@@ -2,6 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-09-01
+- **Amended by:** [ADR 0017](0017-packet-pin-timeline-verification.md), which
+  binds signoffs and phase events to the pin timeline at Unix-second precision.
 
 ## Context
 

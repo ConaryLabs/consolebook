@@ -23,7 +23,7 @@ tests show what is implemented. [Roadmap](roadmap.md) owns milestone status.
 | Acknowledgments and amendments | `acknowledgments.rs`, `amendments.rs` | [Domain model](domain-model.md), [ADR 0012](decisions/0012-amendment-reopening-state-machine.md) |
 | Summaries and signoffs | `summaries.rs`, `task_signoffs.rs` | [ADR 0013](decisions/0013-weekly-summaries-and-task-signoffs.md) |
 | Record exports | `record_export.rs`, `export_verify.rs`, `zip_container.rs` | [ADR 0014](decisions/0014-record-export-format.md), [Export format](formats/record-export.md) |
-| Trainee packets | `trainee_packet.rs`, `packet_verify.rs` | [ADR 0015](decisions/0015-trainee-packet.md), [Packet format](formats/trainee-packet.md) |
+| Trainee packets | `trainee_packet.rs`, `packet_verify.rs` | [ADR 0015](decisions/0015-trainee-packet.md), [ADR 0017](decisions/0017-packet-pin-timeline-verification.md), [Packet format](formats/trainee-packet.md) |
 | Retention, holds, disposition (planned) | No implemented service yet | [Integrity](records-integrity.md), [Milestone 5 decisions](https://github.com/FieldmouseWorks/consolebook/issues/44) |
 | Web shell and HTTP | `http.rs`, `web_assets.rs`, `notices.rs`, domain `*_http.rs` modules | [ADR 0005](decisions/0005-embedded-web-interface.md), web map below |
 | Preview operations | Separate host installation | [Preview runbook](preview.md) |
@@ -32,6 +32,10 @@ tests show what is implemented. [Roadmap](roadmap.md) owns milestone status.
 `crates/consolebook-server/tests/` are named by capability; migration files in
 `crates/consolebook-server/migrations/` own schema, constraints, and triggers.
 Read both when changing a persisted contract.
+
+Packet membership and timeline verification tests live in
+`tests/trainee_packet/pin_history.rs`; the parent packet test module owns
+shared fixtures and archive-editing helpers.
 
 ## Runtime flow
 
