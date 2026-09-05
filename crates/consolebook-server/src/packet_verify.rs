@@ -536,12 +536,27 @@ fn check_signoffs(path: &str, signoffs: &[SignoffDoc]) -> Vec<Finding> {
 /// The enrollment's pin history, from the manifest's current pin and the
 /// lifecycle events' version changes: every version the enrollment ever
 /// pinned, labelled as the packet labels it; the original pin; and the
-/// version each version change reached, its epoch.
+/// version each version change reached, with its epoch's time boundaries.
 struct PinHistory {
     labels: BTreeMap<i64, String>,
-    original: i64,
-    /// A version change's `event_id` → the version it reached.
-    epochs: BTreeMap<i64, i64>,
+    original: PinEpoch,
+    /// A version change's `event_id` → the epoch it opened.
+    epochs: BTreeMap<i64, PinEpoch>,
+}
+
+struct PinEpoch {
+    version: i64,
+    opened_at: Option<i64>,
+    closed_at: Option<i64>,
+}
+
+impl PinEpoch {
+    /// Unix seconds cannot order a change and an act within that second.
+    /// Both endpoints therefore belong to the epoch, even when equal.
+    fn includes(&self, instant: i64) -> bool {
+        self.opened_at.is_none_or(|opened| instant >= opened)
+            && self.closed_at.is_none_or(|closed| instant <= closed)
+    }
 }
 
 impl PinHistory {
@@ -575,7 +590,7 @@ impl PinHistory {
         let mut epochs = BTreeMap::new();
         let mut findings = Vec::new();
         let mut pinned = original;
-        for (event, from, to) in &changes {
+        for (index, (event, from, to)) in changes.iter().enumerate() {
             let id = event.event_id;
             if from.version_number != pinned {
                 findings.push(off_history(
@@ -601,7 +616,23 @@ impl PinHistory {
                     }
                 }
             }
-            epochs.insert(id, to.version_number);
+            let closed_at = changes.get(index + 1).map(|(next, _, _)| next.occurred_at);
+            if closed_at.is_some_and(|closed| closed < event.occurred_at) {
+                findings.push(off_history(
+                    path,
+                    format!(
+                        "version change {id} occurs after the next version change in recorded order"
+                    ),
+                ));
+            }
+            epochs.insert(
+                id,
+                PinEpoch {
+                    version: to.version_number,
+                    opened_at: Some(event.occurred_at),
+                    closed_at,
+                },
+            );
             pinned = to.version_number;
         }
         if pinned != current.version_number {
@@ -616,7 +647,11 @@ impl PinHistory {
         (
             Self {
                 labels,
-                original,
+                original: PinEpoch {
+                    version: original,
+                    opened_at: None,
+                    closed_at: changes.first().map(|(event, _, _)| event.occurred_at),
+                },
                 epochs,
             },
             findings,
@@ -649,18 +684,26 @@ impl PinHistory {
         signoffs
             .iter()
             .filter_map(|signoff| {
-                self.check_version(
-                    path,
-                    &format!("signoff {}", signoff.signoff_id),
-                    &signoff.program_version,
-                )
+                let who = format!("signoff {}", signoff.signoff_id);
+                if let Some(finding) = self.check_version(path, &who, &signoff.program_version) {
+                    return Some(finding);
+                }
+                let named = signoff.program_version.version_number;
+                let pinned = std::iter::once(&self.original)
+                    .chain(self.epochs.values())
+                    .any(|epoch| epoch.version == named && epoch.includes(signoff.signed_at));
+                (!pinned).then(|| off_history(path, format!(
+                    "{who} names program version {named}, which was not pinned at signed_at {}",
+                    signoff.signed_at,
+                )))
             })
             .collect()
     }
 
     /// Every phase event names a pinned version, and the version its
     /// epoch reached: the original pin under `null`, otherwise the
-    /// version the named version change reached.
+    /// version the named version change reached. Effective and recorded times
+    /// cannot predate the opening; recording cannot postdate the closing.
     fn check_phase_events(&self, path: &str, enrollment: &EnrollmentDocument) -> Vec<Finding> {
         enrollment
             .phase_events
@@ -671,31 +714,52 @@ impl PinHistory {
                 if let Some(finding) = self.check_version(path, &who, &event.program_version) {
                     return Some(finding);
                 }
-                match event.version_change_event_id {
-                    None if named != self.original => Some(off_history(
+                let epoch = match event.version_change_event_id {
+                    None if named != self.original.version => return Some(off_history(
                         path,
                         format!(
                             "{who} is recorded under the original pin, but names version {named} rather than version {}",
-                            self.original
+                            self.original.version
                         ),
                     )),
-                    None => None,
+                    None => &self.original,
                     Some(epoch) => match self.epochs.get(&epoch) {
-                        None => Some(off_history(
+                        None => return Some(off_history(
                             path,
                             format!(
                                 "{who} names version change {epoch} as its epoch, which the history does not record"
                             ),
                         )),
-                        Some(reached) if *reached != named => Some(off_history(
+                        Some(reached) if reached.version != named => return Some(off_history(
                             path,
                             format!(
-                                "{who} names version {named} under the epoch that reached version {reached}"
+                                "{who} names version {named} under the epoch that reached version {}",
+                                reached.version,
                             ),
                         )),
-                        Some(_) => None,
+                        Some(epoch) => epoch,
                     },
+                };
+                if let Some(opened) = epoch.opened_at {
+                    if event.effective_at < opened {
+                        return Some(off_history(path, format!(
+                            "{who} takes effect at {}, before its epoch opened at {opened}",
+                            event.effective_at,
+                        )));
+                    }
+                    if event.recorded_at < opened {
+                        return Some(off_history(path, format!(
+                            "{who} was recorded at {}, before its epoch opened at {opened}",
+                            event.recorded_at,
+                        )));
+                    }
                 }
+                epoch.closed_at.filter(|&closed| event.recorded_at > closed).map(|closed| {
+                    off_history(path, format!(
+                        "{who} was recorded at {}, after its epoch closed at {closed}",
+                        event.recorded_at,
+                    ))
+                })
             })
             .collect()
     }

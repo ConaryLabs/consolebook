@@ -4,9 +4,9 @@ Everything retained about one enrollment, as one verifiable archive
 (ADR 0015; #44 decision 3; `docs/records-integrity.md`).
 `consolebook-server/src/trainee_packet.rs` produces packets and
 `consolebook-server/src/export_verify.rs` verifies them;
-`tests/trainee_packet.rs` proves the contents, determinism, and every
-verification finding. This document is normative: the implementation
-follows it, not the other way around.
+`tests/trainee_packet.rs` and its `trainee_packet/pin_history.rs` module prove
+the contents, determinism, and verification findings. This document is
+normative: the implementation follows it, not the other way around.
 
 A packet is a record export (`docs/formats/record-export.md`) plus what
 the record bytes do not carry. Its units are byte-identical to record-
@@ -144,6 +144,27 @@ a phase event's `program_version` is the version its epoch reached: the
 original pin under `null`, otherwise the version the named version
 change reached.
 
+Pin history is also a **timeline** (ADR 0017). Version changes' `occurred_at`
+instants are nondecreasing in recorded event order. Each change opens an epoch
+at its instant and the next change closes that epoch. The original pin closes
+at the first change, and the final epoch has no closing boundary. Returning to
+an earlier version opens a separate epoch; it does not fill the intervening
+gap with that version.
+
+Every instant is a UTC Unix second, so a change and an act in the same second
+cannot be ordered across tables. Epoch boundaries are inclusive. A signoff's
+version must be pinned at `signed_at`: allow the pin after all changes with
+`occurred_at < signed_at`, plus the target of every change with
+`occurred_at == signed_at`. This includes intermediate pins when several
+changes share one second, but only for that second.
+
+A phase event under a version-change epoch must have both `effective_at` and
+`recorded_at` at or after that epoch's opening instant, and `recorded_at` at or
+before the next change's instant if there is one. Under the original (`null`)
+epoch, `recorded_at` must be at or before the first change if there is one.
+The existing `effective_at <= recorded_at` rule still applies. Backdating
+inside an epoch is valid; a later recording cannot claim a closed epoch.
+
 ### `packet/acknowledgments.json`
 
 An array, strictly ascending by (`record_id`, `version_number`) — one
@@ -181,6 +202,7 @@ and overrides alike, so the history is complete (ADR 0013).
 `program_version` is the `{version_number, label}` of the pinned
 version whose task was signed, so a history that spans a version change
 keeps each signoff's configuration provenance without the installation.
+The version must be pinned at `signed_at` under the timeline rules above.
 `prompt` and `competency_name` are non-empty; `competency_category` may
 be empty (uncategorized). `kind` is one of `observed`, `demonstrated`,
 `revoked`. Any signoff after the first for a task supersedes it and
@@ -258,7 +280,11 @@ Document checks:
    version change leaving a version other than the one pinned, a history
    ending elsewhere than the manifest's pin, a version labelled two
    ways, a signoff or phase event naming a version never pinned, or a
-   phase event naming a version its epoch did not reach, is a finding;
+   phase event naming a version its epoch did not reach, is a finding.
+   Version-change times must not decrease in recorded order; signoffs must
+   name a version pinned at their signing second, and phase effective and
+   recorded instants must obey their named epoch's boundaries. Violations
+   are `DocumentPinHistory` findings, even when all hashes match;
    and
 9. `enrollment.json` names the manifest's `enrollment.id`.
 
